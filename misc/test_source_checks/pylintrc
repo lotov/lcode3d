@@ -1,0 +1,14 @@
+[MESSAGES CONTROL]
+# Cython modules are not autodetected
+disable=W,C,no-name-in-module,no-member,duplicate-code,import-error
+
+# [MASTER]
+# MAYBE BETTER: extension-pkg-whitelist
+
+# [TYPECHECK]
+# MAYBE BETTER: ignored-modules
+# MAYBE BETTER: ignored-classes
+
+[DESIGN]
+# TODO: lower later
+max-locals=50

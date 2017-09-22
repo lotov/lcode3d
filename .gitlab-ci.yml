@@ -1,0 +1,168 @@
+stages:
+  - build-images
+  - package
+  - test
+
+
+### Stage 1: build-images ###
+
+build-image-manylinux1-package:
+  stage: build-images
+  tags: [linux, docker-host]
+  image: docker
+  script: |
+    docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY
+    docker build --pull -t $CI_REGISTRY_IMAGE:manylinux1-package misc/dockerfiles/manylinux1-package
+    docker push $CI_REGISTRY_IMAGE:manylinux1-package
+
+build-image-debian8-pyinstaller:
+  stage: build-images
+  tags: [linux, docker-host]
+  image: docker
+  script: |
+    docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY
+    docker build --pull -t $CI_REGISTRY_IMAGE:debian8-pyinstaller misc/dockerfiles/debian8-pyinstaller
+    docker push $CI_REGISTRY_IMAGE:debian8-pyinstaller
+
+build-image-debian9-test:
+  stage: build-images
+  tags: [linux, docker-host]
+  image: docker
+  script: |
+    docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY
+    docker build --pull -t $CI_REGISTRY_IMAGE:debian9-test misc/dockerfiles/debian9-test
+    docker push $CI_REGISTRY_IMAGE:debian9-test
+
+
+### Stage 2: package ###
+
+package-manylinux1-package:
+  stage: package
+  tags: [linux, docker-host]
+  image: $CI_REGISTRY_IMAGE:manylinux1-package
+  script: |
+    /opt/python/cp35-cp35m/bin/python3.5 setup.py sdist --format=zip
+    /opt/python/cp35-cp35m/bin/python3.5 setup.py bdist_wheel -p manylinux1_x86_64
+    sh -c 'auditwheel show $(ls dist/lcode-*cp35-*.whl)'
+    /opt/python/cp36-cp36m/bin/python3.6 setup.py sdist --format=zip
+    /opt/python/cp36-cp36m/bin/python3.6 setup.py bdist_wheel -p manylinux1_x86_64
+    sh -c 'auditwheel show $(ls dist/lcode-*cp36-*.whl)'
+  artifacts:
+    paths:
+    - dist/*.zip
+    - dist/*.whl
+
+package-debian8-pyinstaller:
+  stage: package
+  tags: [linux, docker-host]
+  image: $CI_REGISTRY_IMAGE:debian8-pyinstaller
+  script: |
+    pip3 install -r requirements.txt
+    python3 setup.py build_ext --inplace
+    pyinstaller lcode.spec
+  artifacts:
+    paths:
+    - dist/lcode
+
+# package-windows10-py36:
+#   stage: package
+#   tags: [windows, python3.6, git, upx, anaconda]
+# # dependencies: cython wheel mako pylint flake8 nose setuptools + requirements.txt
+#   script: |
+#     python -m pip install --user cython wheel
+#     python -m pip install --user mako
+#     python -m pip install --user pylint flake8
+#     python -m pip install --user nose
+#     python -m pip install --user -r requirements.txt
+#     python -m pip install --user -U setuptools
+#     python setup.py bdist_wheel
+#     python setup.py build_ext --inplace
+# #python -m pip install --user pyinstaller  # not on 3.6 yet
+# #python -m pip install --user setuptools==19.2
+# #python -m PyInstaller --upx-dir C:\upx391w lcode.spec
+# #python -m pip install --user -U setuptools
+#   artifacts:
+#     paths:
+#     - dist/*.whl
+# #- dist/*.exe
+
+
+### Stage 3: test ###
+
+test-debian9:
+  stage: test
+  tags: [linux, docker-host]
+  image: $CI_REGISTRY_IMAGE:debian9-test
+  script: |
+    pip3 install -r requirements.txt cython mako nose pylint flake8
+    python3 setup.py nosetests
+    nosetests misc
+
+test-debian9-run-from-sdist:
+  stage: test
+  tags: [linux, docker-host]
+  image: $CI_REGISTRY_IMAGE:debian9-test
+  script: |
+    python3 -m pip install -r requirements.txt cython
+    sh -c 'python3 -m pip install $(ls dist/lcode-*.zip)[test]'
+    cd $(mktemp -d); python3 -m lcode
+
+test-debian9-run-from-wheel:
+  stage: test
+  tags: [linux, docker-host]
+  image: $CI_REGISTRY_IMAGE:debian9-test
+  script: |
+    python3 -m pip install -r requirements.txt
+    sh -c 'python3 -m pip install $(ls dist/lcode-*cp35-*linux*.whl)[test]'
+    cd $(mktemp -d); python3 -m lcode
+
+test-ubuntu-run:
+  stage: test
+  tags: [linux, docker-host]
+  image: ubuntu:devel
+  script:
+  - cd dist; ./lcode
+
+#test-centos7-run:
+#  stage: test
+#  tags: [linux, docker-host]
+#  image: centos:7
+#  script:
+#  - cd dist; ./lcode
+
+test-clearlinux-run:
+  stage: test
+  tags: [linux, docker-host]
+  image: clearlinux
+  script:
+  - cd dist; ./lcode
+
+# test-windows10-py36-test:  # TODO: test on a clean machine
+#   stage: test
+#   tags: [windows, python3.6, git, upx, anaconda]
+#   script: |
+#     python -m pip install --user cython
+#     python -m pip install --user mako
+#     python -m pip install --user pylint flake8
+#     python -m pip install --user nose
+#     python -m pip install --user -r requirements.txt
+#     python setup.py build_ext --inplace
+#     python setup.py nosetests
+# 
+# test-windows10-py36-wheel:  # TODO: test on a clean machine
+#   stage: test
+#   tags: [windows, python3.6, git, upx, anaconda]
+#   script: |
+#     python -m pip install --user -r requirements.txt
+#     python -c "import os, glob; os.system('python -m pip install --user --upgrade ' + glob.glob('dist/lcode-*win*.whl')[0])"
+#     cd dist
+#     python -m lcode
+#     python -m pip uninstall -y lcode
+# 
+# #test-windows10-py36-exe:  # TODO: test on a clean machine
+# #  stage: test
+# #  tags: [windows, python3.6, git, upx, anaconda]
+# #  script: |
+# #    cd dist
+# #    lcode.exe
+# #    cd ..

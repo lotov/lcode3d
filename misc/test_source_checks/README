@@ -1,0 +1,4 @@
+This directory contains source code quality checks for LCODE,
+designed to be run with `nosetests lcode misc`.
+
+TODO: make the tests crossplatform

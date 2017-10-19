@@ -25,7 +25,7 @@ def beam(xi, x, y):
         return 0
     r = sqrt(x**2 + (y - SHIFT)**2)
     A = .05 * BOOST
-    return A * exp(-.5 * (r/S)**2) * (1 - cos(xi * COMPRESS * sqrt(pi / 2)))
+    return A * exp(-.5 * (r / S)**2) * (1 - cos(xi * COMPRESS * sqrt(pi / 2)))
 
 
 window_width = 12.85

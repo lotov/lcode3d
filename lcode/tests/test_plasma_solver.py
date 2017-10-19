@@ -52,14 +52,17 @@ def test_single_particle_response():
                                  out_plasma_cor=plasma_cor,
                                  out_roj=roj)
 
-    def symmetrical_x(arr): return np.allclose(arr, arr[::-1, :])
+    def symmetrical_x(arr):
+        return np.allclose(arr, arr[::-1, :])
 
-    def symmetrical_y(arr): return np.allclose(arr, arr[:, ::-1])
+    def symmetrical_y(arr):
+        return np.allclose(arr, arr[:, ::-1])
 
-    def symmetrical_xy(arr): return symmetrical_x(arr) and symmetrical_y(arr)
+    def symmetrical_xy(arr):
+        return symmetrical_x(arr) and symmetrical_y(arr)
 
-    def symmetrical_all(arr): return (symmetrical_xy(arr) and
-                                      np.allclose(arr, arr.T))
+    def symmetrical_all(arr):
+        return (symmetrical_xy(arr) and np.allclose(arr, arr.T))
 
     def center(array):
         return array[array.shape[0] // 2, array.shape[1] // 2]

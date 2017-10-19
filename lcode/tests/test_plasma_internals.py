@@ -79,7 +79,7 @@ def test_reduction_Neuman_red():
     x = x[:, None]  # 2D x
     y = y[None, :]  # 2D y
     Fi = 6 * x + 2 + 2 * y**2 + 2 * x**2
-    P_correct = x**3 + y**2 - 2*x + x**2 * y**2
+    P_correct = x**3 + y**2 - 2 * x + x**2 * y**2
 
     lcode.plasma_solver.Neuman_red(config, B_0,
                                    -r0, r1, -rb, ru,

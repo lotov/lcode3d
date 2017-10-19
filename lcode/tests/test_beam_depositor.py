@@ -71,7 +71,7 @@ def test_compare_depositions():
     config_ro_func = lcode.configuration.get(CONFIG_RO_FUNC)
     config_particles = lcode.configuration.get(CONFIG_PARTICLES)
 
-    ro_r = np.zeros((config_particles.grid_steps,)*2)
+    ro_r = np.zeros((config_particles.grid_steps,) * 2)
     ro_p = np.zeros_like(ro_r)
 
     with hacks.use(*config_particles.hacks):

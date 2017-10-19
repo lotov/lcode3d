@@ -45,7 +45,7 @@ def PreciselyWeighted(window_width, grid_steps, weights, xi=0, m=1, q=1):
             w = weights[i, j]
             if not w:
                 continue
-            yield beam_particle.BeamParticle(m=m, q=q, W=w/q, N=n,
+            yield beam_particle.BeamParticle(m=m, q=q, W=(w / q), N=n,
                                              xi=xi, x=x, y=y,
                                              p_xi=0, p_x=0, p_y=0)
             n += 1

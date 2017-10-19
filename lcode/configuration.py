@@ -21,25 +21,22 @@ import importlib
 USE_LCODE_DEFAULT = object()  # sentinel
 
 
-# pylint: disable=no-else-return
 def get(something=None, default=USE_LCODE_DEFAULT):
     if default == USE_LCODE_DEFAULT:
         default = load_default_lcode_config()
     if something is None:
         return default
-    elif isinstance(something, str):
+    if isinstance(something, str):
         if '\n' in something or '=' in something or something == '':
             # Probably configuration data, execute it
             return from_string(something, default=default)
-        else:
-            # Probably a configuration file path, read and execute it
-            return from_filename(something, default=default)
-    elif isinstance(something, dict):
+        # Probably a configuration file path, read and execute it
+        return from_filename(something, default=default)
+    if isinstance(something, dict):
         config = default  # No copying as default is unique every time
         config.__dict__.update(something)
         return config
-    else:
-        return something  # Maybe it's already good enough, let's try
+    return something  # Maybe it's already good enough, let's try
 
 
 def from_filename(filename, default=None):

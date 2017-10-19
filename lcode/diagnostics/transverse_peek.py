@@ -129,7 +129,7 @@ class TransversePeek:
             im_jxy = ax_jxy.streamplot(l, l, jx.T, jy.T,
                                        cmap=cm.cool, norm=vnorm,
                                        linewidth=0.125 + 5 * jt,
-                                       color=50*jt)
+                                       color=(50 * jt))
             fig.colorbar(im_jxy.lines, ax=ax_jxy)
 
         plt.savefig(os.path.join('transverse', '%09.2f.png' % xi))

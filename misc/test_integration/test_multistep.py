@@ -74,10 +74,13 @@ def test_multistep():
          h5py.File('step_2.h5', 'r') as f_s2, \
          h5py.File('steps_34_00002.h5', 'r') as f_s4:  # noqa: E127
 
-        assert np.array_equal(f_a1['beam'], f_s1['beam'])
-        assert np.array_equal(f_a2['beam'], f_s2['beam'])
-        assert np.array_equal(f_a4['beam'], f_s4['beam'])
+        assert np.array_equal(f_a1['beam/particles'], f_s1['beam/particles'])
+        assert np.array_equal(f_a2['beam/particles'], f_s2['beam/particles'])
+        assert np.array_equal(f_a4['beam/particles'], f_s4['beam/particles'])
 
-        assert not np.array_equal(f_s4['beam'], f_s1['beam'])
-        assert not np.array_equal(f_s4['beam'], f_s2['beam'])
-        assert not np.array_equal(f_s2['beam'], f_s1['beam'])
+        assert not np.array_equal(f_s4['beam/particles'],
+                                  f_s1['beam/particles'])
+        assert not np.array_equal(f_s4['beam/particles'],
+                                  f_s2['beam/particles'])
+        assert not np.array_equal(f_s2['beam/particles'],
+                                  f_s1['beam/particles'])

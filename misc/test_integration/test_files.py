@@ -57,6 +57,6 @@ def test_files():
          h5py.File('out_evolved_more.h5', 'r') as f2, \
          h5py.File('out_not_evolved.h5', 'r') as f3:  # noqa: E127
         # dt == 0, x must not change
-        assert np.array_equal(f1['beam'], f3['beam'])
+        assert np.array_equal(f1['beam/particles'], f3['beam/particles'])
         # dt != 0, x must change
-        assert not np.array_equal(f1['beam'], f2['beam'])
+        assert not np.array_equal(f1['beam/particles'], f2['beam/particles'])

@@ -20,6 +20,13 @@ import h5py
 from . import beam_particle
 
 
+def try_next(it):
+    try:
+        return next(it)
+    except StopIteration:
+        return beam_particle.BeamParticleArray([])
+
+
 def layer_slicer_generator(particle_generator, length):
     length = abs(length)
     layer, xi = [], 0
@@ -30,6 +37,21 @@ def layer_slicer_generator(particle_generator, length):
             layer, xi = [], xi - length
         layer.append(p)
     yield beam_particle.BeamParticleArray(layer)
+
+
+def layer_slicer_random_access(particle_data, length):
+    length = abs(length)
+    xi, start_i, i, data_len = 0, 0, 0, len(particle_data)
+    while i < data_len:
+        if particle_data[i]['r'][0] <= xi - length:
+            arr = np.array(particle_data[start_i:i])
+            assert np.all(arr['r'][:, 0] <= xi)
+            assert np.all(arr['r'][:, 0] > xi - length)
+            yield arr
+            start_i = i
+            xi -= length
+        i += 1
+    yield np.array(particle_data[start_i:])
 
 
 # pylint: disable=too-many-arguments
@@ -58,15 +80,23 @@ class BeamFileSink:  # pylint: disable=too-few-public-methods
 
     def __enter__(self):
         self.f = h5py.File(self.filename, 'w')
-        self.beam = self.f.create_dataset('beam', (0,), maxshape=(None,),
-                                          dtype=beam_particle.dtype,
-                                          chunks=True)
+        self.b = self.f.create_group('beam')
         return self
 
     def put(self, layer):
-        l = len(self.beam)
-        self.beam.resize((l + len(layer),))
-        self.beam[l:] = layer
+        for sp_name in layer:
+            try:
+                ds = self.b[sp_name]
+            except KeyError:
+                self.b.create_dataset(sp_name, (0,), maxshape=(None,),
+                                      dtype=beam_particle.dtype,
+                                      chunks=True)
+                ds = self.b[sp_name]
+            sp_particles = layer[sp_name]
+            l = len(ds)
+            ds.resize((l + len(sp_particles),))
+            ds[l:] = sp_particles
+        self.f.flush()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.f.close()
@@ -83,23 +113,15 @@ class BeamFileSource:  # pylint: disable=too-few-public-methods
     def __enter__(self):
         self.f = h5py.File(self.filename, 'r')
         self.beam = self.f['beam']
-        self.xis = self.beam['r'][:, 0]
-        self.xi_i = 0
-        self.start_i = 0
+        self.species_names = list(self.beam.keys())
+        species_data = [self.beam[sp] for sp in self.species_names]
+        self.slicers = [layer_slicer_random_access(d, self.config.xi_step_size)
+                        for d in species_data]
         return self
 
     def __next__(self):
-        # TODO: needs a speedup
-        i = self.start_i
-        xi_stop = (-self.xi_i - 1) * self.config.xi_step_size
-        while i < len(self.beam) and self.xis[i] > xi_stop:
-            i += 1
-        arr = np.array(self.beam[self.start_i:i])
-        assert np.all(arr['r'][:, 0] > xi_stop)
-        assert np.all(arr['r'][:, 0] <= xi_stop + self.config.xi_step_size)
-        self.start_i = i
-        self.xi_i += 1
-        return arr
+        return {sp_name: try_next(slicer)
+                for sp_name, slicer in zip(self.species_names, self.slicers)}
 
     def __iter__(self):
         return self
@@ -112,17 +134,24 @@ class BeamFileSource:  # pylint: disable=too-few-public-methods
 
 
 class BeamConstructionSource:  # pylint: disable=too-few-public-methods
-    def __init__(self, config, particle_generator_function):
-        self.particle_generator_function = particle_generator_function
+    def __init__(self, config, particle_generator_function_dict):
+        if not isinstance(particle_generator_function_dict, dict):
+            particle_generator_function_dict = {
+                'particles': particle_generator_function_dict
+            }
+        self.genfuncs = particle_generator_function_dict
         self.xi_step_size = config.xi_step_size
 
     def __enter__(self):
-        self.gen = layer_slicer_generator(self.particle_generator_function(),
-                                          self.xi_step_size)
+        self.gens = {sp_name: genfunc()
+                     for sp_name, genfunc in self.genfuncs.items()}
+        self.slicers = {sp_name: layer_slicer_generator(gen, self.xi_step_size)
+                        for sp_name, gen in self.gens.items()}
         return self
 
     def __next__(self):
-        return next(self.gen)
+        return {sp_name: try_next(slicer)
+                for sp_name, slicer in self.slicers.items()}
 
     def __iter__(self):
         return self
@@ -132,7 +161,7 @@ class BeamConstructionSource:  # pylint: disable=too-few-public-methods
 
     def __repr__(self):
         return ('<' + self.__class__.__name__ + ': ' +
-                repr(self.particle_generator_function) + '>')
+                repr(self.genfuncs) + '>')
 
 
 class BeamFakeSink:  # pylint: disable=too-few-public-methods
@@ -154,12 +183,18 @@ def some_particle_beam():
     from . import beam_particle
     xi = 0
     random.seed(0)
+    external_state = random.getstate()
     for i in range(1000):
         xi -= 0.001
         x = random.normalvariate(0, sigma=1)
         y = random.normalvariate(0, sigma=1)
         p_x = random.normalvariate(0, sigma=2)
         p_y = random.normalvariate(0, sigma=2)
+        p_xi = random.uniform(0, 1e3)
+        internal_state = random.getstate()
+        random.setstate(external_state)
         yield beam_particle.BeamParticle(m=1, q=-1,
                                          xi=xi, x=x, y=y,
-                                         p_xi=32, p_x=p_x, p_y=p_y)
+                                         p_xi=p_xi, p_x=p_x, p_y=p_y)
+        external_state = random.getstate()
+        random.setstate(internal_state)

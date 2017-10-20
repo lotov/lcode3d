@@ -17,13 +17,17 @@
 import hacks
 
 
+def mln(d):
+    return sum((len(arr) for arr in d.values()))
+
+
 @hacks.into('print_extra')
 @hacks.stealing
 def PrintBeamInfo(*a, beam_layer=hacks.steal, total_substeps=hacks.steal,
                   moved=hacks.steal, fell=hacks.steal, lost=hacks.steal):
-    if not len(beam_layer):
+    if not mln(beam_layer):
         return
     return ' '.join((
-        'N=%d=%d+%d+%d' % (len(beam_layer), len(moved), len(fell), len(lost)),
-        's=%.3f' % (total_substeps / len(beam_layer)),
+        'N=%d=%d+%d+%d' % (mln(beam_layer), mln(moved), mln(fell), mln(lost)),
+        's=%.3f' % (total_substeps / mln(beam_layer)),
     ))

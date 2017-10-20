@@ -37,7 +37,7 @@ class BeamRoFunctionFakeSource:  # pylint: disable=too-few-public-methods
         return self
 
     def __next__(self):  # pylint: disable=no-self-use
-        return lcode.beam_particle.BeamParticleArray([])
+        return {}
 
     def __iter__(self):
         return self

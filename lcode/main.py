@@ -55,7 +55,6 @@ def simulation_time_step(config=None, t_i=0):
     plasma_solver_config = plasma_solver.PlasmaSolverConfig(config)
 
     beam_ro = np.zeros((config.grid_steps, config.grid_steps))
-    beam_ro_curr = np.zeros_like(beam_ro)
     beam_ro_next = np.zeros_like(beam_ro)
     beam_ro_from_prev = np.zeros_like(beam_ro)
     roj = np.zeros((config.grid_steps, config.grid_steps),
@@ -82,21 +81,12 @@ def simulation_time_step(config=None, t_i=0):
             roj_pprv, roj_prev, roj = roj_prev, roj, roj_pprv
 
             beam_layer = next(beam_source)
-            beam_layer = np.append(beam_layer, fell_from_prev_layer)
-            # TODO: come up with a better criterion
-            active = beam_layer[
-                beam_layer['t'] <= t + config.time_step_size / 2
-            ]
-            # TODO: deposit to TWO arrays, beam_ro_curr and beam_ro_prev
-            # Maybe introduce a 'weights' parameter?..
-            beam_xis = active['r'][:, 0]
-            beam_ro_curr[...] = beam_depositor.deposit_beam(
-                config, active, weights=(1 - (beam_xis - xi))
-            )
-            beam_ro_next[...] = beam_depositor.deposit_beam(
-                config, active, weights=(beam_xis - xi)
-            )
-            beam_ro[...] = beam_ro_curr + beam_ro_from_prev
+            beam_layer = beam_append(beam_layer, fell_from_prev_layer)
+
+            deposit_beam(config, xi, t, beam_layer,
+                         beam_ro_from_prev,
+                         out_beam_ro_curr=beam_ro,
+                         out_beam_ro_next=beam_ro_next)
 
             # Only used when there is no input beam, only a beam ro function
             hacks.call.beam_ro_from_function_kludge(config, beam_source, xi_i,
@@ -141,12 +131,13 @@ def simulation_time_step(config=None, t_i=0):
                 )[0]
             )
 
-            moved, fell, lost, total_substeps = beam_mover.move(
+            moved, fell, lost, total_substeps = beam_move(
                 config, beam_layer, t, xi, Ex, Ey, Ez, Bx, By, Bz
             )
             beam_sink.put(moved)
             fell_from_prev_layer = fell
 
+            # TODO: come up with better array names, skip this copying
             beam_ro_from_prev[...] = beam_ro_next
 
             hacks.call.each_xi(config, t_i, xi_i, roj, plasma,
@@ -171,11 +162,73 @@ def choose_beam_source(config, t_i=0):
         return beam_construction.BeamFileSource(config, prev_filename)
     if not t_i and inspect.isgeneratorfunction(config.beam):
         return beam_construction.BeamConstructionSource(config, config.beam)
+    if not t_i and isinstance(config.beam, dict):
+        # FIXME: for now it's a catchall
+        # The whole beam data architecture should be reworked for flexibility
+        return beam_construction.BeamConstructionSource(config, config.beam)
     elif isinstance(config.beam, str):
         filename = util.h5_filename(t_i, config.beam)
         return beam_construction.BeamFileSource(config, filename)
     else:
         raise RuntimeError('Unsupported beam definition')
+
+
+# pylint: disable=too-many-arguments
+@hacks.friendly('lcode.main.deposit_beam')
+def deposit_beam(config, t, xi, beam_layer,
+                 beam_ro_from_prev, out_beam_ro_curr, out_beam_ro_next):
+    out_beam_ro_curr[...] = beam_ro_from_prev
+    out_beam_ro_next[...] = 0
+
+    if isinstance(beam_layer, dict):
+        species = beam_layer
+    else:
+        species = {'particles': beam_layer}
+
+    for name in sorted(species):
+        particles_layer = species[name]
+        assert isinstance(particles_layer, np.ndarray)
+        assert particles_layer.dtype == beam_particle.dtype
+        # TODO: come up with a better criterion
+
+        active = particles_layer[
+            particles_layer['t'] <= t + config.time_step_size / 2
+        ]
+
+        beam_xis = active['r'][:, 0]
+        weights_curr, weights_next = 1 - (beam_xis - xi), beam_xis - xi
+        out_beam_ro_curr += beam_depositor.deposit_beam(config, active,
+                                                        weights_curr)
+        out_beam_ro_next += beam_depositor.deposit_beam(config, active,
+                                                        weights_next)
+
+
+def beam_append(beam_layer, fell_from_prev_layer):
+    res = {sp_name: l.copy() for sp_name, l in beam_layer.items()}
+    for sp_name in fell_from_prev_layer:
+        assert sp_name in beam_layer, 'fallthrough particle of missing species'
+        res[sp_name] = np.append(res[sp_name], fell_from_prev_layer[sp_name])
+    return res
+
+
+# pylint: disable=too-many-arguments
+@hacks.friendly('lcode.main.beam_move')
+def beam_move(config, beam_layer, t, xi, Ex, Ey, Ez, Bx, By, Bz):
+    if isinstance(beam_layer, dict):
+        species = beam_layer
+    else:
+        species = {'particles': beam_layer}
+
+    moved, fell, lost, total_substeps = {}, {}, {}, 0
+    for sp_name in species:
+        moved_, fell_, lost_, total_substeps_ = beam_mover.move(
+            config, beam_layer[sp_name], t, xi, Ex, Ey, Ez, Bx, By, Bz
+        )
+        moved[sp_name] = moved_
+        fell[sp_name] = fell_
+        lost[sp_name] = lost_
+        total_substeps += total_substeps_
+    return moved, fell, lost, total_substeps
 
 
 @hacks.friendly('lcode.main.choose_beam_sink')

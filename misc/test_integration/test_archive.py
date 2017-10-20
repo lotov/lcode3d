@@ -45,5 +45,5 @@ def test_archive():
     with h5py.File('00002.h5', 'r') as f2, \
          h5py.File('00003.h5', 'r') as f3, \
          h5py.File('archive_00003.h5', 'r') as fa:  # noqa: E127
-        assert np.array_equal(f3['beam'], fa['beam'])
-        assert not np.array_equal(f2['beam'], fa['beam'])
+        assert np.array_equal(f3['beam/particles'], fa['beam/particles'])
+        assert not np.array_equal(f2['beam/particles'], fa['beam/particles'])

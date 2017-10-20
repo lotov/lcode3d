@@ -15,12 +15,8 @@
 
 
 from mpi4py import MPI
-import numpy as np
 
 import hacks
-
-import lcode.beam_construction
-import lcode.beam_particle
 
 
 class BeamMPISource:  # pylint: disable=too-few-public-methods
@@ -34,22 +30,8 @@ class BeamMPISource:  # pylint: disable=too-few-public-methods
     def __enter__(self):
         return self
 
-    def __next__(self):  # pylint: disable=no-self-use
-        l = self.comm.recv(source=self.src)
-        layer = np.zeros(l, dtype=lcode.beam_particle.dtype)
-        self.recv_array(layer['r'])
-        self.recv_array(layer['p'])
-        self.recv_array(layer['N'])
-        self.recv_array(layer['m'])
-        self.recv_array(layer['q'])
-        self.recv_array(layer['W'])
-        self.recv_array(layer['t'])
-        return layer
-
-    def recv_array(self, to):
-        tmp = to.copy()
-        self.comm.Recv(tmp, source=self.src)
-        to[...] = tmp
+    def __next__(self):
+        return self.comm.recv(source=self.src)  # may be optimized
 
     def __iter__(self):
         return self
@@ -74,17 +56,7 @@ class BeamMPISink:  # pylint: disable=too-few-public-methods
         return self
 
     def put(self, layer):
-        self.comm.send(layer.shape[0], dest=self.dst)
-        self.send_array(layer['r'])
-        self.send_array(layer['p'])
-        self.send_array(layer['N'])
-        self.send_array(layer['m'])
-        self.send_array(layer['q'])
-        self.send_array(layer['W'])
-        self.send_array(layer['t'])
-
-    def send_array(self, arr):
-        self.comm.Send(arr.copy(), dest=self.dst)
+        self.comm.send(layer, dest=self.dst)  # may be optimized
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
@@ -99,7 +71,11 @@ class MPIPowers:
     def init(self, simulation_time_step, config, t_i=0):
         self.rank = MPI.COMM_WORLD.Get_rank()
         self.size = MPI.COMM_WORLD.Get_size()
+        last_round_working_odd = config.time_steps % self.size
         if t_i % self.size != self.rank:
+            if t_i == config.time_steps - 1 and last_round_working_odd:
+                if self.rank >= last_round_working_odd:
+                    MPI.COMM_WORLD.Barrier()  # wait for last round
             return hacks.FakeResult('Not my time step!')
 
     @hacks.before('lcode.main.choose_beam_source')
@@ -127,3 +103,7 @@ class MPIPowers:
     @hacks.into('print_extra')
     def print_extra_rank(self, *a):
         return 'MPI:{rank}/{size}'.format(rank=self.rank, size=self.size)
+
+
+# TODO: possibly optimize with user-defined MPI datatypes.
+# https://groups.google.com/forum/#!topic/mpi4py/pHA_s7fS0q0

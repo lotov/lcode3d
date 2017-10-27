@@ -60,9 +60,9 @@ def simulation_time_step(config=None, t_i=0):
     config = configuration.get(config)
     logger = logging.getLogger(__name__)
     t = config.time_start + config.time_step_size * t_i
-    shape = config.plasma_density_shape(t + config.time_step_size / 2)
 
-    plasma = plasma_construction.construct(config.plasma, shape)
+    plasma = plasma_construction.construct(config.plasma,
+                                           config.plasma_density_shape)
     plasma_cor = plasma.copy()
     plasma_solver_config = plasma_solver.PlasmaSolverConfig(config)
 

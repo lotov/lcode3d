@@ -16,6 +16,9 @@
 
 import imp
 import importlib
+import inspect
+
+import hacks
 
 
 USE_LCODE_DEFAULT = object()  # sentinel
@@ -74,3 +77,26 @@ def load_default_lcode_config():
         print('Please report this behaviour to LCODE developers.')
         importlib.reload(default_config)
         return default_config
+
+
+class TimeDependence:  # pylint: disable=too-few-public-methods
+    @staticmethod
+    @hacks.around('simulation_time_step')
+    def postprocess_config(simulation_time_step):
+        def time_parametrized_simulation_time_step(config=None, t_i=0):
+            '''Call simulation_time_step expanding functions of t and t_i.'''
+            config = get(config)
+            t = config.time_start + config.time_step_size * t_i
+            # a really shallow copy of the config
+            expanded_config = imp.new_module(config.__name__)
+            expanded_config.__dict__.update(config.__dict__)
+            for attrname in dir(config):
+                if inspect.isroutine(getattr(config, attrname)):
+                    func = getattr(config, attrname)
+                    params = list(inspect.signature(func).parameters)
+                    if params == ['t']:
+                        setattr(expanded_config, attrname, func(t))
+                    elif params == ['t_i']:
+                        setattr(expanded_config, attrname, func(t_i))
+            return simulation_time_step(expanded_config, t_i)
+        return time_parametrized_simulation_time_step

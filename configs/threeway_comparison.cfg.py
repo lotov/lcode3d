@@ -9,6 +9,7 @@ import lcode.plasma_particle
 
 
 hacks = [
+    'lcode.configuration:TimeDependence',
     'lcode.diagnostics.main:Diagnostics',
     'lcode.diagnostics.print_beam_info:PrintBeamInfo',
     'lcode.diagnostics.print_Ez_max:PrintEzMax',
@@ -42,6 +43,7 @@ beam_deposit_nearest = False
 
 
 def plasma_density_shape(t):
+    t += time_step_size / 2
     if t <= 5000:
         return 1
     elif 5000 < t <= 6000:

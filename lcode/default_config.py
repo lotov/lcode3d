@@ -56,8 +56,7 @@ def virtualize(a):
     return a.copy()
 
 
-def plasma_density_shape(t):
-    return 1
+plasma_density_shape = 1
 
 
 plasma = lcode.plasma_construction.UniformPlasma(window_width,

@@ -5,6 +5,10 @@ import lcode.plasma.virtual.fast
 import lcode.plasma_particle
 
 hacks = [
+    'lcode.util:FancyLogging',
+    'lcode.util:DebugLogging',
+    'lcode.util:FileLogging',
+    'lcode.util:LcodeInfo',
     'lcode.diagnostics.print_beam_info:PrintBeamInfo',
 ]
 

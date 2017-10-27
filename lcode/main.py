@@ -15,6 +15,7 @@
 
 
 import inspect
+import logging
 import sys
 
 import numpy as np
@@ -33,20 +34,31 @@ from . import util
 
 def main():
     config = sys.argv[1] if len(sys.argv) > 1 else None
-    run(config)
+    run(config, configure_logging=True)
 
 
-def run(config=None):
+def run(config=None, configure_logging=False):
     config = configuration.get(config)
     with hacks.use(*config.hacks):
+        if configure_logging:
+            _configure_logging()
         for t_i in range(config.time_steps):
             simulation_time_step(config, t_i)
+
+
+@hacks.friendly('lcode.main.configure_logging')
+def _configure_logging():
+    root_lcode_logger = logging.getLogger('lcode')
+    root_lcode_logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    root_lcode_logger.addHandler(handler)
 
 
 # pylint: disable=too-many-statements
 @hacks.friendly
 def simulation_time_step(config=None, t_i=0):
     config = configuration.get(config)
+    logger = logging.getLogger(__name__)
     t = config.time_start + config.time_step_size * t_i
     shape = config.plasma_density_shape(t + config.time_step_size / 2)
 
@@ -71,8 +83,9 @@ def simulation_time_step(config=None, t_i=0):
     with choose_beam_source(config, t_i) as beam_source, \
          choose_beam_sink(config, t_i) as beam_sink:  # noqa: E127
 
-        print('TIME', t, t_i, config.time_step_size)
-        print('Beam data flows from', beam_source, 'to', beam_sink)
+        logger.info('Step %d, t = %f', t_i, t)
+        logger.debug('Beam data flows from %s', beam_source)
+        logger.debug('Beam data flows to %s', beam_sink)
 
         for xi_i in range(config.xi_steps):
             xi = -config.xi_step_size * xi_i
@@ -145,8 +158,9 @@ def simulation_time_step(config=None, t_i=0):
 
             if config.print_every_xi_steps:
                 if xi_i % config.print_every_xi_steps == 0:
-                    print('xi=%.4f' % xi,
-                          *[ex for ex in hacks.call.print_extra() if ex])
+                    logger.info('xi=%.4f ' % xi + ' '.join(
+                        [ex for ex in hacks.call.print_extra() if ex]
+                    ))
 
 
 @hacks.friendly('lcode.main.choose_beam_source')

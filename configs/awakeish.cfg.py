@@ -99,12 +99,10 @@ def beam():
     # CURRENT = 0.00281
     # weight = 12.56637061 * CURRENT / PARTICLES_PER_LAYER  # ?????
     WEIGHT = 3e11 / 2 / beam_length_in_xi_steps / PARTICLES_PER_LAYER
-    #print('weight', WEIGHT)
     #WEIGHT *= xi_step_size * (window_width / grid_steps) ** 2
     # n0 / (wp/c)**3  or whatever else the charge unit really is  ~=  5e9
     # source: Tuev
     WEIGHT /= 5e9 * xi_step_size * (window_width / grid_steps) ** 2
-    #print('weight', WEIGHT)
 
     np.random.seed(0)
     N = 0
@@ -113,7 +111,6 @@ def beam():
         xi = -xi_i * xi_step_size - xi_microstep / 2
         # Doesn't match LCODE's check
         weight = WEIGHT * cos(.5 * np.pi * xi_i / beam_length_in_xi_steps)
-        #print('weight', weight, WEIGHT, weight / WEIGHT)
         for _ in range(PARTICLES_PER_LAYER):
             yield lcode.beam_particle.BeamParticle(
                 x=np.random.normal(),

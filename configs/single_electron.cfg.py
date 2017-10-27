@@ -11,8 +11,6 @@ hacks = [
 ]
 
 
-print('config eval...')
-
 dt = t_max = 1
 
 
@@ -61,6 +59,3 @@ plasma = plasma[np.logical_or(plasma['q'] > 0, r > window_width / grid_steps)]
 
 def track_plasma_particles(plasma):
     return plasma[np.in1d(plasma['N'], probe_numbers)]
-
-
-print('config eval.')

@@ -112,14 +112,6 @@ def beam():
             xi -= xi_microstep
             N += 1
 
-q, s = 0, 0
-for p in beam():
-    r = sqrt(p['r'][1]**2 + p['r'][2]**2)
-    q += p['q'] * p['W']
-    s += p['q'] * p['W'] / r
-print('q', q, 's', s)
-#import sys; sys.exit()
-
 
 def archive(t, t_i):
     return (t_i + 1) % 1 == 0

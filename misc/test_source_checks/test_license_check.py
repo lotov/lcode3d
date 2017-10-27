@@ -15,6 +15,7 @@ exclusions = (
     r'\.c$',
     r'\.calltree$',
     r'\.h5$',
+    r'\.log$',
     r'\.mp4$',
     r'\.o$',
     r'\.png$',

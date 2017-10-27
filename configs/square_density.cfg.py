@@ -11,8 +11,6 @@ hacks = [
 ]
 
 
-print('config eval...')
-
 dt = t_max = 1
 
 
@@ -63,6 +61,3 @@ probe_numbers = [closest_electron(2, -i) for i in range(7)]
 
 def track_plasma_particles(plasma):
     return plasma[np.in1d(plasma['N'], probe_numbers)]
-
-
-print('config eval.')

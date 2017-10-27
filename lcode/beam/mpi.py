@@ -14,6 +14,8 @@
 # along with LCODE.  If not, see <http://www.gnu.org/licenses/>.
 
 
+import logging
+
 from mpi4py import MPI
 
 import hacks
@@ -69,12 +71,14 @@ class BeamMPISink:  # pylint: disable=too-few-public-methods
 class MPIPowers:
     @hacks.before('simulation_time_step')
     def init(self, simulation_time_step, config, t_i=0):
+        logger = logging.getLogger(__name__)
         self.rank = MPI.COMM_WORLD.Get_rank()
         self.size = MPI.COMM_WORLD.Get_size()
         last_round_working_odd = config.time_steps % self.size
         if t_i % self.size != self.rank:
             if t_i == config.time_steps - 1 and last_round_working_odd:
                 if self.rank >= last_round_working_odd:
+                    logger.debug('MPI Barrier (idle %d)', self.rank)
                     MPI.COMM_WORLD.Barrier()  # wait for last round
             return hacks.FakeResult('Not my time step!')
 
@@ -91,9 +95,10 @@ class MPIPowers:
     # TODO: here or where?
     @hacks.after('simulation_time_step')
     def barrier_each_t(self, retval, *a, **kwa):
+        logger = logging.getLogger(__name__)
         MPI.COMM_WORLD.Barrier()
         if self.rank == self.size - 1:
-            print('#' * 80)
+            logger.debug('MPI Barrier (working %d)', self.rank)
 
     @hacks.into('each_xi')
     def barrier_each_xi(self, simulation_time_step, *a, xi=None, **kwa):

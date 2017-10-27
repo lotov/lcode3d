@@ -13,6 +13,9 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with LCODE.  If not, see <http://www.gnu.org/licenses/>.
 
+
+import logging
+
 import matplotlib.pyplot as plt  # noqa: E402
 
 import hacks  # noqa: E402
@@ -22,7 +25,8 @@ class LiveDiagnostics:  # pylint: disable=too-many-instance-attributes
     # WARNING: SLOW!
     @hacks.before('simulation_time_step')
     def before(self, func, config, *a, **kwa):
-        print('Live diagnostics backend:', plt.get_backend())
+        logger = logging.getLogger(__name__)
+        logger.debug('Live diagnostics backend: %s', plt.get_backend())
         assert config.diagnostics
         self.quitting = False
         self.config = config

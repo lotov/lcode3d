@@ -88,8 +88,4 @@ def test_reduction_Neuman_red():
 
     P_correct -= np.average(P_correct)
 
-    print(P)
-    print(P_correct)
-
-    print(np.max(np.absolute(P_correct - P)))
     assert np.all(np.absolute(P_correct - P) < 1e-4)

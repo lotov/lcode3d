@@ -49,3 +49,8 @@ def test_time_dependence():
     with hacks.use(lcode.configuration.TimeDependence):
         for t_i in range(2, 4):
             fake_simulation_time_step(CONFIG_TIME_DEPENDENCE, t_i)
+
+
+def test_templating():
+    c = lcode.configuration.get('variable = ${t_i} * 4', t_i=2)
+    assert c.variable == 8

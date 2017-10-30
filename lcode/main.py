@@ -38,11 +38,11 @@ def main():
 
 
 def run(config=None, configure_logging=False):
-    config = configuration.get(config)
-    with hacks.use(*config.hacks):
+    config_pre = configuration.get(config)
+    with hacks.use(*config_pre.hacks):
         if configure_logging:
             _configure_logging()
-        for t_i in range(config.time_steps):
+        for t_i in range(config_pre.time_steps):
             simulation_time_step(config, t_i)
 
 
@@ -57,7 +57,7 @@ def _configure_logging():
 # pylint: disable=too-many-statements
 @hacks.friendly
 def simulation_time_step(config=None, t_i=0):
-    config = configuration.get(config)
+    config = configuration.get(config, t_i=t_i)
     logger = logging.getLogger(__name__)
     t = config.time_start + config.time_step_size * t_i
 

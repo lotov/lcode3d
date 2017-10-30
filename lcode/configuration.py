@@ -18,13 +18,16 @@ import imp
 import importlib
 import inspect
 
+import mako.template
+import mako.lookup
+
 import hacks
 
 
 USE_LCODE_DEFAULT = object()  # sentinel
 
 
-def get(something=None, default=USE_LCODE_DEFAULT):
+def get(something=None, default=USE_LCODE_DEFAULT, t_i=0):
     if something is None:
         if default == USE_LCODE_DEFAULT:
             default = load_default_lcode_config()
@@ -34,9 +37,9 @@ def get(something=None, default=USE_LCODE_DEFAULT):
             default = load_default_lcode_config()
         if '\n' in something or '=' in something or something == '':
             # Probably configuration data, execute it
-            return from_string(something, default=default)
+            return from_string(something, default=default, t_i=t_i)
         # Probably a configuration file path, read and execute it
-        return from_filename(something, default=default)
+        return from_filename(something, default=default, t_i=t_i)
     if isinstance(something, dict):
         if default == USE_LCODE_DEFAULT:
             default = load_default_lcode_config()
@@ -46,17 +49,22 @@ def get(something=None, default=USE_LCODE_DEFAULT):
     return something  # Maybe it's already good enough, let's try
 
 
-def from_filename(filename, default=None):
+def from_filename(filename, default=None, t_i=0):
     with open(filename) as config_file:
         contents = config_file.read()
-    return from_string(contents, filename=filename, default=default)
+    return from_string(contents, filename=filename, default=default, t_i=t_i)
 
 
-def from_string(config_string, filename='<string>', default=None):
+def from_string(config_string, filename='<string>', default=None, t_i=0):
+    lookup = mako.lookup.TemplateLookup(directories=['.'])
+    template = mako.template.Template(config_string, lookup=lookup)
+    config_string = template.render(t_i=t_i)
+
     code = compile(config_string, filename, 'exec')
     config = imp.new_module('config')
     # config.__dict__.update(default)  # That would allow using defvals
     exec(code, config.__dict__)
+
     # Let's inject default values after the config execution
     if default:
         for k in default.__dict__:

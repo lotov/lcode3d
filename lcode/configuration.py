@@ -88,8 +88,6 @@ def load_default_lcode_config():
     except IOError:
         # Unfortunately, default_config.__file__ can be undefined
         # and unreacheable. Let's try to use importlib.reload() in this case:
-        print('WARNING: Reloading default config instead of reexecuting it!')
-        print('Please report this behaviour to LCODE developers.')
         importlib.reload(default_config)
         return default_config
 

@@ -52,5 +52,7 @@ def test_time_dependence():
 
 
 def test_templating():
-    c = lcode.configuration.get('variable = ${t_i} * 4', t_i=2)
+    c = lcode.configuration.get('variable = ${t_i * 4}', t_i=2)
     assert c.variable == 8
+    assert c.__source__ == 'variable = ${t_i * 4}'
+    assert c.__source_templated__ == 'variable = 8'

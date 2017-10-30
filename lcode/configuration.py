@@ -58,12 +58,15 @@ def from_filename(filename, default=None, t_i=0):
 def from_string(config_string, filename='<string>', default=None, t_i=0):
     lookup = mako.lookup.TemplateLookup(directories=['.'])
     template = mako.template.Template(config_string, lookup=lookup)
-    config_string = template.render(t_i=t_i)
+    config_string_templated = template.render(t_i=t_i)
 
-    code = compile(config_string, filename, 'exec')
+    code = compile(config_string_templated, filename, 'exec')
     config = imp.new_module('config')
     # config.__dict__.update(default)  # That would allow using defvals
     exec(code, config.__dict__)
+
+    config.__source__ = config_string
+    config.__source_templated__ = config_string_templated
 
     # Let's inject default values after the config execution
     if default:

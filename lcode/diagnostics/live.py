@@ -20,11 +20,14 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 import hacks  # noqa: E402
 
+import lcode.configuration
+
 
 class LiveDiagnostics:  # pylint: disable=too-many-instance-attributes
     # WARNING: SLOW!
     @hacks.before('simulation_time_step')
     def before(self, func, config, *a, **kwa):
+        config = lcode.configuration.get(config, t_i=t_i)
         logger = logging.getLogger(__name__)
         logger.debug('Live diagnostics backend: %s', plt.get_backend())
         assert config.diagnostics

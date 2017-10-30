@@ -19,10 +19,13 @@ import scipy.signal
 
 import hacks
 
+import lcode.configuration
+
 
 class PrintEzMax:
     @hacks.before('simulation_time_step')
     def before(self, simulation_time_step, config=None, t_i=0):
+        config = lcode.configuration.get(config, t_i=0)
         self.Ez_00 = np.zeros(config.xi_steps)
         self.Ez_max = np.zeros(config.xi_steps)
         self.badness = np.zeros(config.xi_steps)

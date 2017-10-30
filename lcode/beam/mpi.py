@@ -20,6 +20,8 @@ from mpi4py import MPI
 
 import hacks
 
+import lcode.configuration
+
 
 class BeamMPISource:  # pylint: disable=too-few-public-methods
     def __init__(self):
@@ -71,6 +73,7 @@ class BeamMPISink:  # pylint: disable=too-few-public-methods
 class MPIPowers:
     @hacks.before('simulation_time_step')
     def init(self, simulation_time_step, config, t_i=0):
+        config = lcode.configuration.get(config, t_i=t_i)
         logger = logging.getLogger(__name__)
         self.rank = MPI.COMM_WORLD.Get_rank()
         self.size = MPI.COMM_WORLD.Get_size()

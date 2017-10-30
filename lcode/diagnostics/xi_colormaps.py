@@ -20,12 +20,14 @@ import numpy as np
 
 import hacks
 
+import lcode.configuration
 import lcode.util
 
 
 class XiColormaps:
     @hacks.before('simulation_time_step')
     def before(self, simulation_time_step, config=None, t_i=0):
+        config = lcode.configuration.get(config, t_i=t_i)
         if 'xi_colormaps_x_cut_position' not in dir(config):
             config.xi_colormaps_x_cut_position = 0
 

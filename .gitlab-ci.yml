@@ -94,7 +94,7 @@ test-debian9:
   tags: [linux, docker-host]
   image: $CI_REGISTRY_IMAGE:debian9-test
   script: |
-    pip3 install -r requirements.txt cython mako nose pylint flake8
+    pip3 install -r requirements.txt cython nose pylint flake8
     python3 setup.py nosetests
     nosetests misc
 

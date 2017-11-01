@@ -20,6 +20,7 @@ import hacks
 import h5py
 import numpy as np
 
+import lcode.configuration
 import lcode.util
 
 
@@ -115,6 +116,7 @@ class DiagnosticsSliceAccessor:  # pylint: disable=too-few-public-methods
 class Diagnostics:
     @hacks.before('simulation_time_step')
     def before(self, func, config=None, t_i=0):
+        config = lcode.configuration.get(config, t_i=t_i)
         # TODO: flexibility
         # TODO: diagnostics_filename
         self.enabled = False

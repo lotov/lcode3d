@@ -13,6 +13,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with LCODE.  If not, see <http://www.gnu.org/licenses/>.
 
+import hacks
+
 import lcode.configuration
 
 
@@ -26,3 +28,31 @@ def test_from_string():
     c = lcode.configuration.get('a=4;b=a-1')
     assert c.a == 4
     assert c.b == 3
+
+
+CONFIG_TIME_DEPENDENCE = '''
+time_step_size = 3
+def variable_t_i(t_i):
+    return t_i * 4
+def variable_t(t):
+    return t**2
+'''
+
+
+def test_time_dependence():
+    @hacks.friendly('simulation_time_step')
+    def fake_simulation_time_step(config, t_i):
+        c = lcode.configuration.get(config, t_i)
+        assert c.variable_t_i == t_i * 4
+        assert c.variable_t == (t_i * 3)**2
+
+    with hacks.use(lcode.configuration.TimeDependence):
+        for t_i in range(2, 4):
+            fake_simulation_time_step(CONFIG_TIME_DEPENDENCE, t_i)
+
+
+def test_templating():
+    c = lcode.configuration.get('variable = ${t_i * 4}', t_i=2)
+    assert c.variable == 8
+    assert c.__source__ == 'variable = ${t_i * 4}'
+    assert c.__source_templated__ == 'variable = 8'

@@ -56,3 +56,27 @@ def test_templating():
     assert c.variable == 8
     assert c.__source__ == 'variable = ${t_i * 4}'
     assert c.__source_templated__ == 'variable = 8'
+
+
+CONFIG_COMBINED = '''
+time_step_size = 3
+def variable_t_i(t_i):
+    return t_i * 4
+def variable_t(t):
+    return t**2
+<% t = t_i * 3 %>
+combined = ${t}, ${t_i}
+'''
+
+
+def test_combined():
+    @hacks.friendly('simulation_time_step')
+    def fake_simulation_time_step(config, t_i):
+        c = lcode.configuration.get(config, t_i)
+        assert c.variable_t_i == t_i * 4
+        assert c.variable_t == (t_i * 3)**2
+        assert c.combined == (t_i * 3, t_i)
+
+    with hacks.use(lcode.configuration.TimeDependence):
+        for t_i in range(2, 4):
+            fake_simulation_time_step(CONFIG_COMBINED, t_i)

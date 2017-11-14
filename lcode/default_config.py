@@ -50,6 +50,7 @@ beam_mover_substepping_trigger = .2
 beam_mover_max_substepping = 1000
 base_plasma_density = 7e14
 plasma_solver_boundary_suppression = 1
+Ez = Ex = Ey = Bz = Bx = By = 0
 
 
 def virtualize(a):

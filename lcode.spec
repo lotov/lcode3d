@@ -19,6 +19,7 @@ imports = cython_extensions + pymodules + [
     'h5py.utils',
     'numpy',
     'scipy.ndimage',
+    'scipy._lib.messagestream',
 ]
 
 

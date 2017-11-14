@@ -77,6 +77,8 @@ def simulation_time_step(config=None, t_i=0):
     Phi_Ez = np.zeros_like(Ex)
     Ey, Ez = np.zeros_like(Ex), np.zeros_like(Ex)
     Bx, By, Bz = np.zeros_like(Ex), np.zeros_like(Ex), np.zeros_like(Ex)
+    Ez[...], Ex[...], Ey[...] = config.Ez, config.Ex, config.Ey
+    Bz[...], Bx[...], By[...] = config.Bz, config.Bx, config.By
 
     fell_from_prev_layer = np.zeros((0,), beam_particle.dtype)
 

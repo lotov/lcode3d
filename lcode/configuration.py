@@ -98,7 +98,7 @@ class TimeDependence:  # pylint: disable=too-few-public-methods
     def postprocess_config(simulation_time_step):
         def time_parametrized_simulation_time_step(config=None, t_i=0):
             '''Call simulation_time_step expanding functions of t and t_i.'''
-            config = get(config)
+            config = get(config, t_i=t_i)
             t = config.time_start + config.time_step_size * t_i
             # a really shallow copy of the config
             expanded_config = imp.new_module(config.__name__)

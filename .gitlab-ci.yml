@@ -11,7 +11,7 @@ build-image-manylinux1-package:
   tags: [linux, docker-host]
   image: docker
   script: |
-    docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY
+    docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
     docker build --pull -t $CI_REGISTRY_IMAGE:manylinux1-package misc/dockerfiles/manylinux1-package
     docker push $CI_REGISTRY_IMAGE:manylinux1-package
 

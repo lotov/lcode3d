@@ -71,7 +71,7 @@ class TransversePeek:
         im_Bz = ax_Bz.pcolormesh(l, l, Bz.T, vmin=-.05, vmax=.05, cmap=cm.bwr)
         fig.colorbar(im_Bz, ax=ax_Bz)
 
-        ax_ro.set_title('ro, E (orange), B (green), speed (black)')
+        ax_ro.set_title('ro, E (green), B (orange), speed (black)')
         im_ro = ax_ro.pcolormesh(l, l, roj['ro'].T,
                                  vmin=-.5, vmax=.5, cmap=cm.bwr)
         fig.colorbar(im_ro, ax=ax_ro)

@@ -64,6 +64,10 @@ def simulation_time_step(config=None, t_i=0):
     plasma = plasma_construction.construct(config.plasma,
                                            config.plasma_density_shape)
     plasma_cor = plasma.copy()
+    if config.plasma_solver == 'v2':
+        from .plasma import solver_v2 as plasma_solver
+    elif config.plasma_solver == 'v1':
+        from . import plasma_solver
     plasma_solver_config = plasma_solver.PlasmaSolverConfig(config)
 
     beam_ro = np.zeros((config.grid_steps, config.grid_steps))

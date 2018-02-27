@@ -2,6 +2,8 @@ from numpy import sqrt, exp, cos, pi
 import numpy as np
 
 import lcode.plasma.virtual.interleaved
+import lcode.plasma_construction
+import lcode.plasma_particle
 
 hacks = [
     'lcode.beam.ro_function:BeamRoFunction',
@@ -22,20 +24,29 @@ def beam(xi, x, y):
     return A * exp(-.5 * (r/S)**2) * (1 - cos(xi * COMPRESS * sqrt(pi / 2)))
 
 window_width = 12.85  # window size
-grid_steps = 2**6 + 1
+grid_steps = 2**8 + 1
 plasma_solver_corrector_passes = 2
 plasma_solver_corrector_transverse_passes = 1
 plasma_solver_particle_mover_corrector = 2
 #plasma_solver_fields_interpolation_order = -2
 #plasma_solver_boundary_suppression = 1
-xi_step_size = .05 * 4
+xi_step_size = .05
 xi_steps = int(300 // xi_step_size)
 #plasma_solver_reuse_EB = True
 plasma_solver_use_average_speed = True
 
-plasma, virtualize = lcode.plasma.virtual.interleaved.make(
-    window_width, grid_steps, coarseness=2, fineness=2
+grid_step = window_width / grid_steps
+#plasma, virtualize = lcode.plasma.virtual.interleaved.make(
+#    window_width - 6, grid_steps, coarseness=1, fineness=1
+#    window_width - 6 * grid_step, grid_steps - 6, coarseness=2, fineness=2
+#)
+plasma = lcode.plasma_construction.UniformPlasma(
+    window_width - 6 * grid_step, grid_steps - 6, substep=1
 )
+#plasma = lcode.plasma_particle.PlasmaParticleArray(plasma)
+#plasma_r = np.sqrt(plasma['x']**2 + plasma['y']**2)
+#plasma = plasma[plasma_r < window_width / 2 - 6 * grid_steps / 2]
+#plasma = plasma[plasma_r < 4]
 
 from lcode.diagnostics.main import EachXi, EachXi2D
 diagnostics_enabled = True

@@ -36,7 +36,9 @@ import scipy.ndimage
 
 from . import plasma_particle
 from . cimport plasma_particle
-from . import plasma_construction
+
+from .plasma.field_solver import ProgonkaTmp
+from .plasma.field_solver import Neuman_red, reduction_Dirichlet1, Posson_reduct_12
 
 # STYLE TODO: replace .5 * x with x / 2 etc.
 
@@ -687,17 +689,21 @@ cdef void move_particles(PlasmaSolverConfig config,
         if p.x > config.x_max:
             p.x = 2 * config.x_max - p.x
             p.v[1] = -p.v[1]
+            p.p[1] = -p.p[1]
         if p.x < -config.x_max:
             p.x = -2 * config.x_max - p.x
             p.v[1] = -p.v[1]
+            p.p[1] = -p.p[1]
 
         p.y += config.h3 * p.v[2] / (1 - p.v[0])
         if p.y > config.x_max:
             p.y = 2 * config.x_max - p.y
             p.v[2] = -p.v[2]
+            p.p[2] = -p.p[2]
         if p.y < -config.x_max:
             p.y = -2 * config.x_max - p.y
             p.v[2] = -p.v[2]
+            p.p[2] = -p.p[2]
 
         # assert -config.x_max < p.x < config.x_max
         # assert -config.x_max < p.y < config.x_max
@@ -739,569 +745,6 @@ cdef np.ndarray[double, ndim=2] pader_y(PlasmaSolverConfig config,
         d[i, -1] = 2 * (v_edges[3, 1, i] - v_edges[3, 0, i]) / config.h
 
     return d
-
-
-cdef class ProgonkaTmp:
-    # two very popular temporary arrays
-    cdef double[:] alf  # n_dim
-    cdef double[:] bet  # n_dim + 1
-    # temporary arrays for Posson_reduct_12 and reduction_Dirichlet1
-    cdef double[:] RedFi  # n_dim
-    cdef double[:] Svl  # n_dim
-    cdef double[:] PrF  # n_dim
-    cdef double[:] PrV  # n_dim
-    cdef double[:] Psi  # n_dim
-
-    def __init__(self, config):
-        self.alf = np.zeros(config.n_dim)
-        self.bet = np.zeros(config.n_dim + 1)
-        self.RedFi = np.zeros(config.n_dim)
-        self.Svl = np.zeros(config.n_dim)
-        self.PrF = np.zeros(config.n_dim)
-        self.PrV = np.zeros(config.n_dim)
-        self.Psi = np.zeros(config.n_dim)
-
-
-cdef void Progonka(double aa,
-                   double[:] ff,  # n_dim
-                   double[:] vv,  # n_dim
-                   ProgonkaTmp tmp):
-    cdef double qkapa, qmu1, qmu2
-    cdef unsigned int i
-    tmp.alf[0] = tmp.bet[0] = 0
-
-    qkapa = 2 / aa
-    qmu1 = ff[0] / aa
-    qmu2 = ff[-1] / aa
-    tmp.alf[1] = qkapa
-    tmp.bet[1] = qmu1
-    for i in range(1, ff.shape[0] - 2 + 1):
-        tmp.alf[i + 1] = 1 / (aa - tmp.alf[i])
-        tmp.bet[i + 1] = (ff[i] + tmp.bet[i]) * tmp.alf[i + 1]
-
-    tmp.bet[-1] = (qmu2 + qkapa * tmp.bet[-2]) / (1 - qkapa * tmp.alf[-2])
-    vv[-1] = tmp.bet[-1]
-    for i in range(vv.shape[0] - 2, 0 - 1, -1):
-        vv[i] = tmp.alf[i + 1] * vv[i + 1] + tmp.bet[i + 1]
-
-
-cpdef void Progonka_Dirichlet(double aa,
-                              double[:] ff,  # n_dim
-                              double[:] vv,  # n_dim
-                              ProgonkaTmp tmp):
-    cdef unsigned int i
-    tmp.alf[0] = tmp.alf[1] = tmp.bet[0] = tmp.bet[1] = 0
-
-    assert(ff.shape[0] == tmp.alf.shape[0])
-    assert(vv.shape[0] == tmp.alf.shape[0])
-
-    for i in range(1, ff.shape[0] - 2 + 1):
-        tmp.alf[i + 1] = 1 / (aa - tmp.alf[i])
-        tmp.bet[i + 1] = (ff[i] + tmp.bet[i]) * tmp.alf[i + 1]
-    vv[-1] = 0
-    for i in range(vv.shape[0] - 2, 0 - 1, -1):
-        vv[i] = tmp.alf[i + 1] * vv[i + 1] + tmp.bet[i + 1]
-
-
-cpdef void Posson_reduct_12(PlasmaSolverConfig config,
-                            double[:] r0,  # n_dim
-                            double[:] r1,  # n_dim
-                            double[:, :] Fi,  # n_dim, n_dim
-                            double[:, :] P,  # n_dim, n_dim
-                            ProgonkaTmp tmp):
-    cdef double a, a_, alfa
-    cdef unsigned int i, j, k
-    cdef unsigned long nj1, ii, jk, l, nk
-    cdef int m1p
-
-    # Filling P
-    for i in range(config.n_dim):
-        P[0, i] = config.h**2 * (Fi[0, i] + 2 / config.h * r0[i])
-        P[-1, i] = config.h**2 * (Fi[-1, i] + 2 / config.h * r1[i])
-
-    for j in range(config.n_dim):
-        P[j, 0] = 0
-        P[j, -1] = 0
-
-    for j in range(1, config.n_dim - 2 + 1):
-        for i in range(1, config.n_dim - 1):
-            P[i, j] = config.h**2 * Fi[i, j]
-
-    # Direct way
-    for k in range(1, config.npq - 1 + 1):  # NOTE: 1
-        jk = <unsigned long> (2 ** (k - 1))
-        nj1 = <unsigned long> (2 ** (config.npq - k) - 1)
-        for ii in range(1, nj1 + 1):  # NOTE: 1
-            j = <unsigned long> (ii * 2 * jk)
-            for i in range(config.n_dim):
-                tmp.RedFi[i] = P[i, j - jk] + P[i, j + jk]
-                tmp.Svl[i] = 0
-
-            for l in range(1, jk + 1):  # NOTE: 1
-                a_ = 1 + (1 - cos((2 * l - 1) * pi / (2 * jk)))
-                a = (2 * a_ + config.h**2)
-                m1p = (-1) ** (l + 1)  # I hate that -1**2 == -1...
-                alfa = sin((2 * l - 1) * pi / (2 * jk)) * m1p / jk
-                for i in range(config.n_dim):
-                    tmp.PrF[i] = alfa * tmp.RedFi[i]
-
-                Progonka(a, tmp.PrF, tmp.PrV, tmp)
-                for i in range(config.n_dim):
-                    tmp.Svl[i] += tmp.PrV[i]
-
-            for i in range(config.n_dim):
-                P[i, j] = .5 * (P[i, j] + tmp.Svl[i])
-
-    # Back way
-    for k in range(config.npq, 0, -1):
-        jk = <unsigned long> (2 ** (k - 1))
-        nk = <unsigned long> (2 ** (config.npq - k))
-        for ii in range(1, nk + 1):  # NOTE: 1
-            j = (2 * ii - 1) * jk
-            for i in range(config.n_dim):
-                tmp.RedFi[i] = P[i, j - jk] + P[i, j + jk]
-                tmp.Psi[i] = P[i, j]
-                tmp.Svl[i] = 0
-
-            for l in range(1, jk + 1):  # NOTE: 1
-                a_ = 1 + (1 - cos((2 * l - 1) * pi / (2 * jk)))
-                a = (2 * a_ + config.h**2)
-                m1p = (-1) ** (l + 1)
-                alfa = sin((2 * l - 1) * pi / (2 * jk)) * m1p / jk
-                for i in range(config.n_dim):
-                    tmp.PrF[i] = tmp.Psi[i] + alfa * tmp.RedFi[i]
-
-                Progonka(a, tmp.PrF, tmp.PrV, tmp)
-                for i in range(config.n_dim):
-                    tmp.Svl[i] += tmp.PrV[i]
-
-            for i in range(config.n_dim):
-                P[i, j] = tmp.Svl[i]
-
-
-cpdef void reduction_Dirichlet1(PlasmaSolverConfig config,
-                                double[:, :] Fi,  # n_dim, n_dim
-                                double[:, :] P,  # n_dim, n_dim
-                                ProgonkaTmp tmp):
-    cdef double a, alfa
-    cdef unsigned int i, j, k
-    cdef unsigned long nj1, ii, jk, nk, l
-    cdef int m1p
-
-    # Filling P
-    for i in range(config.n_dim):
-        P[0, i] = 0
-        P[-1, i] = 0
-        P[i, 0] = 0
-        P[i, -1] = 0
-
-    for j in range(1, config.n_dim - 1):
-        for i in range(1, config.n_dim - 1):
-            P[i, j] = config.h**2 * Fi[i, j]
-
-    for k in range(1, config.npq):  # NOTE: 1
-        jk = 2 ** (k - 1)
-        nj1 = 2 ** (config.npq - k) - 1
-        for ii in range(1, nj1 + 1):  # NOTE: 1
-            j = ii * 2 * jk
-            for i in range(1, tmp.RedFi.shape[0] - 1):  # NOTE: 1
-                tmp.RedFi[i] = P[i, j - jk] + P[i, j + jk]
-                tmp.Svl[i] = 0
-
-            for l in range(1, jk + 1):  # NOTE: 1
-                m1p = (-1) ** (l + 1)
-                a = 2 * (1 + (1 - cos((2 * l - 1) * pi / (2 * jk))))
-                alfa = sin((2 * l - 1) * pi / (2 * jk)) * m1p / jk
-                for i in range(1, tmp.PrF.shape[0] - 1):  # NOTE: 1
-                    tmp.PrF[i] = alfa * tmp.RedFi[i]
-
-                Progonka_Dirichlet(a, tmp.PrF, tmp.PrV, tmp)
-                for i in range(1, tmp.Svl.shape[0] - 1):  # NOTE: 1
-                    tmp.Svl[i] += tmp.PrV[i]
-
-            for i in range(1, P.shape[0] - 1):  # NOTE: 1
-                P[i, j] = .5 * (P[i, j] + tmp.Svl[i])
-# c  back way********************************************************
-    for k in range(config.npq, 0, -1):
-        jk = 2 ** (k - 1)
-        nk = 2 ** (config.npq - k)
-        for ii in range(1, nk + 1):  # NOTE: 1
-            j = (2 * ii - 1) * jk
-            for i in range(1, config.n_dim - 1):  # NOTE: 1
-                tmp.RedFi[i] = P[i, j - jk] + P[i, j + jk]
-                tmp.Psi[i] = P[i, j]
-                tmp.Svl[i] = 0
-            for l in range(1, jk + 1):  # NOTE: 1
-                a = 2 * (1 + (1 - cos((2 * l - 1) * pi / (2 * jk))))
-                m1p = (-1) ** (l + 1)
-                alfa = sin((2 * l - 1) * pi / (2 * jk)) * m1p / jk
-                for i in range(1, config.n_dim - 1):  # NOTE: 1
-                    tmp.PrF[i] = tmp.Psi[i] + alfa * tmp.RedFi[i]
-                Progonka_Dirichlet(a, tmp.PrF, tmp.PrV, tmp)
-                for i in range(1, config.n_dim - 1):  # NOTE: 1
-                    tmp.Svl[i] += tmp.PrV[i]
-            for i in range(1, config.n_dim - 1):  # NOTE: 1
-                P[i, j] = tmp.Svl[i]
-
-
-cpdef Progonka_C(PlasmaSolverConfig config,
-                 double[:, :] ff,  # n_dim, n_dim
-                 double[:, :] vv,  # n_dim, n_dim
-                 ProgonkaTmp tmp):
-    cdef double aa, a_n_prka, b_0_prka
-    cdef unsigned int i, j, M
-    M = config.n_dim - 1
-    a_n_prka = 2
-    b_0_prka = 2
-    aa = 4
-
-    tmp.alf[1] = b_0_prka / aa
-    for j in range(0, M + 1, 2):
-        tmp.bet[1] = ff[0, j] / aa
-        for i in range(1, M - 1 + 1):
-            tmp.alf[i + 1] = 1 / (aa - tmp.alf[i])
-            tmp.bet[i + 1] = (ff[i, j] + tmp.bet[i]) * tmp.alf[i + 1]
-
-        tmp.bet[-1] = ((ff[M, j] + a_n_prka * tmp.bet[M]) /
-                       (aa - a_n_prka * tmp.alf[M]))
-        vv[M, j] = tmp.bet[-1]
-        for i in range(M - 1, 0 - 1, -1):
-            vv[i, j] = tmp.alf[i + 1] * vv[i + 1, j] + tmp.bet[i + 1]
-
-
-cpdef Progonka_C_l_km1(PlasmaSolverConfig config,
-                       double kk,
-                       double[:, :] ff,  # n_dim, n_dim
-                       double[:, :] vv,  # n_dim, n_dim
-                       ProgonkaTmp tmp):
-    # TODO: move this allocation to colder code
-    cdef np.ndarray[double, ndim=2] p = np.zeros((config.n_dim, config.n_dim))
-    cdef double aa, a_n_prka, b_0_prka
-    cdef unsigned int i, j, M, l, i1, ii, nj1s, jks
-    a_n_prka = 2
-    b_0_prka = 2
-    M = config.n_dim - 1
-    nj1s = <unsigned int> (2 ** (config.npq - kk))
-    jks = <unsigned int> (2 ** (kk - 1))
-
-    # Filling p
-    for i in range(p.shape[0]):
-        for j in range(p.shape[1]):
-            p[i, j] = 0
-
-    for l in range(1, jks + 1):  # NOTE: 1
-        aa = 2 * (1 + (1 - cos((2 * l - 1) * pi / (2 * jks))))
-        for i1 in range(1, M - 1 + 1):  # NOTE: 1
-            p[i1, i1] = aa
-            p[i1, i1 + 1] = -1
-            p[i1, i1 - 1] = -1
-
-        p[0, 0] = aa
-        p[0, 1] = -1
-        p[M, M - 1] = -1
-        p[M, M] = aa
-
-        tmp.alf[1] = b_0_prka / aa
-        for ii in range(nj1s + 1):
-            j = ii * 2 * jks
-            tmp.bet[1] = ff[0, j] / aa
-
-            for i in range(1, M - 1 + 1):  # NOTE: 1
-                tmp.alf[i + 1] = 1 / (aa - tmp.alf[i])
-                tmp.bet[i + 1] = (ff[i, j] + tmp.bet[i]) * tmp.alf[i + 1]
-
-            tmp.bet[-1] = ((ff[M, j] + a_n_prka * tmp.bet[M]) /
-                           (aa - a_n_prka * tmp.alf[M]))
-            vv[M, j] = tmp.bet[-1]
-            ff[M, j] = vv[M, j]
-            for i in range(M - 1, 0 - 1, -1):
-                vv[i, j] = tmp.alf[i + 1] * vv[i + 1, j] + tmp.bet[i + 1]
-                ff[i, j] = vv[i, j]
-
-
-cpdef Progonka_C_l_km1_0N(PlasmaSolverConfig config,
-                          double kk,
-                          double[:, :] ff,  # n_dim, n_dim
-                          double[:, :] vv,  # n_dim, n_dim
-                          ProgonkaTmp tmp):
-    cdef double aa, a_n_prka, b_0_prka
-    cdef unsigned int i, j, M, l, i1, ii, nj1s, jks
-
-    M = config.n_dim - 1
-    a_n_prka = 2
-    b_0_prka = 2
-    jks = <unsigned int> 2 ** (kk - 1)
-
-    for l in range(1, jks + 1):  # NOTE: 1
-        aa = 2 * (1 + (1 - cos((2 * l - 1) * pi / (2 * jks))))
-        tmp.alf[1] = b_0_prka / aa
-        for j in range(0, M + 1, M):  # TODO: make it Cython-optimizable
-            tmp.bet[1] = ff[0, j] / aa
-            for i in range(1, M - 1 + 1):  # NOTE: 1
-                tmp.alf[i + 1] = 1 / (aa - tmp.alf[i])
-                tmp.bet[i + 1] = (ff[i, j] + tmp.bet[i]) * tmp.alf[i + 1]
-
-            tmp.bet[-1] = ((ff[M, j] + a_n_prka * tmp.bet[M]) /
-                           (aa - a_n_prka * tmp.alf[M]))
-            vv[M, j] = tmp.bet[-1]
-            ff[M, j] = vv[M, j]
-            for i in range(M - 1, 0 - 1, -1):
-                vv[i, j] = tmp.alf[i + 1] * vv[i + 1, j] + tmp.bet[i + 1]
-                ff[i, j] = vv[i, j]
-
-
-cpdef Progonka_C_l_km1_0N_Y(PlasmaSolverConfig config,
-                            double kk,
-                            double p_0N,
-                            double[:, :] ff,  # n_dim, n_dim
-                            double[:, :] vv,  # n_dim, n_dim
-                            ProgonkaTmp tmp):
-    cdef double aa, a_n_prka, b_0_prka, nj1s
-    cdef unsigned int i, j, M, l, i1, ii, jks, jks2
-
-    a_n_prka = 2
-    b_0_prka = 2
-    M = config.n_dim - 1
-    jks = <unsigned int> (2 ** (kk - 1))
-    jks2 = 2 * jks
-    for l in range(1, jks2 - 1 + 1):  # NOTE: 1
-        aa = 2 * (1 + (1 - cos(pi * l / jks)))
-        tmp.alf[1] = b_0_prka / aa
-        j = 0
-        tmp.bet[1] = ff[0, j] / aa
-        for i in range(1, M - 1 + 1):  # NOTE: 1
-            tmp.alf[i + 1] = 1 / (aa - tmp.alf[i])
-            tmp.bet[i + 1] = (ff[i, j] + tmp.bet[i]) * tmp.alf[i + 1]
-
-        tmp.bet[-1] = ((ff[M, j] + a_n_prka * tmp.bet[M]) /
-                       (aa - a_n_prka * tmp.alf[M]))
-        vv[M, j] = tmp.bet[-1]
-        ff[M, j] = vv[M, j]
-        for i in range(M - 1, 0 - 1, -1):
-            vv[i, j] = tmp.alf[i + 1] * vv[i + 1, j] + tmp.bet[i + 1]
-            ff[i, j] = vv[i, j]
-
-    l = jks2
-    aa = 2 * (1 + (1 - cos(pi * l / jks)))
-    tmp.alf[1] = b_0_prka / aa
-    j = 0
-    tmp.bet[1] = ff[0, j] / aa
-    for i in range(1, M - 1 + 1):  # NOTE: 1
-        tmp.alf[i + 1] = 1 / (aa - tmp.alf[i])
-        tmp.bet[i + 1] = (ff[i, j] + tmp.bet[i]) * tmp.alf[i + 1]
-
-    tmp.bet[-1] = -p_0N
-    vv[M, j] = tmp.bet[-1]
-    ff[M, j] = vv[M, j]
-    for i in range(M - 1, 0 - 1, -1):
-        vv[i, j] = tmp.alf[i + 1] * vv[i + 1, j] + tmp.bet[i + 1]
-        ff[i, j] = vv[i, j]
-
-
-cpdef Progonka_C_Y(PlasmaSolverConfig config,
-                   double[:, :] ff,  # n_dim, n_dim
-                   double[:, :] vv,  # n_dim, n_dim
-                   ProgonkaTmp tmp):
-    cdef double aa, a_n_prka, b_0_prka
-    cdef unsigned int i, j, M
-    a_n_prka = 2
-    b_0_prka = 2
-    M = config.n_dim - 1
-    aa = 4
-
-    tmp.alf[1] = b_0_prka / aa
-    for j in range(1, M - 1 + 1, 2):
-        tmp.bet[1] = ff[0, j] / aa
-        for i in range(1, M - 1 + 1):  # NOTE: 1
-            tmp.alf[i + 1] = 1 / (aa - tmp.alf[i])
-            tmp.bet[i + 1] = (ff[i, j] + tmp.bet[i]) * tmp.alf[i + 1]
-
-        tmp.bet[-1] = ((ff[M, j] + a_n_prka * tmp.bet[M]) /
-                       (aa - a_n_prka * tmp.alf[M]))
-        vv[M, j] = tmp.bet[-1]
-        for i in range(M - 1, 0 - 1, -1):
-            vv[i, j] = tmp.alf[i + 1] * vv[i + 1, j] + tmp.bet[i + 1]
-
-
-cpdef Progonka_C_l_km1_Y(PlasmaSolverConfig config,
-                         unsigned int kk,
-                         double[:, :] ff,  # n_dim, n_dim
-                         double[:, :] vv,  # n_dim, n_dim
-                         ProgonkaTmp tmp):
-    cdef double aa, a_n_prka, b_0_prka
-    cdef unsigned int i, j, M, l, ii, nks, jks
-    a_n_prka = 2
-    b_0_prka = 2
-
-    M = config.n_dim - 1
-    nks = <unsigned int> 2 ** (config.npq - kk + 1)
-    jks = <unsigned int> 2 ** (kk - 1)
-
-    for l in range(1, jks + 1):  # NOTE: 1
-        aa = 2 * (1 + (1 - cos((2 * l - 1) * pi / (2 * jks))))
-        tmp.alf[1] = b_0_prka / aa
-        for ii in range(1, nks - 1 + 1, 2):
-            j = ii * jks
-            tmp.bet[1] = ff[0, j] / aa
-
-            for i in range(1, M - 1 + 1):  # NOTE: 1
-                tmp.alf[i + 1] = 1 / (aa - tmp.alf[i])
-                tmp.bet[i + 1] = (ff[i, j] + tmp.bet[i]) * tmp.alf[i + 1]
-
-            tmp.bet[-1] = ((ff[M, j] + a_n_prka * tmp.bet[M]) /
-                           (aa - a_n_prka * tmp.alf[M]))
-            vv[M, j] = tmp.bet[-1]
-            ff[M, j] = vv[M, j]
-            for i in range(M - 1, 0 - 1, -1):
-                vv[i, j] = tmp.alf[i + 1] * vv[i + 1, j] + tmp.bet[i + 1]
-                ff[i, j] = vv[i, j]
-
-
-cpdef Neuman_red(PlasmaSolverConfig config,
-                 double B_00,
-                 double[:] r0,  # n_dim
-                 double[:] r1,  # n_dim
-                 double[:] rb,  # n_dim
-                 double[:] ru,  # n_dim
-                 double[:, :] q,  # n_dim, n_dim
-                 double[:, :] YE,  # n_dim, n_dim
-                 ProgonkaTmp tmp):
-    # TODO: move this allocation to colder code
-    cdef np.ndarray[double, ndim=2] p = np.zeros((config.n_dim, config.n_dim))
-    cdef np.ndarray[double, ndim=2] v = np.zeros((config.n_dim, config.n_dim))
-    cdef np.ndarray[double, ndim=2] v1 = np.zeros((config.n_dim, config.n_dim))
-    cdef double p_M0, a, s_sol, x, y, s_numsol
-    cdef unsigned int i, j, k, nj1, ii, jk, nk, M, N1
-# c *************Direct way*************************************
-    M = config.n_dim - 1
-    for j in range(M + 1):
-        for i in range(M + 1):
-            YE[i, j] = 0
-            p[i, j] = 0
-            v[i, j] = 0
-            v1[i, j] = 0
-
-    for j in range(M + 1):
-        q[0, j] = config.h**2 * (q[0, j] + 2 / config.h * r0[j])
-        q[M, j] = config.h**2 * (q[M, j] + 2 / config.h * r1[j])
-
-    for i in range(1, M):  # NOTE: 1
-        q[i, 0] = config.h**2 * (q[i, 0] + 2 / config.h * rb[i])
-        q[i, M] = config.h**2 * (q[i, M] + 2 / config.h * ru[i])
-
-    q[0, 0] += config.h * 2 * rb[0]
-    q[0, M] += config.h * 2 * ru[0]
-    q[M, 0] += config.h * 2 * rb[M]
-    q[M, M] += config.h * 2 * ru[M]
-
-    for j in range(1, M):  # NOTE: 1
-        for i in range(1, M):  # NOTE: 1
-            q[i, j] = config.h**2 * q[i, j]
-
-    # ******************************************
-    k = 1
-    jk = 1
-    for j in range(0, M + 1, 2):
-        for i in range(M + 1):
-            v[i, j] = q[i, j]
-
-    Progonka_C(config, v, v1, tmp)
-    for j in range(2, M - 2 + 1, 2):
-        for i in range(M + 1):
-            p[i, j] = v1[i, j]
-            q[i, j] = q[i, j - 1] + q[i, j + 1] + 2 * p[i, j]
-
-    for i in range(M + 1):
-        p[i, 0] = v1[i, 0]
-        q[i, 0] = 2 * q[i, 1] + 2 * p[i, 0]
-        p[i, M] = v1[i, M]
-        q[i, M] = 2 * q[i, M - 1] + 2 * p[i, M]
-
-    # *******************************************
-    k = 2
-
-    for k in range(2, config.npq - 1 + 1):  # NOTE: 1
-        nj1 = <unsigned int> (2 ** (config.npq - k) - 1)
-        jk = <unsigned int> (2 ** (k - 1))
-        for ii in range(1, nj1 + 1):  # NOTE: 1
-            j = ii * 2 * jk
-            for i in range(M + 1):
-                v[i, j] = p[i, j - jk] + p[i, j + jk] + q[i, j]
-
-        for i in range(M + 1):
-            v[i, 0] = 2 * p[i, jk] + q[i, 0]
-            v[i, M] = 2 * p[i, M - jk] + q[i, M]
-
-        Progonka_C_l_km1(config, k, v, v1, tmp)
-        for i in range(M + 1):
-            for ii in range(1, nj1 + 1):  # NOTE: 1
-                j = ii * 2 * jk  # pow(2, k)
-                p[i, j] += v1[i, j]
-                q[i, j] = q[i, j - jk] + q[i, j + jk] + 2 * p[i, j]
-
-            p[i, 0] += v1[i, 0]
-            q[i, 0] = 2 * q[i, jk] + 2 * p[i, 0]
-            p[i, M] += v1[i, M]
-            q[i, M] = 2 * q[i, M - jk] + 2 * p[i, M]
-
-    # ************************************
-    k = config.npq
-
-    jk = <unsigned int> (2 ** (config.npq - 1))
-    for i in range(M + 1):
-        v[i, 0] = 2 * p[i, jk] + q[i, 0]
-        v[i, M] = 2 * p[i, M - jk] + q[i, M]
-
-    Progonka_C_l_km1_0N(config, k, v, v1, tmp)
-    for i in range(M + 1):
-        p[i, 0] += v1[i, 0]
-        q[i, 0] = 2 * q[i, jk] + 2 * p[i, 0]
-        p[i, M] += v1[i, M]
-        q[i, M] = 2 * q[i, M - jk] + 2 * p[i, M]
-
-    # c  back way********* YN  Y0 ***************************
-    p_M0 = p[M, 0]
-
-    for i in range(M + 1):
-        v[i, 0] = 2 * p[i, 0] + q[i, M]
-
-    Progonka_C_l_km1_0N_Y(config, config.npq, p_M0, v, v1, tmp)
-    for i in range(M + 1):
-        YE[i, 0] = p[i, 0] + v1[i, 0]
-        YE[i, M] = p[i, M] + v1[i, 0]
-
-    for k in range(config.npq, 2 - 1, -1):
-        jk = <unsigned int> (2 ** (k - 1))
-        nk = <unsigned int> (2 ** (config.npq - k + 1))
-        for ii in range(1, nk - 1 + 1, 2):  # NOTE: 1
-            j = ii * jk
-            for i in range(M + 1):
-                v[i, j] = YE[i, j - jk] + YE[i, j + jk] + q[i, j]
-        Progonka_C_l_km1_Y(config, k, v, v1, tmp)
-        for ii in range(1, nk - 1 + 1, 2):  # NOTE: 1
-            j = ii * jk
-            for i in range(M + 1):
-                YE[i, j] = p[i, j] + v1[i, j]
-    k = 1
-    for j in range(1, M - 1 + 1, 2):
-        for i in range(M + 1):
-            v[i, j] = YE[i, j - 1] + YE[i, j + 1] + q[i, j]
-    Progonka_C_Y(config, v, v1, tmp)
-    for j in range(1, M - 1 + 1, 2):
-        for i in range(M + 1):
-            YE[i, j] = v1[i, j]
-
-    # Proverka*******************************************
-    s_numsol = 0
-    for i in range(M + 1):
-        for j in range(M + 1):
-            s_numsol += YE[i, j]
-
-    s_numsol /= (M + 1) * (M + 1)
-    # print("@@@@@@@@ s_numsol  %e" % s_numsol)
-    for i in range(M + 1):
-        for j in range(M + 1):
-            YE[i, j] -= s_numsol + config.B_0 / (config.x_max * 2)**2
 
 
 # Not returning void allows exception proparation
@@ -1388,7 +831,7 @@ cpdef response(PlasmaSolverConfig config,
     #     if config.limit_threads:
     #         print('Manually limited to', config.limit_threads, 'threads')
 
-    cdef ProgonkaTmp tmp = ProgonkaTmp(config)
+    tmp = ProgonkaTmp(config.n_dim)
 
     # Allocate memory if not using preallocated output arrays
     roj = out_roj if out_roj is not None else (
@@ -1463,44 +906,42 @@ cpdef response(PlasmaSolverConfig config,
                    -1 * roj_pprv['jy']) / (config.h3 * 2)
 
     # Field Ez, predict
-    reduction_Dirichlet1(config, -(djx_dx + djy_dy), Ez, tmp)
+    reduction_Dirichlet1(-(djx_dx + djy_dy), Ez,
+                         tmp, config.n_dim, config.h, config.npq)
 
     # Field Bz, predict
-    Neuman_red(config, config.B_0,
+    Neuman_red(config.B_0,
                -roj[0, :]['jy'], roj[-1, :]['jy'],
                roj[:, 0]['jx'], -roj[:, -1]['jx'],
                -(djx_dy - djy_dx), Bz,
-               tmp)
+               tmp, config.n_dim, config.h, config.npq, config.x_max)
 
     # Field Ex, predict
-    Posson_reduct_12(config,
-                     -(beam_ro[0] +
+    Posson_reduct_12(-(beam_ro[0] +
                          roj['ro'][0] * config.boundary_suppression),
                      +(beam_ro[-1] +
                          roj['ro'][-1] * config.boundary_suppression),
                      -(beam_ro_dx + dro_dx - djx_dxi) + Ex, Ex_approx,
-                     tmp)
+                     tmp, config.n_dim, config.h, config.npq)
 
     # Field Ey, predict
     # TODO: sign!
-    Posson_reduct_12(config,
-                     -(beam_ro[:, 0] +
+    Posson_reduct_12(-(beam_ro[:, 0] +
                          roj['ro'][:, 0] * config.boundary_suppression),
                      +(beam_ro[:, -1] +
                          roj['ro'][:, -1] * config.boundary_suppression),
                      (-(beam_ro_dy + dro_dy - djy_dxi) + Ey).T, Ey_approx.T,
-                     tmp)
+                     tmp, config.n_dim, config.h, config.npq)
 
     # Field By, predict
     # пр часть обчно, гр - наоборот  # TODO: translate
     # TODO: translate
     # c если поменять знак граничных условий (будет стандартно),
     # то By совпадет с Ex
-    Posson_reduct_12(config,
-                     beam_ro[0] + roj['jz'][0],
+    Posson_reduct_12(beam_ro[0] + roj['jz'][0],
                      -(beam_ro[-1] + roj['jz'][-1]),
                      -(beam_ro_dx + djz_dx - djx_dxi) + By, By_approx,
-                     tmp)
+                     tmp, config.n_dim, config.h, config.npq)
 
     # Field Bx, predict
     # TODO: signs!
@@ -1510,11 +951,10 @@ cpdef response(PlasmaSolverConfig config,
     # а в Posson_reduct_12, правая часть идет с +; граница -обычно
     # c если поменять знак правой части (минус перед скобкой),
     # то Bx совпадет с Ey
-    Posson_reduct_12(config,
-                     -(beam_ro[:, 0] + roj['jz'][:, 0]),
+    Posson_reduct_12(-(beam_ro[:, 0] + roj['jz'][:, 0]),
                      beam_ro[:, -1] + roj['jz'][:, -1],
                      (+(beam_ro_dy + djz_dy - djy_dxi) + Bx).T, Bx_approx.T,
-                     tmp)
+                     tmp, config.n_dim, config.h, config.npq)
 
     # Correct phase
 

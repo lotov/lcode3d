@@ -52,9 +52,13 @@ base_plasma_density = 7e14
 plasma_solver_boundary_suppression = 1
 Ez = Ex = Ey = Bz = Bx = By = 0
 
+plasma_solver = 'v2'
+plasma_padding = 3
+variant_A_predictor = variant_A_corrector = False
+
 
 def virtualize(a):
-    return a.copy()
+    return a
 
 
 plasma_density_shape = 1

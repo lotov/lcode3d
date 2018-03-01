@@ -24,7 +24,7 @@ Secondary authors: A. P. Sosedkin <A.P.Sosedkin@inp.nsk.su>,
 '''
 
 
-from libc.math cimport sqrt, log2
+from libc.math cimport sqrt, log2, sin, pi
 
 import numpy as np
 cimport numpy as np
@@ -48,6 +48,11 @@ cdef class PlasmaSolverConfig:
     cdef public double x_max, h, h3, B_0, particle_boundary#, eps,
     cdef public object virtualize
     cdef public bint variant_A_predictor, variant_A_corrector
+    cdef public bint noise_reductor_enable
+    cdef public double noise_reductor_equalization
+    cdef public double noise_reductor_friction
+    cdef public double noise_reductor_reach
+    cdef public double noise_reductor_final_only
 
     def __init__(self, global_config):
         self.npq, unwanted = divmod(log2(global_config.grid_steps - 1), 1)
@@ -67,6 +72,11 @@ cdef class PlasmaSolverConfig:
         self.variant_A_predictor = global_config.variant_A_predictor
         self.variant_A_corrector = global_config.variant_A_corrector
 
+        self.noise_reductor_enable = global_config.noise_reductor_enable
+        self.noise_reductor_equalization = global_config.noise_reductor_equalization
+        self.noise_reductor_friction = global_config.noise_reductor_friction
+        self.noise_reductor_reach = global_config.noise_reductor_reach
+        self.noise_reductor_final_only = global_config.noise_reductor_final_only
 
 # RoJ for both scalar charge density ro and vector current j, TODO: get rid of
 cdef packed struct RoJ_t:
@@ -522,10 +532,66 @@ cpdef void move_smart_fast_(PlasmaSolverConfig config,
         out_plasma[k] = p
 
 
-def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs):
+def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, noise_reductor_enable=False):
     out_plasma = np.empty_like(plasma)
     move_smart_fast_(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, out_plasma)
+    # TODO: call noisereductor only on final movement or on all movements?
+    if noise_reductor_enable:
+        out_plasma = noise_reductor(config, out_plasma)
     return out_plasma
+
+
+### Noise reductor draft
+
+def noise_reductor(config, plasma):  #, ro
+    plasma = plasma.copy()
+    plasma[::2] = noise_reductor_(config, plasma[::2])    # ions
+    plasma[1::2] = noise_reductor_(config, plasma[1::2])  # electrons
+    return plasma
+
+
+cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
+                                                   np.ndarray[plasma_particle.t] in_plasma,
+                                                   # np.ndarray[double, ndim=2] ro
+                                                   ):
+    cdef long T = in_plasma.shape[0]
+    cdef int N = <int> sqrt(T)
+    cdef np.ndarray[plasma_particle.t, ndim=2] plasma = in_plasma.copy().reshape(N, N)
+    cdef plasma_particle.t neighbor1, neighbor2
+    cdef double coord_deviation, p_m_deviation
+    cdef double dp_friction, dp_equalization
+    # TODO: allow noise reductor parameters to be specified as 2d arrays!
+    cdef double friction_c = config.noise_reductor_friction * config.h  # empiric for now
+    cdef double equalization_c = config.noise_reductor_equalization / config.h  # empiric for now
+    cdef double reach = config.noise_reductor_reach * config.h  # empiric for now
+    cdef int i, j
+
+    # pass in x direction
+    for i in range(1, N - 1):
+        for j in range(N):
+            coord_deviation = plasma[i, j].x - (plasma[i - 1, j].x + plasma[i + 1, j].x) / 2
+            if coord_deviation < config.noise_reductor_reach:
+                p_m_deviation = (plasma[i, j].p[1] / plasma[i, j].m -
+                                 (plasma[i - 1, j].p[1] / plasma[i - 1, j].m +
+                                  plasma[i + 1, j].p[1] / plasma[i + 1, j].m) / 2)
+                dp_equalization = equalization_c * sin(pi * reach * coord_deviation)
+                dp_friction = friction_c * plasma[i, j].m * p_m_deviation
+                plasma[i, j].p[1] -= config.h3 * (dp_friction + dp_equalization)
+
+    # pass in y direction
+    for i in range(N):
+        for j in range(1, N - 1):
+            coord_deviation = plasma[i, j].y - (plasma[i, j - 1].y + plasma[i, j + 1].y) / 2
+            if coord_deviation < config.noise_reductor_reach:
+                p_m_deviation = (plasma[i, j].p[2] / plasma[i, j].m -
+                                 (plasma[i, j - 1].p[2] / plasma[i, j - 1].m +
+                                  plasma[i, j + 1].p[2] / plasma[i, j + 1].m) / 2)
+                dp_equalization = equalization_c * sin(pi * reach * coord_deviation)
+                dp_friction = friction_c * plasma[i, j].m * p_m_deviation
+                plasma[i, j].p[2] -= config.h3 * (dp_friction + dp_equalization)
+
+
+    return plasma.reshape(T)
 
 
 ### The main plot, written by K. V. Lotov
@@ -537,6 +603,7 @@ cpdef response(config, xi_i, in_plasma, in_plasma_cor,
                out_plasma, out_plasma_cor, out_roj
                ):
     plasma = in_plasma.copy()
+    noise_reductor_predictions = config.noise_reductor_enable and not config.noise_reductor_final_only
 
     Fl = mut_Ex.copy(), mut_Ey.copy(), mut_Ez.copy(), mut_Bx.copy(), mut_By.copy(), mut_Bz.copy()
 
@@ -546,7 +613,8 @@ cpdef response(config, xi_i, in_plasma, in_plasma_cor,
     #Exs, Eys, Ezs, Bxs, Bys, Bzs = interpolate_fields(config, hs_xs, hs_ys, *Fl)
     #plasma_1 = move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs)
     Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl)
-    plasma_1 = move_smart_fast(config, plasma, *Fls)
+    plasma_1 = move_smart_fast(config, plasma, *Fls,
+                               noise_reductor_enable=noise_reductor_predictions)
     roj_1 = deposit(config, plasma_1)
 
     # ===  2  ===  + hs_xs, hs_ys, roj_1
@@ -555,7 +623,8 @@ cpdef response(config, xi_i, in_plasma, in_plasma_cor,
     # ===  3  ===  + hs_xs, hs_ys, Fl_pred
     Fl_avg_1 = average_fields(Fl, Fl_pred)
     Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
-    plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1)
+    plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1,
+                               noise_reductor_enable=noise_reductor_predictions)
     roj_2 = deposit(config, plasma_2)
 
     # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
@@ -564,7 +633,8 @@ cpdef response(config, xi_i, in_plasma, in_plasma_cor,
     # ===  5  ===  + hs_xs, hs_ys, Fl_new
     Fl_avg_2 = average_fields(Fl, Fl_new)
     Fls_avg_2 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_2)
-    plasma_new = move_smart_fast(config, plasma, *Fls_avg_2)
+    plasma_new = move_smart_fast(config, plasma, *Fls_avg_2,
+                                 noise_reductor_enable=config.noise_reductor_enable)
     roj_new = deposit(config, plasma_new)
 
     #test_particle = plasma[plasma['q'] < 0]
@@ -584,5 +654,5 @@ cpdef response(config, xi_i, in_plasma, in_plasma_cor,
     mut_Ex[...], mut_Ey[...], mut_Ez[...], mut_Bx[...], mut_By[...], mut_Bz[...] = Fl_new
 
 
-# TODO: merge interpolate-move-deposit into a single routine
+# TODO: merge interpolate-move-deposit into a single routine?
 # TODO: -||-, rewrite it in Cython and tune it up

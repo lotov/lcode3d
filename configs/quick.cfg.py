@@ -35,13 +35,17 @@ xi_steps = int(300 // xi_step_size)
 #plasma_solver_reuse_EB = True
 plasma_solver_use_average_speed = True
 
+noise_reductor_enable = True
+
 grid_step = window_width / grid_steps
 #plasma, virtualize = lcode.plasma.virtual.interleaved.make(
-#    window_width - 6, grid_steps, coarseness=1, fineness=1
 #    window_width - 6 * grid_step, grid_steps - 6, coarseness=2, fineness=2
 #)
-plasma = lcode.plasma_construction.UniformPlasma(
-    window_width - 6 * grid_step, grid_steps - 6, substep=1
+#plasma = lcode.plasma_construction.UniformPlasma(
+#    window_width - 6 * grid_step, grid_steps - 6, substep=1
+#)
+plasma, _ = lcode.plasma.virtual.interleaved.make(
+    window_width - 6 * grid_step, grid_steps - 6, coarseness=1, fineness=1
 )
 #plasma = lcode.plasma_particle.PlasmaParticleArray(plasma)
 #plasma_r = np.sqrt(plasma['x']**2 + plasma['y']**2)

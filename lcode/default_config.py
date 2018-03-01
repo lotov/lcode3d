@@ -56,6 +56,11 @@ plasma_solver = 'v2'
 plasma_padding = 3
 variant_A_predictor = variant_A_corrector = False
 
+noise_reductor_enable = False
+noise_reductor_equalization = 0.05
+noise_reductor_friction = 0.1
+noise_reductor_reach = 1
+noise_reductor_final_only = False
 
 def virtualize(a):
     return a

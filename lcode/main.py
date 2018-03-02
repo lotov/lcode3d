@@ -128,33 +128,6 @@ def simulation_time_step(config=None, t_i=0):
                                    out_plasma_cor=plasma_cor,
                                    out_roj=roj)
 
-            import scipy.ndimage
-            Phi_Ez += Ez * -config.xi_step_size
-            xs, ys = plasma['x'].copy(), plasma['y'].copy()
-            xs += config.window_width / 2
-            xs *= config.grid_steps / config.window_width
-            xs -= .5
-            ys += config.window_width / 2
-            ys *= config.grid_steps / config.window_width
-            ys -= .5
-            Phi_Ezs = scipy.ndimage.map_coordinates(Phi_Ez,  # noqa: F841
-                                                    (xs, ys),
-                                                    order=1)
-
-            edges = np.linspace(-config.window_width / 2,
-                                +config.window_width / 2,
-                                config.grid_steps + 1)
-            gamma = np.sqrt(1 + plasma['p'][:, 0]**2 +
-                            plasma['p'][:, 1]**2 + plasma['p'][:, 2]**2)
-            Sz = (  # noqa: F841
-                Ex * By - Ey * Bx -
-                (Ex**2 + Ey**2 + Ez**2 + Bx**2 + By**2 + Bz**2) / 2 +
-                np.histogram2d(
-                    plasma['x'], plasma['y'], edges,
-                    weights=(gamma - 1) * (plasma['v'][:, 0] - 1)
-                )[0]
-            )
-
             moved, fell, lost, total_substeps = beam_move(
                 config, beam_layer, t, xi, Ex, Ey, Ez, Bx, By, Bz
             )

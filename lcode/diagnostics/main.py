@@ -128,8 +128,7 @@ class Diagnostics:
     # pylint: disable=too-many-arguments
     @hacks.into('each_xi')
     @hacks.stealing
-    def each_xi(self, config, t_i, xi_i, roj, plasma, Ex, Ey, Ez, Bx, By, Bz,
-                Phi_Ezs: hacks.steal, Sz: hacks.steal):
+    def each_xi(self, config, t_i, xi_i, roj, plasma, Ex, Ey, Ez, Bx, By, Bz):
         if not self.enabled:
             return
 

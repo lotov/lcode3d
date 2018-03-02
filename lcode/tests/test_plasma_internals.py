@@ -24,13 +24,13 @@ def test_Progonka_Dirichlet():
     config = lcode.plasma_solver.PlasmaSolverConfig(
         lcode.configuration.get('grid_steps = 2**2 + 1')
     )
-    tmp = lcode.plasma_solver.ProgonkaTmp(config)
+    tls = lcode.plasma_solver.ThreadLocalStorage(config)
 
     ff = np.array([-1, 3, 2, 3, -1], np.double)
     vv_correct = np.array([0, 1, 1, 1, 0], np.double)
 
     vv = np.empty_like(vv_correct)
-    lcode.plasma_solver.Progonka_Dirichlet(4, ff, vv, tmp)
+    lcode.plasma_solver.Progonka_Dirichlet(4, ff, vv, tls)
 
     assert np.array_equal(vv_correct, vv)
 
@@ -39,7 +39,7 @@ def test_reduction_Dirichlet1():
     config = lcode.plasma_solver.PlasmaSolverConfig(
         lcode.configuration.get('grid_steps = 2**10 + 1; window_width = 1')
     )
-    tmp = lcode.plasma_solver.ProgonkaTmp(config)
+    tls = lcode.plasma_solver.ThreadLocalStorage(config)
     n_dim, Lx = config.n_dim, config.x_max * 2
     config.h = Lx / (n_dim - 1)  # values are not grid-centered in this test
 
@@ -49,7 +49,7 @@ def test_reduction_Dirichlet1():
     P_correct = x * (x - Lx) * y * (y - Lx)
 
     P = np.empty_like(P_correct)
-    lcode.plasma_solver.reduction_Dirichlet1(config, Fi, P, tmp)
+    lcode.plasma_solver.reduction_Dirichlet1(config, Fi, P, tls)
 
     assert np.allclose(P_correct, P, rtol=1e-20, atol=1e-12)
 
@@ -64,7 +64,7 @@ def test_reduction_Neuman_red():
         'plasma_solver_B_0': B_0,
     })
     config = lcode.plasma_solver.PlasmaSolverConfig(c)
-    tmp = lcode.plasma_solver.ProgonkaTmp(config)
+    tls = lcode.plasma_solver.ThreadLocalStorage(config)
     config.h = Lx / (n_dim - 1)  # values on edges in the test check
     P = np.zeros((n_dim, n_dim))
 
@@ -84,7 +84,7 @@ def test_reduction_Neuman_red():
     lcode.plasma_solver.Neuman_red(config, B_0,
                                    -r0, r1, -rb, ru,
                                    -Fi, P,
-                                   tmp)
+                                   tls)
 
     P_correct -= np.average(P_correct)
 

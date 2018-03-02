@@ -36,7 +36,7 @@ cimport numpy as np
 from .. import plasma_particle
 from .. cimport plasma_particle
 
-from .field_solver import ProgonkaTmp
+from .field_solver import ThreadLocalStorage
 from .field_solver import Neuman_red, reduction_Dirichlet1, Posson_reduct_12
 
 
@@ -240,7 +240,7 @@ def deposit(config, plasma):
 
 
 def calculate_fields(config, roj_cur, roj_prev, Ex_, Ey_, Ez_, Bx_, By_, Bz_, beam_ro, variant_A=False):
-    tmp = ProgonkaTmp(config.n_dim)
+    tls = ThreadLocalStorage(config.n_dim)
 
     Ex, Ey, Ez = Ex_.copy(), Ey_.copy(), Ez_.copy()
     Bx, By, Bz = Bx_.copy(), By_.copy(), Bz_.copy()
@@ -264,38 +264,38 @@ def calculate_fields(config, roj_cur, roj_prev, Ex_, Ey_, Ez_, Bx_, By_, Bz_, be
 
     # Field Ez
     reduction_Dirichlet1(-(djx_dx + djy_dy), Ez,
-                         tmp, config.n_dim, config.h, config.npq)
+                         tls, config.n_dim, config.h, config.npq)
 
     # Field Bz
     Neuman_red(config.B_0,
                -roj[0, :]['jy'], roj[-1, :]['jy'],
                roj[:, 0]['jx'], -roj[:, -1]['jx'],
                -(djx_dy - djy_dx), Bz,
-               tmp, config.n_dim, config.h, config.npq, config.x_max)
+               tls, config.n_dim, config.h, config.npq, config.x_max)
 
     # Field Ex
     Posson_reduct_12(-(beam_ro[0] + roj['ro'][0]),
                      +(beam_ro[-1] + roj['ro'][-1]),
                      -(beam_ro_dx + dro_dx - djx_dxi) + Ex, Ex,
-                     tmp, config.n_dim, config.h, config.npq)
+                     tls, config.n_dim, config.h, config.npq)
 
     # Field Ey
     Posson_reduct_12(-(beam_ro[:, 0] + roj['ro'][:, 0]),
                      +(beam_ro[:, -1] + roj['ro'][:, -1]),
                      (-(beam_ro_dy + dro_dy - djy_dxi) + Ey).T, Ey.T,
-                     tmp, config.n_dim, config.h, config.npq)
+                     tls, config.n_dim, config.h, config.npq)
 
     # Field Bx
     Posson_reduct_12(-(beam_ro[:, 0] + roj['jz'][:, 0]),
                      beam_ro[:, -1] + roj['jz'][:, -1],
                      +((beam_ro_dy + djz_dy - djy_dxi) + Bx).T, Bx.T,
-                     tmp, config.n_dim, config.h, config.npq)
+                     tls, config.n_dim, config.h, config.npq)
 
     # Field By
     Posson_reduct_12(beam_ro[0] + roj['jz'][0],
                      -(beam_ro[-1] + roj['jz'][-1]),
                      -(beam_ro_dx + djz_dx - djx_dxi) + By, By,  # !!!
-                     tmp, config.n_dim, config.h, config.npq)
+                     tls, config.n_dim, config.h, config.npq)
 
     if variant_A:
         # ??? VAR A/B? -- shove inside calculate_fields (E_new = 2 * E_result - E_input)

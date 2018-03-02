@@ -37,7 +37,7 @@ import scipy.ndimage
 from . import plasma_particle
 from . cimport plasma_particle
 
-from .plasma.field_solver import ProgonkaTmp
+from .plasma.field_solver import ThreadLocalStorage
 from .plasma.field_solver import Neuman_red, reduction_Dirichlet1, Posson_reduct_12
 
 # STYLE TODO: replace .5 * x with x / 2 etc.
@@ -831,7 +831,7 @@ cpdef response(PlasmaSolverConfig config,
     #     if config.limit_threads:
     #         print('Manually limited to', config.limit_threads, 'threads')
 
-    tmp = ProgonkaTmp(config.n_dim)
+    tls = ThreadLocalStorage(config.n_dim)
 
     # Allocate memory if not using preallocated output arrays
     roj = out_roj if out_roj is not None else (
@@ -907,14 +907,14 @@ cpdef response(PlasmaSolverConfig config,
 
     # Field Ez, predict
     reduction_Dirichlet1(-(djx_dx + djy_dy), Ez,
-                         tmp, config.n_dim, config.h, config.npq)
+                         tls, config.n_dim, config.h, config.npq)
 
     # Field Bz, predict
     Neuman_red(config.B_0,
                -roj[0, :]['jy'], roj[-1, :]['jy'],
                roj[:, 0]['jx'], -roj[:, -1]['jx'],
                -(djx_dy - djy_dx), Bz,
-               tmp, config.n_dim, config.h, config.npq, config.x_max)
+               tls, config.n_dim, config.h, config.npq, config.x_max)
 
     # Field Ex, predict
     Posson_reduct_12(-(beam_ro[0] +
@@ -922,7 +922,7 @@ cpdef response(PlasmaSolverConfig config,
                      +(beam_ro[-1] +
                          roj['ro'][-1] * config.boundary_suppression),
                      -(beam_ro_dx + dro_dx - djx_dxi) + Ex, Ex_approx,
-                     tmp, config.n_dim, config.h, config.npq)
+                     tls, config.n_dim, config.h, config.npq)
 
     # Field Ey, predict
     # TODO: sign!
@@ -931,7 +931,7 @@ cpdef response(PlasmaSolverConfig config,
                      +(beam_ro[:, -1] +
                          roj['ro'][:, -1] * config.boundary_suppression),
                      (-(beam_ro_dy + dro_dy - djy_dxi) + Ey).T, Ey_approx.T,
-                     tmp, config.n_dim, config.h, config.npq)
+                     tls, config.n_dim, config.h, config.npq)
 
     # Field By, predict
     # пр часть обчно, гр - наоборот  # TODO: translate
@@ -941,7 +941,7 @@ cpdef response(PlasmaSolverConfig config,
     Posson_reduct_12(beam_ro[0] + roj['jz'][0],
                      -(beam_ro[-1] + roj['jz'][-1]),
                      -(beam_ro_dx + djz_dx - djx_dxi) + By, By_approx,
-                     tmp, config.n_dim, config.h, config.npq)
+                     tls, config.n_dim, config.h, config.npq)
 
     # Field Bx, predict
     # TODO: signs!
@@ -954,7 +954,7 @@ cpdef response(PlasmaSolverConfig config,
     Posson_reduct_12(-(beam_ro[:, 0] + roj['jz'][:, 0]),
                      beam_ro[:, -1] + roj['jz'][:, -1],
                      (+(beam_ro_dy + djz_dy - djy_dxi) + Bx).T, Bx_approx.T,
-                     tmp, config.n_dim, config.h, config.npq)
+                     tls, config.n_dim, config.h, config.npq)
 
     # Correct phase
 
@@ -997,14 +997,14 @@ cpdef response(PlasmaSolverConfig config,
         # We have v @ m+3/2 now, using both to estimate v @ m+1
 
         # Field Ez, correct (experimental)
-        reduction_Dirichlet1(config, -(djx_dx + djy_dy), Ez, tmp)
+        reduction_Dirichlet1(config, -(djx_dx + djy_dy), Ez, tls)
 
         # Field Bz, correct (experimental)
         Neuman_red(config, config.B_0,
                    -roj[0, :]['jy'], roj[-1, :]['jy'],
                    roj[:, 0]['jx'], -roj[:, -1]['jx'],
                    -(djx_dy - djy_dx), Bz,
-                   tmp)
+                   tls)
 
         plasma_virtualized_cor = config.virtualize(plasma_particles_cor)
         ro_and_j_ie_cor_Vshivkov(config, plasma_virtualized_cor,
@@ -1018,7 +1018,7 @@ cpdef response(PlasmaSolverConfig config,
                              -(beam_ro[:, 0] + roj['jz'][:, 0]),
                              beam_ro[:, -1] + roj['jz'][:, -1],
                              +((beam_ro_dy + djz_dy - djy_dxi) + Bx).T, Bx.T,
-                             tmp)
+                             tls)
 
             # Field Ex, correct
             Posson_reduct_12(config,
@@ -1027,7 +1027,7 @@ cpdef response(PlasmaSolverConfig config,
                              +(beam_ro[-1] +
                                  roj['ro'][-1] * config.boundary_suppression),
                              -(beam_ro_dx + dro_dx - djx_dxi) + Ex, Ex,
-                             tmp)
+                             tls)
 
             # Field Ey, correct
             Posson_reduct_12(config,
@@ -1036,14 +1036,14 @@ cpdef response(PlasmaSolverConfig config,
                              +(beam_ro[:, -1] + roj['ro'][:, -1] *
                                  config.boundary_suppression),
                              (-(beam_ro_dy + dro_dy - djy_dxi) + Ey).T, Ey.T,
-                             tmp)
+                             tls)
 
             # Field By, correct
             Posson_reduct_12(config,
                              beam_ro[0] + roj['jz'][0],
                              -(beam_ro[-1] + roj['jz'][-1]),
                              -(beam_ro_dx + djz_dx - djx_dxi) + By, By,  # !!!
-                             tmp)
+                             tls)
 
         # Now we have more precise fields, repeat outer corrector
 

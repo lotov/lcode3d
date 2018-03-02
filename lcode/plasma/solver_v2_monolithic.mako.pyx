@@ -300,12 +300,19 @@ def deposit(config, plasma):
     return roj
 
 def calculate_fields(config, roj_cur, roj_prev,
-                     Ex_, Ey_, Ez_, Bx_, By_, Bz_,
+                     Ex, Ey, Ez, Bx, By, Bz,
                      beam_ro, variant_A=False):
-    return field_solver.calculate_fields(
-        roj_cur, roj_prev, Ex_, Ey_, Ez_, Bx_, By_, Bz_, beam_ro,
+    out_Ex, out_Ey = np.empty_like(Ex), np.empty_like(Ey)
+    out_Ez, out_Bz = np.empty_like(Ez), np.empty_like(Bz)
+    out_Bx, out_By = np.empty_like(Bx), np.empty_like(By)
+    field_solver.calculate_fields(
+        roj_cur, roj_prev, Ex, Ey, Ez, Bx, By, Bz, beam_ro,
         config.n_dim, config.h, config.npq, config.x_max, config.h3, config.B_0,
-        config.threads, variant_A)
+        config.threads,
+        out_Ex, out_Ey, out_Ez, out_Bx, out_By, out_Bz,
+        variant_A
+    )
+    return out_Ex, out_Ey, out_Ez, out_Bx, out_By, out_Bz
 
 
 ### More convenience functions

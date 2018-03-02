@@ -894,7 +894,7 @@ cpdef calculate_fields(np.ndarray[RoJ_t, ndim=2] roj_cur,
     cdef double[:, :] ro = roj['ro'] + beam_ro
     cdef double[:, :] jx = roj['jx']
     cdef double[:, :] jy = roj['jy']
-    cdef double[:, :] jz = roj['jz']
+    cdef double[:, :] jz = roj['jz'] + beam_ro
     cdef double[:, :] jx_prev = roj_prev['jx']
     cdef double[:, :] jy_prev = roj_prev['jy']
 

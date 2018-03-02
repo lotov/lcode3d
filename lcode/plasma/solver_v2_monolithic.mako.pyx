@@ -67,6 +67,7 @@ from .. import plasma_particle
 from .. cimport plasma_particle
 
 from .field_solver import FieldSolver
+from .field_solver cimport FieldSolver
 
 
 # Config
@@ -297,10 +298,10 @@ def deposit(config, plasma):
     # and remove a lot of inner ifs
     return roj
 
-def calculate_fields(config, roj_cur, roj_prev,
+def calculate_fields(config, field_solver,
+                     roj_cur, roj_prev,
                      Ex, Ey, Ez, Bx, By, Bz,
                      beam_ro, variant_A=False):
-    field_solver = FieldSolver(config.n_dim, config.threads)
     out_Ex, out_Ey = np.empty_like(Ex), np.empty_like(Ey)
     out_Ez, out_Bz = np.empty_like(Ez), np.empty_like(Bz)
     out_Bx, out_By = np.empty_like(Bx), np.empty_like(By)
@@ -616,61 +617,78 @@ cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
 ### The main plot, written by K. V. Lotov
 
 
-cpdef response(config, xi_i, in_plasma, in_plasma_cor,
-               beam_ro, roj_pprv, roj_prev,
-               mut_Ex, mut_Ey, mut_Ez, mut_Bx, mut_By, mut_Bz,
-               out_plasma, out_plasma_cor, out_roj
-               ):
-    plasma = in_plasma.copy()
-    noise_reductor_predictions = config.noise_reductor_enable and not config.noise_reductor_final_only
+cdef class PlasmaSolver:
+    cdef FieldSolver field_solver
+    cdef public object RoJ_dtype
+    # TODO: allocate everything else to make the solver allocation-free
 
-    Fl = mut_Ex.copy(), mut_Ey.copy(), mut_Ez.copy(), mut_Bx.copy(), mut_By.copy(), mut_Bz.copy()
+    def __init__(self, config):
+        # TODO: incapsulate PlasmaSolverConfig creation here?
+        self.field_solver = FieldSolver(config.grid_steps,
+                                        config.openmp_limit_threads)
+        self.RoJ_dtype = RoJ_dtype
 
-    # ===  1  ===
-    plasma_predicted_half1 = move_simple_fast(config, plasma, config.h3 / 2)
-    hs_xs, hs_ys = plasma_predicted_half1['x'], plasma_predicted_half1['y']
-    #Exs, Eys, Ezs, Bxs, Bys, Bzs = interpolate_fields(config, hs_xs, hs_ys, *Fl)
-    #plasma_1 = move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs)
-    Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl)
-    plasma_1 = move_smart_fast(config, plasma, *Fls,
-                               noise_reductor_enable=noise_reductor_predictions)
-    roj_1 = deposit(config, plasma_1)
+    def PlasmaSolverConfig(self, config):
+        return PlasmaSolverConfig(config)
 
-    # ===  2  ===  + hs_xs, hs_ys, roj_1
-    Fl_pred = calculate_fields(config, roj_1, roj_prev, *Fl, beam_ro, config.variant_A_predictor)
+    cpdef response(self,
+                   config, xi_i, in_plasma, in_plasma_cor,
+                   beam_ro, roj_pprv, roj_prev,
+                   mut_Ex, mut_Ey, mut_Ez, mut_Bx, mut_By, mut_Bz,
+                   out_plasma, out_plasma_cor, out_roj
+                   ):
+        plasma = in_plasma.copy()
+        noise_reductor_predictions = config.noise_reductor_enable and not config.noise_reductor_final_only
 
-    # ===  3  ===  + hs_xs, hs_ys, Fl_pred
-    Fl_avg_1 = average_fields(Fl, Fl_pred)
-    Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
-    plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1,
-                               noise_reductor_enable=noise_reductor_predictions)
-    roj_2 = deposit(config, plasma_2)
+        Fl = mut_Ex.copy(), mut_Ey.copy(), mut_Ez.copy(), mut_Bx.copy(), mut_By.copy(), mut_Bz.copy()
 
-    # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
-    Fl_new = calculate_fields(config, roj_2, roj_prev, *Fl_avg_1, beam_ro, config.variant_A_corrector)
+        # ===  1  ===
+        plasma_predicted_half1 = move_simple_fast(config, plasma, config.h3 / 2)
+        hs_xs, hs_ys = plasma_predicted_half1['x'], plasma_predicted_half1['y']
+        #Exs, Eys, Ezs, Bxs, Bys, Bzs = interpolate_fields(config, hs_xs, hs_ys, *Fl)
+        #plasma_1 = move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs)
+        Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl)
+        plasma_1 = move_smart_fast(config, plasma, *Fls,
+                                   noise_reductor_enable=noise_reductor_predictions)
+        roj_1 = deposit(config, plasma_1)
 
-    # ===  5  ===  + hs_xs, hs_ys, Fl_new
-    Fl_avg_2 = average_fields(Fl, Fl_new)
-    Fls_avg_2 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_2)
-    plasma_new = move_smart_fast(config, plasma, *Fls_avg_2,
-                                 noise_reductor_enable=config.noise_reductor_enable)
-    roj_new = deposit(config, plasma_new)
+        # ===  2  ===  + hs_xs, hs_ys, roj_1
+        Fl_pred = calculate_fields(config, self.field_solver, roj_1, roj_prev,
+                                   *Fl, beam_ro, config.variant_A_predictor)
 
-    #test_particle = plasma[plasma['q'] < 0]
-    #test_particle = test_particle[np.abs(test_particle['x']) < 0.5]
-    #test_particle = test_particle[np.abs(test_particle['y']) < 0.5]
-    #test_particle = test_particle[len(test_particle) // 3]
-    #print('ys', test_particle['p'])
-    #print('xy', test_particle['x'], test_particle['y'])
-    #print('m', test_particle['m'])
-    #print('q', test_particle['q'])
-    #print('gamma_m', gamma_m(np.array([test_particle])))
+        # ===  3  ===  + hs_xs, hs_ys, Fl_pred
+        Fl_avg_1 = average_fields(Fl, Fl_pred)
+        Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
+        plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1,
+                                   noise_reductor_enable=noise_reductor_predictions)
+        roj_2 = deposit(config, plasma_2)
 
-    out_plasma[...] = plasma_new
-    out_plasma_cor[...] = plasma_new
-    out_roj[...] = roj_new
-    #print(beam_ro.max(), ['%+7e' % fl.ptp() for fl in Fl_new])
-    mut_Ex[...], mut_Ey[...], mut_Ez[...], mut_Bx[...], mut_By[...], mut_Bz[...] = Fl_new
+        # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
+        Fl_new = calculate_fields(config, self.field_solver, roj_2, roj_prev,
+                                  *Fl_avg_1, beam_ro, config.variant_A_corrector)
+
+        # ===  5  ===  + hs_xs, hs_ys, Fl_new
+        Fl_avg_2 = average_fields(Fl, Fl_new)
+        Fls_avg_2 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_2)
+        plasma_new = move_smart_fast(config, plasma, *Fls_avg_2,
+                                     noise_reductor_enable=config.noise_reductor_enable)
+        roj_new = deposit(config, plasma_new)
+
+        #test_particle = plasma[plasma['q'] < 0]
+        #test_particle = test_particle[np.abs(test_particle['x']) < 0.5]
+        #test_particle = test_particle[np.abs(test_particle['y']) < 0.5]
+        #test_particle = test_particle[len(test_particle) // 3]
+        #print('ys', test_particle['p'])
+        #print('xy', test_particle['x'], test_particle['y'])
+        #print('m', test_particle['m'])
+        #print('q', test_particle['q'])
+        #print('gamma_m', gamma_m(np.array([test_particle])))
+
+        out_plasma[...] = plasma_new
+        out_plasma_cor[...] = plasma_new
+        out_roj[...] = roj_new
+        #print(beam_ro.max(), ['%+7e' % fl.ptp() for fl in Fl_new])
+        mut_Ex[...], mut_Ey[...], mut_Ez[...], mut_Bx[...], mut_By[...], mut_Bz[...] = Fl_new
 
 
 # TODO: merge interpolate-move-deposit into a single routine?

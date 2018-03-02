@@ -24,7 +24,7 @@ xi_step_size = .05
 xi_steps = int(100 // xi_step_size)
 
 noise_reductor_enable = True
-plasma_solver = lcode.plasma.solver_v2_monolithic
+plasma_solver = 'v2_monolithic'
 
 grid_step = window_width / grid_steps
 plasma = lcode.plasma.solver_v2_monolithic.make_plasma(

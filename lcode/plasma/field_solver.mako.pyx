@@ -634,21 +634,6 @@ cpdef void Neuman_red(double B_00,
 
 
 
-# RoJ for both scalar charge density ro and vector current j, TODO: get rid of
-cdef packed struct RoJ_t:
-    double ro
-    double jz
-    double jx
-    double jy
-
-RoJ_dtype = np.dtype([
-    ('ro', np.double),
-    ('jz', np.double),
-    ('jx', np.double),
-    ('jy', np.double),
-], align=False)
-
-
 cpdef void pader_x(double[:, :] in_, double[:, :] out, double h, int n_dim) nogil:
     cdef int i, j
     cdef double h2 = h * 2
@@ -848,9 +833,6 @@ cpdef void calculate_Ez(double[:, :] in_Ez,
 
 
 cdef class FieldSolver:
-    cdef int n_dim, threads
-    cdef object tlss
-
     def __init__(self, n_dim, threads=1):
         self.n_dim, self.threads = n_dim, threads
         self.tlss = [ThreadLocalStorage(n_dim) for _ in range(threads)]
@@ -876,7 +858,7 @@ cdef class FieldSolver:
                            double[:, :] out_Bx,
                            double[:, :] out_By,
                            double[:, :] out_Bz,
-                           bint variant_A=False):
+                           bint variant_A):
         cdef int n_dim = self.n_dim, threads = self.threads
         cdef Py_ssize_t i, j
         cdef ThreadLocalStorage tls_0 = self.tlss[0]

@@ -68,6 +68,7 @@ def simulation_time_step(config=None, t_i=0):
         from .plasma import solver_v2 as plasma_solver
     elif config.plasma_solver == 'v2_monolithic':
         from .plasma import solver_v2_monolithic as plasma_solver
+        plasma_solver = plasma_solver.PlasmaSolver(config)
     elif config.plasma_solver == 'v1':
         from . import plasma_solver
     else:

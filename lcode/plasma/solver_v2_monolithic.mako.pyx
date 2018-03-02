@@ -66,9 +66,7 @@ def make_plasma(window_width, steps, per_r_step=1):
 from .. import plasma_particle
 from .. cimport plasma_particle
 
-#from .field_solver import ProgonkaTmp
-#from .field_solver import Neuman_red, reduction_Dirichlet1, Posson_reduct_12
-from . import field_solver
+from .field_solver import FieldSolver
 
 
 # Config
@@ -302,13 +300,13 @@ def deposit(config, plasma):
 def calculate_fields(config, roj_cur, roj_prev,
                      Ex, Ey, Ez, Bx, By, Bz,
                      beam_ro, variant_A=False):
+    field_solver = FieldSolver(config.n_dim, config.threads)
     out_Ex, out_Ey = np.empty_like(Ex), np.empty_like(Ey)
     out_Ez, out_Bz = np.empty_like(Ez), np.empty_like(Bz)
     out_Bx, out_By = np.empty_like(Bx), np.empty_like(By)
     field_solver.calculate_fields(
         roj_cur, roj_prev, Ex, Ey, Ez, Bx, By, Bz, beam_ro,
-        config.n_dim, config.h, config.npq, config.x_max, config.h3, config.B_0,
-        config.threads,
+        config.h, config.npq, config.x_max, config.h3, config.B_0,
         out_Ex, out_Ey, out_Ez, out_Bx, out_By, out_Bz,
         variant_A
     )

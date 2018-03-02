@@ -699,9 +699,8 @@ cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
     pader_xi(jx_prev, jx, djx_dxi, h3, n_dim)
     for i in range(n_dim):
         for j in range(n_dim):
-            out_Ex[i, j] = in_Ex[i, j]
-            tls.rhs[i, j] = (+in_Ex[i, j] -  # !!!
-                             (dro_dx[i, j] - djx_dxi[i, j]))
+            out_Ex[i, j] = in_Ex[i, j]  # start from an approximation
+            tls.rhs[i, j] = (+in_Ex[i, j] - (dro_dx[i, j] - djx_dxi[i, j]))
     Posson_reduct_12(zz, zz,
                      tls.rhs, out_Ex,
                      tls, n_dim, h, npq)
@@ -729,9 +728,8 @@ cpdef void calculate_Ey(double[:, :] in_Ey, double[:, :] out_Ey_T,
     pader_xi(jy_prev, jy, djy_dxi, h3, n_dim)
     for i in range(n_dim):
         for j in range(n_dim):
-            out_Ey_T[j, i] = in_Ey[i, j]
-            tls.rhs[j, i] = (+in_Ey[i, j] -  # !!!
-                             (dro_dy[i, j] - djy_dxi[i, j]))
+            out_Ey_T[j, i] = in_Ey[i, j]  # start from an approximation
+            tls.rhs[j, i] = (+in_Ey[i, j] - (dro_dy[i, j] - djy_dxi[i, j]))
     Posson_reduct_12(zz, zz,
                      tls.rhs, out_Ey_T,
                      tls, n_dim, h, npq)
@@ -758,9 +756,8 @@ cpdef void calculate_Bx(double[:, :] in_Bx, double[:, :] out_Bx_T,
     pader_xi(jy_prev, jy, djy_dxi, h3, n_dim)
     for i in range(n_dim):
         for j in range(n_dim):
-            out_Bx_T[j, i] = in_Bx[i, j]
-            tls.rhs[j, i] = (+in_Bx[i, j] +  # !!!
-                             (djz_dy[i, j] - djy_dxi[i, j]))
+            out_Bx_T[j, i] = in_Bx[i, j]  # start from an approximation
+            tls.rhs[j, i] = (+in_Bx[i, j] + (djz_dy[i, j] - djy_dxi[i, j]))
     Posson_reduct_12(zz, zz,
                      tls.rhs, out_Bx_T,
                      tls, n_dim, h, npq)
@@ -787,9 +784,8 @@ cpdef void calculate_By(double[:, :] in_By, double[:, :] out_By,
     pader_xi(jx_prev, jx, djx_dxi, h3, n_dim)
     for i in range(n_dim):
         for j in range(n_dim):
-            out_By[i, j] = in_By[i, j]
-            tls.rhs[i, j] = (+in_By[i, j] -  # !!!
-                             (djz_dx[i, j] - djx_dxi[i, j]))
+            out_By[i, j] = in_By[i, j]  # start from an approximation
+            tls.rhs[i, j] = (+in_By[i, j] - (djz_dx[i, j] - djx_dxi[i, j]))
     Posson_reduct_12(zz, zz,
                      tls.rhs, out_By,
                      tls, n_dim, h, npq)
@@ -814,7 +810,6 @@ cpdef void calculate_Bz(double[:, :] in_Bz, double[:, :] out_Bz,
     pader_x(jy, djy_dx, h, n_dim)
     for i in range(n_dim):
         for j in range(n_dim):
-            out_Bz[i, j] = in_Bz[i, j]
             tls.rhs[i, j] = -(djx_dy[i, j] - djy_dx[i, j])
 
     Neuman_red(B_0, zz, zz, zz, zz, tls.rhs, out_Bz, tls, n_dim, h, npq, x_max)
@@ -842,7 +837,6 @@ cpdef void calculate_Ez(double[:, :] in_Ez,
     pader_y(jy, djy_dy, h, n_dim)
     for i in range(n_dim):
         for j in range(n_dim):
-            out_Ez[i, j] = in_Ez[i, j]
             tls.rhs[i, j] = -(djx_dx[i, j] + djy_dy[i, j])
 
     reduction_Dirichlet1(tls.rhs, out_Ez, tls, n_dim, h, npq)
@@ -853,73 +847,81 @@ cpdef void calculate_Ez(double[:, :] in_Ez,
                 out_Ez[i, j] = 2 * out_Ez[i, j] - in_Ez[i, j]
 
 
-cpdef calculate_fields(np.ndarray[RoJ_t, ndim=2] roj_cur,
-                       np.ndarray[RoJ_t, ndim=2] roj_prev,
-                       double[:, :] in_Ex,
-                       double[:, :] in_Ey,
-                       double[:, :] in_Ez,
-                       double[:, :] in_Bx,
-                       double[:, :] in_By,
-                       double[:, :] in_Bz,
-                       double[:, :] beam_ro,
-                       unsigned int n_dim,
-                       double h,
-                       unsigned int npq,
-                       double x_max,
-                       double h3,
-                       double B_0,
-                       int threads,
-                       double[:, :] out_Ex,
-                       double[:, :] out_Ey,
-                       double[:, :] out_Ez,
-                       double[:, :] out_Bx,
-                       double[:, :] out_By,
-                       double[:, :] out_Bz,
-                       bint variant_A=False):
-    cdef Py_ssize_t i, j
-    cdef ThreadLocalStorage tls_0 = ThreadLocalStorage(n_dim)
-    cdef ThreadLocalStorage tls_1 = ThreadLocalStorage(n_dim)
-    cdef ThreadLocalStorage tls_2 = ThreadLocalStorage(n_dim)
-    cdef ThreadLocalStorage tls_3 = ThreadLocalStorage(n_dim)
-    cdef ThreadLocalStorage tls_4 = ThreadLocalStorage(n_dim)
-    cdef ThreadLocalStorage tls_5 = ThreadLocalStorage(n_dim)
+cdef class FieldSolver:
+    cdef int n_dim, threads
+    cdef object tlss
 
-    if variant_A:
-        roj = np.zeros_like(roj_cur)
-        for comp in 'ro', 'jx', 'jy', 'jz':
-            roj[comp] = (roj_cur[comp] + roj_prev[comp]) / 2
-    else:
-        roj = roj_cur
+    def __init__(self, n_dim, threads=1):
+        self.n_dim, self.threads = n_dim, threads
+        self.tlss = [ThreadLocalStorage(n_dim) for _ in range(threads)]
 
-    cdef double[:, :] ro = roj['ro'] + beam_ro
-    cdef double[:, :] jx = roj['jx']
-    cdef double[:, :] jy = roj['jy']
-    cdef double[:, :] jz = roj['jz'] + beam_ro
-    cdef double[:, :] jx_prev = roj_prev['jx']
-    cdef double[:, :] jy_prev = roj_prev['jy']
+    cpdef calculate_fields(self,
+                           np.ndarray[RoJ_t, ndim=2] roj_cur,
+                           np.ndarray[RoJ_t, ndim=2] roj_prev,
+                           double[:, :] in_Ex,
+                           double[:, :] in_Ey,
+                           double[:, :] in_Ez,
+                           double[:, :] in_Bx,
+                           double[:, :] in_By,
+                           double[:, :] in_Bz,
+                           double[:, :] beam_ro,
+                           double h,
+                           unsigned int npq,
+                           double x_max,
+                           double h3,
+                           double B_0,
+                           double[:, :] out_Ex,
+                           double[:, :] out_Ey,
+                           double[:, :] out_Ez,
+                           double[:, :] out_Bx,
+                           double[:, :] out_By,
+                           double[:, :] out_Bz,
+                           bint variant_A=False):
+        cdef int n_dim = self.n_dim, threads = self.threads
+        cdef Py_ssize_t i, j
+        cdef ThreadLocalStorage tls_0 = self.tlss[0]
+        cdef ThreadLocalStorage tls_1 = self.tlss[1]
+        cdef ThreadLocalStorage tls_2 = self.tlss[2]
+        cdef ThreadLocalStorage tls_3 = self.tlss[3]
+        cdef ThreadLocalStorage tls_4 = self.tlss[4]
+        cdef ThreadLocalStorage tls_5 = self.tlss[5]
 
-    cdef double[:, :] out_Ey_T = out_Ey.T
-    cdef double[:, :] out_Bx_T = out_Bx.T
+        if variant_A:
+            roj = np.zeros_like(roj_cur)
+            for comp in 'ro', 'jx', 'jy', 'jz':
+                roj[comp] = (roj_cur[comp] + roj_prev[comp]) / 2
+        else:
+            roj = roj_cur
 
-    cdef double[:] zz = np.zeros(n_dim)
-    cdef int I
-    for I in cython.parallel.prange(6, schedule='dynamic', nogil=True,
-                                    num_threads=min(threads, 6)):
-        if I == 0:
-            calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, tls_0,
-                         n_dim, h, h3, npq, zz, variant_A)
-        elif I == 1:
-            calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, tls_1,
-                         n_dim, h, h3, npq, zz, variant_A)
-        elif I == 2:
-            calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, tls_2,
-                         n_dim, h, h3, npq, zz, variant_A)
-        elif I == 3:
-            calculate_By(in_By, out_By, jz, jx, jx_prev, tls_3,
-                         n_dim, h, h3, npq, zz, variant_A)
-        elif I == 4:
-            calculate_Bz(in_Bz, out_Bz, jx, jy, tls_4,
-                         n_dim, h, npq, x_max, B_0, zz, variant_A)
-        elif I == 5:
-            calculate_Ez(in_Ez, out_Ez, jx, jy, tls_5,
-                         n_dim, h, npq, variant_A)
+        cdef double[:, :] ro = roj['ro'] + beam_ro
+        cdef double[:, :] jx = roj['jx']
+        cdef double[:, :] jy = roj['jy']
+        cdef double[:, :] jz = roj['jz'] + beam_ro
+        cdef double[:, :] jx_prev = roj_prev['jx']
+        cdef double[:, :] jy_prev = roj_prev['jy']
+
+        cdef double[:, :] out_Ey_T = out_Ey.T
+        cdef double[:, :] out_Bx_T = out_Bx.T
+
+        cdef double[:] zz = np.zeros(n_dim)
+        cdef int I
+        for I in cython.parallel.prange(6, schedule='dynamic', nogil=True,
+                                        num_threads=min(threads, 6)):
+            if I == 0:
+                calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, tls_0,
+                             n_dim, h, h3, npq, zz, variant_A)
+            elif I == 1:
+                calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, tls_1,
+                             n_dim, h, h3, npq, zz, variant_A)
+            elif I == 2:
+                calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, tls_2,
+                             n_dim, h, h3, npq, zz, variant_A)
+            elif I == 3:
+                calculate_By(in_By, out_By, jz, jx, jx_prev, tls_3,
+                             n_dim, h, h3, npq, zz, variant_A)
+            elif I == 4:
+                calculate_Bz(in_Bz, out_Bz, jx, jy, tls_4,
+                             n_dim, h, npq, x_max, B_0, zz, variant_A)
+            elif I == 5:
+                calculate_Ez(in_Ez, out_Ez, jx, jy, tls_5,
+                             n_dim, h, npq, variant_A)

@@ -815,7 +815,7 @@ cpdef void calculate_Bz(double[:, :] in_Bz, double[:, :] out_Bz,
     for i in range(n_dim):
         for j in range(n_dim):
             out_Bz[i, j] = in_Bz[i, j]
-            tls.rhs[i, j] = -(djx_dy[i, j] + djy_dx[i, j])
+            tls.rhs[i, j] = -(djx_dy[i, j] - djy_dx[i, j])
 
     Neuman_red(B_0, zz, zz, zz, zz, tls.rhs, out_Bz, tls, n_dim, h, npq, x_max)
     

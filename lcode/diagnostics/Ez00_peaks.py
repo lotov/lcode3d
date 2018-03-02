@@ -54,7 +54,7 @@ class Ez00Peaks:
                           self.config.xi_step_size / (len(zero_crossings) - 3))
             zero_msg = 'T=%0.5f' % zero_period
         else:
-            zero_msg = 'T=?????'
+            zero_msg = 'zeroC:%d/4' % len(zero_crossings)
         if len(peaks) >= 2:
             rel_deviations_perc = 100 * (peak_values / peak_values.mean() - 1)
             peak_period = ((peaks[-1] - peaks[0]) *

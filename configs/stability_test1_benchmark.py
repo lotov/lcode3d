@@ -28,8 +28,9 @@ plasma_solver = lcode.plasma.solver_v2_monolithic
 
 grid_step = window_width / grid_steps
 plasma = lcode.plasma.solver_v2_monolithic.make_plasma(
-    window_width - 6 * grid_step, grid_steps - 6, per_xi_step=1
+    window_width - 6 * grid_step, grid_steps - 6, per_r_step=1
 )
+openmp_limit_threads = 8
 
 
 def transverse_peek_enabled(xi, xi_i):

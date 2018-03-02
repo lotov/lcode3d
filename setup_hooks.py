@@ -11,17 +11,22 @@ def include_numpy(cmd):
         extension.include_dirs.append(numpy.get_include())
 
 
-def enable_openmp(cmd):
-    '''Tell compiler to use openmp, see setup.cfg'''
+def maybe_enable_openmp(cmd):
+    '''Tell compiler to use OpenMP if OMP_USE is 1'''
     # Should be a compiler check, not a platform check...
-    import platform
-    for extension in cmd.extensions:
-        if platform.system() == 'Windows':
-            extension.extra_compile_args.append('/openmp')
-            extension.extra_link_args.append('/openmp')
-        else:
-            extension.extra_compile_args.append('-fopenmp')
-            extension.extra_link_args.append('-fopenmp')
+    import os
+    if os.environ.get('OMP_USE') == '1':
+        cmd.announce('enabling OpenMP and breaking manylinux1 compatibility')
+        import platform
+        for extension in cmd.extensions:
+            if platform.system() == 'Windows':
+                extension.extra_compile_args.append('/openmp')
+                extension.extra_link_args.append('/openmp')
+            else:
+                extension.extra_compile_args.append('-fopenmp')
+                extension.extra_link_args.append('-fopenmp')
+    else:
+        cmd.announce('not enabling OpenMP and staying manylinux1-compatible')
 
 
 
@@ -33,6 +38,16 @@ def optimize(cmd):
         for extension in cmd.extensions:
             extension.extra_compile_args.append('-O2')
             extension.extra_compile_args.append('-g0')
+
+
+def optimize_native(cmd):
+    '''Tell compiler to use machine-specific optimizations, see setup.cfg'''
+    # Should be a compiler check, not a platform check...
+    import platform
+    if platform.system() == 'Linux':
+        for extension in cmd.extensions:
+            extension.extra_compile_args.append('-Ofast')
+            extension.extra_compile_args.append('-march=native')
 
 
 def preprocess_with_mako(cmd):

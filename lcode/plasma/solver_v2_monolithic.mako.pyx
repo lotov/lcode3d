@@ -24,18 +24,40 @@ Secondary authors: A. P. Sosedkin <A.P.Sosedkin@inp.nsk.su>,
 '''
 
 
+import cython
+cimport cython
+from cython.parallel import prange, parallel
+cimport openmp
+
 from libc.math cimport sqrt, log2, sin, pi
 
 import numpy as np
 cimport numpy as np
 
+from .. import plasma_particle
 
-### Making plasma
-from .virtual.fast import make as make_virtual_plasma
 
-def make_plasma(window_width, steps, per_xi_step=1):
-    assert per_xi_step == 1
-    return make_virtual_plasma(window_width, steps, 1, per_xi_step)[0]
+### Making compatible plasma
+
+def make_plasma(window_width, steps, per_r_step=1):
+    plasma_step = window_width / steps / per_r_step
+    plasma_grid_half = np.arange(plasma_step / 2, window_width / 2, plasma_step)
+    plasma_grid = np.concatenate([-plasma_grid_half[::-1], plasma_grid_half])
+    N = len(plasma_grid)
+    plasma_grid_xs, plasma_grid_ys = plasma_grid[:, None], plasma_grid[None, :]
+
+    plasma = np.zeros(N**2 * 2, plasma_particle.dtype)
+    plasma['N'] = np.arange(plasma.shape[0])
+    ions, electrons = plasma[:N**2].reshape(N, N), plasma[N**2:].reshape(N, N)
+    #ions, electrons = plasma[::2].reshape(N, N), plasma[1::2].reshape(N, N)
+    ions['x'] = electrons['x'] = plasma_grid_xs
+    ions['y'] = electrons['y'] = plasma_grid_ys
+    ions['m'] = plasma_particle.USUAL_ION_MASS / per_r_step**2
+    ions['q'] = plasma_particle.USUAL_ION_CHARGE / per_r_step**2
+    electrons['m'] = plasma_particle.USUAL_ELECTRON_MASS / per_r_step**2
+    electrons['q'] = plasma_particle.USUAL_ELECTRON_CHARGE / per_r_step**2
+    # v, p == 0
+    return plasma.ravel()
 
 
 ### Routines written by I. A. Shalimova, adapted by A. P. Sosedkin
@@ -44,8 +66,9 @@ def make_plasma(window_width, steps, per_xi_step=1):
 from .. import plasma_particle
 from .. cimport plasma_particle
 
-from .field_solver import ProgonkaTmp
-from .field_solver import Neuman_red, reduction_Dirichlet1, Posson_reduct_12
+#from .field_solver import ProgonkaTmp
+#from .field_solver import Neuman_red, reduction_Dirichlet1, Posson_reduct_12
+from . import field_solver
 
 
 # Config
@@ -61,6 +84,7 @@ cdef class PlasmaSolverConfig:
     cdef public double noise_reductor_friction
     cdef public double noise_reductor_reach
     cdef public double noise_reductor_final_only
+    cdef public unsigned int threads
 
     def __init__(self, global_config):
         self.npq, unwanted = divmod(log2(global_config.grid_steps - 1), 1)
@@ -85,6 +109,8 @@ cdef class PlasmaSolverConfig:
         self.noise_reductor_friction = global_config.noise_reductor_friction
         self.noise_reductor_reach = global_config.noise_reductor_reach
         self.noise_reductor_final_only = global_config.noise_reductor_final_only
+
+        self.threads = global_config.openmp_limit_threads
 
 # RoJ for both scalar charge density ro and vector current j, TODO: get rid of
 cdef packed struct RoJ_t:
@@ -128,7 +154,8 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
     #assert Ex.shape[0] == Ex.shape[1] == config.n_dim
 
     # indexed for performance
-    for k in range(xs.shape[0]):
+    for k in cython.parallel.prange(xs.shape[0],
+                                    nogil=True, num_threads=config.threads):
         #assert -config.particle_boundary < xs[k] < config.particle_boundary
         #assert -config.particle_boundary < ys[k] < config.particle_boundary
 
@@ -169,7 +196,7 @@ cpdef void ro_and_j_ie_Vshivkov(PlasmaSolverConfig config,
                                 # n_dim, n_dim
                                 np.ndarray[RoJ_t, ndim=2] roj,
                                 ):
-    cdef unsigned int i, j
+    cdef unsigned int i, j, z
     cdef int q
     cdef long k
     cdef double x_loc, y_loc
@@ -177,58 +204,84 @@ cpdef void ro_and_j_ie_Vshivkov(PlasmaSolverConfig config,
     cdef double dro, djx, djy, djz
     cdef double gamma_m
     cdef plasma_particle.t p
-
     cdef unsigned int n_dim = roj.shape[0]
-    #assert roj.shape[0] == roj.shape[1]
+    assert roj.shape[0] == roj.shape[1]
+
+    cdef np.ndarray[RoJ_t, ndim=3] roj_tmp = np.zeros(
+        (config.threads, n_dim, n_dim), RoJ_dtype
+    )
+    cdef np.ndarray[RoJ_t, ndim=2] roj_thread
 
     roj[...] = 0
 
     # for p in plasma_particles: indexed for performance
-    for k in range(plasma_particles.shape[0]):
-        p = plasma_particles[k]
-        gamma_m = sqrt(p.m**2 + p.p[0]**2 + p.p[1]**2 + p.p[2]**2)
-        dro = p.q / (1 - p.p[0] / gamma_m)
-        djz = p.p[0] * (dro / gamma_m)
-        djx = p.p[1] * (dro / gamma_m)
-        djy = p.p[2] * (dro / gamma_m)
+    # NOTE: I'm kinda worried that it works even without thread-local arrays
+    # NOTE: It doesn't
+    cdef int tid
+    with nogil, parallel(num_threads=config.threads):
+        tid = cython.parallel.threadid()
+        for k in cython.parallel.prange(plasma_particles.shape[0]):
+            p = plasma_particles[k]
+            gamma_m = sqrt(p.m**2 + p.p[0]**2 + p.p[1]**2 + p.p[2]**2)
+            dro = p.q / (1 - p.p[0] / gamma_m)
+            djz = p.p[0] * (dro / gamma_m)
+            djx = p.p[1] * (dro / gamma_m)
+            djy = p.p[2] * (dro / gamma_m)
 
-        # particle indices in roj and adge arrays
-        i = <unsigned int> ((config.x_max + p.x) / config.h)
-        j = <unsigned int> ((config.x_max + p.y) / config.h)
-        #assert 0 < i < n_dim - 1 and 0 < j < n_dim - 1
+            # particle indices in roj and adge arrays
+            i = <unsigned int> ((config.x_max + p.x) / config.h)
+            j = <unsigned int> ((config.x_max + p.y) / config.h)
+            #assert 0 < i < n_dim - 1 and 0 < j < n_dim - 1
 
-        x_loc = config.x_max + p.x - i * config.h - .5 * config.h
-        y_loc = config.x_max + p.y - j * config.h - .5 * config.h
+            x_loc = config.x_max + p.x - i * config.h - .5 * config.h
+            y_loc = config.x_max + p.y - j * config.h - .5 * config.h
 
-        fx1 = .75 - x_loc**2 / config.h**2
-        fy1 = .75 - y_loc**2 / config.h**2
-        fx2 = .5 + x_loc / config.h
-        fy2 = .5 + y_loc / config.h
-        fx3 = .5 - x_loc / config.h
-        fy3 = .5 - y_loc / config.h
+            fx1 = .75 - x_loc**2 / config.h**2
+            fy1 = .75 - y_loc**2 / config.h**2
+            fx2 = .5 + x_loc / config.h
+            fy2 = .5 + y_loc / config.h
+            fx3 = .5 - x_loc / config.h
+            fy3 = .5 - y_loc / config.h
 
-        % for comp in 'ro', 'jz', 'jx', 'jy':
-        roj[i + 0, j + 0].${comp} += d${comp} * fx1 * fy1
-        roj[i + 1, j + 0].${comp} += d${comp} * fx2**2 * fy1 / 2
-        roj[i + 0, j + 1].${comp} += d${comp} * fy2**2 * fx1 / 2
-        roj[i + 1, j + 1].${comp} += d${comp} * fx2**2 * fy2**2 / 4
-        roj[i - 1, j + 0].${comp} += d${comp} * fx3**2 * fy1 / 2
-        roj[i + 0, j - 1].${comp} += d${comp} * fy3**2 * fx1 / 2
-        roj[i - 1, j - 1].${comp} += d${comp} * fx3**2 * fy3**2 / 4
-        roj[i - 1, j + 1].${comp} += d${comp} * fx3**2 * fy2**2 / 4
-        roj[i + 1, j - 1].${comp} += d${comp} * fx2**2 * fy3**2 / 4
-        % endfor
+            % for comp in 'ro', 'jz', 'jx', 'jy':
+            roj_tmp[tid, i + 0, j + 0].${comp} += d${comp} * fx1 * fy1
+            roj_tmp[tid, i + 1, j + 0].${comp} += d${comp} * fx2**2 * fy1 / 2
+            roj_tmp[tid, i + 0, j + 1].${comp} += d${comp} * fy2**2 * fx1 / 2
+            roj_tmp[tid, i + 1, j + 1].${comp} += d${comp} * fx2**2 * fy2**2 / 4
+            roj_tmp[tid, i - 1, j + 0].${comp} += d${comp} * fx3**2 * fy1 / 2
+            roj_tmp[tid, i + 0, j - 1].${comp} += d${comp} * fy3**2 * fx1 / 2
+            roj_tmp[tid, i - 1, j - 1].${comp} += d${comp} * fx3**2 * fy3**2 / 4
+            roj_tmp[tid, i - 1, j + 1].${comp} += d${comp} * fx3**2 * fy2**2 / 4
+            roj_tmp[tid, i + 1, j - 1].${comp} += d${comp} * fx2**2 * fy3**2 / 4
+            % endfor
+
+    for i in prange(n_dim, nogil=True, num_threads=config.threads):
+        for j in range(n_dim):
+            for z in range(config.threads):
+                % for comp in 'ro', 'jz', 'jx', 'jy':
+                roj[i, j].${comp} += roj_tmp[z, i, j].${comp}
+                % endfor
+
+    #sum_roj(roj_tmp, roj)
+
+cpdef void sum_roj(np.ndarray[RoJ_t, ndim=3] roj_tmp,
+                   np.ndarray[RoJ_t, ndim=2] roj,
+                  ):
+    np.sum(roj_tmp['ro'], axis=0, out=roj['ro'])
+    np.sum(roj_tmp['jx'], axis=0, out=roj['jx'])
+    np.sum(roj_tmp['jy'], axis=0, out=roj['jy'])
+    np.sum(roj_tmp['jz'], axis=0, out=roj['jz'])
 
 
 ### Convenience Python wrappers above them; TODO: get rid of
 
 def interpolate_fields(config, xs, ys, Ex, Ey, Ez, Bx, By, Bz):
-    Exs = np.zeros_like(xs)
-    Eys = np.zeros_like(xs)
-    Ezs = np.zeros_like(xs)
-    Bxs = np.zeros_like(xs)
-    Bys = np.zeros_like(xs)
-    Bzs = np.zeros_like(xs)
+    Exs = np.empty_like(xs)
+    Eys = np.empty_like(xs)
+    Ezs = np.empty_like(xs)
+    Bxs = np.empty_like(xs)
+    Bys = np.empty_like(xs)
+    Bzs = np.empty_like(xs)
     interpolate_fields_fs9(config, xs, ys,
                            Ex, Ey, Ez, Bx, By, Bz,
                            Exs, Eys, Ezs, Bxs, Bys, Bzs)
@@ -246,78 +299,17 @@ def deposit(config, plasma):
     # and remove a lot of inner ifs
     return roj
 
-
-def calculate_fields(config, roj_cur, roj_prev, Ex_, Ey_, Ez_, Bx_, By_, Bz_, beam_ro, variant_A=False):
-    tmp = ProgonkaTmp(config.n_dim)
-
-    Ex, Ey, Ez = Ex_.copy(), Ey_.copy(), Ez_.copy()
-    Bx, By, Bz = Bx_.copy(), By_.copy(), Bz_.copy()
-    roj_edges = np.zeros((4, 2, config.n_dim), dtype=RoJ_dtype)
-
-    if variant_A:
-        roj = np.zeros_like(roj_cur)
-        for comp in 'ro', 'jx', 'jy', 'jz':
-            roj[comp] = (roj_cur[comp] + roj_prev[comp]) / 2
-    else:
-        roj = roj_cur.copy()
-
-    djx_dx, djx_dy = np.gradient(roj['jx'], config.h, config.h, edge_order=2)
-    djy_dx, djy_dy = np.gradient(roj['jy'], config.h, config.h, edge_order=2)
-    djz_dx, djz_dy = np.gradient(roj['jz'], config.h, config.h, edge_order=2)
-    dro_dx, dro_dy = np.gradient(roj['ro'], config.h, config.h, edge_order=2)
-    beam_ro_dx, beam_ro_dy = np.gradient(beam_ro, config.h, config.h,
-                                         edge_order=2)
-    djx_dxi = (roj_prev['jx'] - roj_cur['jx']) / config.h3
-    djy_dxi = (roj_prev['jy'] - roj_cur['jy']) / config.h3
-
-    # Field Ez
-    reduction_Dirichlet1(-(djx_dx + djy_dy), Ez,
-                         tmp, config.n_dim, config.h, config.npq)
-
-    # Field Bz
-    Neuman_red(config.B_0,
-               -roj[0, :]['jy'], roj[-1, :]['jy'],
-               roj[:, 0]['jx'], -roj[:, -1]['jx'],
-               -(djx_dy - djy_dx), Bz,
-               tmp, config.n_dim, config.h, config.npq, config.x_max)
-
-    # Field Ex
-    Posson_reduct_12(-(beam_ro[0] + roj['ro'][0]),
-                     +(beam_ro[-1] + roj['ro'][-1]),
-                     -(beam_ro_dx + dro_dx - djx_dxi) + Ex, Ex,
-                     tmp, config.n_dim, config.h, config.npq)
-
-    # Field Ey
-    Posson_reduct_12(-(beam_ro[:, 0] + roj['ro'][:, 0]),
-                     +(beam_ro[:, -1] + roj['ro'][:, -1]),
-                     (-(beam_ro_dy + dro_dy - djy_dxi) + Ey).T, Ey.T,
-                     tmp, config.n_dim, config.h, config.npq)
-
-    # Field Bx
-    Posson_reduct_12(-(beam_ro[:, 0] + roj['jz'][:, 0]),
-                     beam_ro[:, -1] + roj['jz'][:, -1],
-                     +((beam_ro_dy + djz_dy - djy_dxi) + Bx).T, Bx.T,
-                     tmp, config.n_dim, config.h, config.npq)
-
-    # Field By
-    Posson_reduct_12(beam_ro[0] + roj['jz'][0],
-                     -(beam_ro[-1] + roj['jz'][-1]),
-                     -(beam_ro_dx + djz_dx - djx_dxi) + By, By,  # !!!
-                     tmp, config.n_dim, config.h, config.npq)
-
-    if variant_A:
-        # ??? VAR A/B? -- shove inside calculate_fields (E_new = 2 * E_result - E_input)
-        Ex = 2 * Ex - Ex_
-        Ey = 2 * Ey - Ey_
-        Ez = 2 * Ez - Ez_
-        Bx = 2 * Bx - Bx_
-        By = 2 * By - By_
-        Bz = 2 * Bz - Bz_
-
-    return Ex, Ey, Ez, Bx, By, Bz
+def calculate_fields(config, roj_cur, roj_prev,
+                     Ex_, Ey_, Ez_, Bx_, By_, Bz_,
+                     beam_ro, variant_A=False):
+    return field_solver.calculate_fields(
+        roj_cur, roj_prev, Ex_, Ey_, Ez_, Bx_, By_, Bz_, beam_ro,
+        config.n_dim, config.h, config.npq, config.x_max, config.h3, config.B_0,
+        config.threads, variant_A)
 
 
 ### More convenience functions
+
 
 
 def average_fields(Fl1, Fl2):
@@ -398,7 +390,8 @@ cpdef void move_simple_fast_(PlasmaSolverConfig config,
     cdef plasma_particle.t p
 
     # for p in plasma_particles: indexed for performance
-    for k in range(plasma_particles.shape[0]):
+    for k in cython.parallel.prange(plasma_particles.shape[0],
+                                    nogil=True, num_threads=config.threads):
         p = plasma_particles[k]
 
         gamma_m = sqrt(p.m**2 + p.p[0]**2 + p.p[1]**2 + p.p[2]**2)
@@ -481,11 +474,12 @@ cpdef void move_smart_fast_(PlasmaSolverConfig config,
                             np.ndarray[plasma_particle.t] out_plasma,
                             ):
     cdef long k
-    cdef double gamma_m, dpx, dpy, dpz, px, py, pz, vx, vy, vz, factor1
+    cdef double gamma_m, dpx, dpy, dpz, px, py, pz, vx, vy, vz, factor_1
     cdef plasma_particle.t p
 
     # for p in plasma_particles: indexed for performance
-    for k in range(plasma_particles.shape[0]):
+    for k in cython.parallel.prange(plasma_particles.shape[0],
+                                    nogil=True, num_threads=config.threads):
         p = plasma_particles[k]
 
         px = p.p[1]
@@ -551,20 +545,28 @@ def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, noise_reductor
 
 ### Noise reductor draft
 
-def noise_reductor(config, plasma):  #, ro
+def noise_reductor(config, plasma):
     plasma = plasma.copy()
-    plasma[::2] = noise_reductor_(config, plasma[::2])    # ions
-    plasma[1::2] = noise_reductor_(config, plasma[1::2])  # electrons
+    N2 = len(plasma) // 2
+    plasma[:N2] = noise_reductor_(config, plasma[:N2])  # ions
+    plasma[N2:] = noise_reductor_(config, plasma[N2:])  # electrons
+    #plasma[::2] = noise_reductor_(config, plasma[::2])  # ions
+    #plasma[1::2] = noise_reductor_(config, plasma[1::2])  # electrons
     return plasma
 
 
+@cython.boundscheck(False)
+@cython.cdivision(True)
 cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
-                                                   np.ndarray[plasma_particle.t] in_plasma,
-                                                   # np.ndarray[double, ndim=2] ro
-                                                   ):
-    cdef long T = in_plasma.shape[0]
-    cdef int N = <int> sqrt(T)
-    cdef np.ndarray[plasma_particle.t, ndim=2] plasma = in_plasma.copy().reshape(N, N)
+                                                    np.ndarray[plasma_particle.t] in_plasma,
+                                                    # np.ndarray[double, ndim=2] ro
+                                                    ):
+    cdef Py_ssize_t T = in_plasma.shape[0]
+    cdef Py_ssize_t N = <int> sqrt(T)
+    assert N**2 == T
+    cdef np.ndarray[plasma_particle.t, ndim=2] plasma1 = in_plasma.reshape(N, N)
+    # TODO: skip copying most of the stuff?
+    cdef np.ndarray[plasma_particle.t, ndim=2] plasma2 = plasma1.copy()
     cdef plasma_particle.t neighbor1, neighbor2
     cdef double coord_deviation, p_m_deviation
     cdef double dp_friction, dp_equalization
@@ -572,34 +574,38 @@ cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
     cdef double friction_c = config.noise_reductor_friction * config.h  # empiric for now
     cdef double equalization_c = config.noise_reductor_equalization / config.h  # empiric for now
     cdef double reach = config.noise_reductor_reach * config.h  # empiric for now
-    cdef int i, j
+    cdef Py_ssize_t i, j
 
     # pass in x direction
-    for i in range(1, N - 1):
+    for i in prange(1, N - 1, nogil=True, num_threads=config.threads):
+    #for i in range(1, N - 1):
         for j in range(N):
-            coord_deviation = plasma[i, j].x - (plasma[i - 1, j].x + plasma[i + 1, j].x) / 2
+            coord_deviation = plasma1[i, j].x - (plasma1[i - 1, j].x + plasma1[i + 1, j].x) / 2
             if coord_deviation < config.noise_reductor_reach:
-                p_m_deviation = (plasma[i, j].p[1] / plasma[i, j].m -
-                                 (plasma[i - 1, j].p[1] / plasma[i - 1, j].m +
-                                  plasma[i + 1, j].p[1] / plasma[i + 1, j].m) / 2)
+                p_m_deviation = (plasma1[i, j].p[1] / plasma1[i, j].m -
+                                 (plasma1[i - 1, j].p[1] / plasma1[i - 1, j].m +
+                                  plasma1[i + 1, j].p[1] / plasma1[i + 1, j].m) / 2)
                 dp_equalization = equalization_c * sin(pi * reach * coord_deviation)
-                dp_friction = friction_c * plasma[i, j].m * p_m_deviation
-                plasma[i, j].p[1] -= config.h3 * (dp_friction + dp_equalization)
+                dp_friction = friction_c * plasma1[i, j].m * p_m_deviation
+                plasma2[i, j].p[1] -= config.h3 * (dp_friction + dp_equalization)
 
     # pass in y direction
-    for i in range(N):
+    # TODO: skip copying most of the stuff?
+    for i in cython.parallel.prange(N,
+                                    nogil=True, num_threads=config.threads):
+    #for i in range(N):
         for j in range(1, N - 1):
-            coord_deviation = plasma[i, j].y - (plasma[i, j - 1].y + plasma[i, j + 1].y) / 2
+            coord_deviation = plasma1[i, j].y - (plasma1[i, j - 1].y + plasma1[i, j + 1].y) / 2
             if coord_deviation < config.noise_reductor_reach:
-                p_m_deviation = (plasma[i, j].p[2] / plasma[i, j].m -
-                                 (plasma[i, j - 1].p[2] / plasma[i, j - 1].m +
-                                  plasma[i, j + 1].p[2] / plasma[i, j + 1].m) / 2)
+                p_m_deviation = (plasma1[i, j].p[2] / plasma1[i, j].m -
+                                 (plasma1[i, j - 1].p[2] / plasma1[i, j - 1].m +
+                                  plasma1[i, j + 1].p[2] / plasma1[i, j + 1].m) / 2)
                 dp_equalization = equalization_c * sin(pi * reach * coord_deviation)
-                dp_friction = friction_c * plasma[i, j].m * p_m_deviation
-                plasma[i, j].p[2] -= config.h3 * (dp_friction + dp_equalization)
+                dp_friction = friction_c * plasma1[i, j].m * p_m_deviation
+                plasma2[i, j].p[2] -= config.h3 * (dp_friction + dp_equalization)
 
 
-    return plasma.reshape(T)
+    return plasma2.reshape(T)
 
 
 ### The main plot, written by K. V. Lotov

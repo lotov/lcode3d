@@ -861,12 +861,7 @@ cdef class FieldSolver:
                            bint variant_A):
         cdef int n_dim = self.n_dim, threads = self.threads
         cdef Py_ssize_t i, j
-        cdef ThreadLocalStorage tls_0 = self.tlss[0]
-        cdef ThreadLocalStorage tls_1 = self.tlss[1]
-        cdef ThreadLocalStorage tls_2 = self.tlss[2]
-        cdef ThreadLocalStorage tls_3 = self.tlss[3]
-        cdef ThreadLocalStorage tls_4 = self.tlss[4]
-        cdef ThreadLocalStorage tls_5 = self.tlss[5]
+        cdef ThreadLocalStorage tls
 
         if variant_A:
             roj = np.zeros_like(roj_cur)
@@ -886,24 +881,27 @@ cdef class FieldSolver:
         cdef double[:, :] out_Bx_T = out_Bx.T
 
         cdef double[:] zz = np.zeros(n_dim)
-        cdef int I
+        cdef int I, t
         for I in cython.parallel.prange(6, schedule='dynamic', nogil=True,
                                         num_threads=min(threads, 6)):
+            t = cython.parallel.threadid()
+            with gil:
+                tls = self.tlss[t]
             if I == 0:
-                calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, tls_0,
+                calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, tls,
                              n_dim, h, h3, npq, zz, variant_A)
             elif I == 1:
-                calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, tls_1,
+                calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, tls,
                              n_dim, h, h3, npq, zz, variant_A)
             elif I == 2:
-                calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, tls_2,
+                calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, tls,
                              n_dim, h, h3, npq, zz, variant_A)
             elif I == 3:
-                calculate_By(in_By, out_By, jz, jx, jx_prev, tls_3,
+                calculate_By(in_By, out_By, jz, jx, jx_prev, tls,
                              n_dim, h, h3, npq, zz, variant_A)
             elif I == 4:
-                calculate_Bz(in_Bz, out_Bz, jx, jy, tls_4,
+                calculate_Bz(in_Bz, out_Bz, jx, jy, tls,
                              n_dim, h, npq, x_max, B_0, zz, variant_A)
             elif I == 5:
-                calculate_Ez(in_Ez, out_Ez, jx, jy, tls_5,
+                calculate_Ez(in_Ez, out_Ez, jx, jy, tls,
                              n_dim, h, npq, variant_A)

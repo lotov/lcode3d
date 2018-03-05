@@ -28,10 +28,28 @@ cdef packed struct RoJ_t:
     double jy
 
 
+cdef class ThreadLocalStorage:
+    # two very popular temporary arrays
+    cdef double[:] alf  # n_dim
+    cdef double[:] bet  # n_dim + 1
+    # temporary arrays for Posson_reduct_12 and reduction_Dirichlet1
+    cdef double[:] RedFi  # n_dim
+    cdef double[:] Svl  # n_dim
+    cdef double[:] PrF  # n_dim
+    cdef double[:] PrV  # n_dim
+    cdef double[:] Psi  # n_dim
+    cdef double[:, :] p  # n_dim, n_dim
+    cdef double[:, :] v  # n_dim, n_dim
+    cdef double[:, :] v1  # n_dim, n_dim
+    cdef double[:, :] p_km1  # n_dim, n_dim
+    cdef double[:, :] rhs  # n_dim, n_dim
+    cdef double[:, :] grad1  # n_dim, n_dim
+    cdef double[:, :] grad2  # n_dim, n_dim
+
 
 cdef class FieldSolver:
     cdef int n_dim, threads
-    cdef object tlss
+    cdef ThreadLocalStorage tls_0, tls_1, tls_2, tls_3, tls_4, tls_5
 
     cpdef calculate_fields(self,
                            np.ndarray[RoJ_t, ndim=2] roj_cur,

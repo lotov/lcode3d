@@ -41,23 +41,6 @@ RoJ_dtype = np.dtype([
 
 
 cdef class ThreadLocalStorage:
-    # two very popular temporary arrays
-    cdef double[:] alf  # n_dim
-    cdef double[:] bet  # n_dim + 1
-    # temporary arrays for Posson_reduct_12 and reduction_Dirichlet1
-    cdef double[:] RedFi  # n_dim
-    cdef double[:] Svl  # n_dim
-    cdef double[:] PrF  # n_dim
-    cdef double[:] PrV  # n_dim
-    cdef double[:] Psi  # n_dim
-    cdef double[:, :] p  # n_dim, n_dim
-    cdef double[:, :] v  # n_dim, n_dim
-    cdef double[:, :] v1  # n_dim, n_dim
-    cdef double[:, :] p_km1  # n_dim, n_dim
-    cdef double[:, :] rhs  # n_dim, n_dim
-    cdef double[:, :] grad1  # n_dim, n_dim
-    cdef double[:, :] grad2  # n_dim, n_dim
-
     def __init__(self, n_dim):
         self.alf = np.zeros(n_dim)
         self.bet = np.zeros(n_dim + 1)
@@ -843,7 +826,12 @@ cpdef void calculate_Ez(double[:, :] in_Ez,
 cdef class FieldSolver:
     def __init__(self, n_dim, threads=1):
         self.n_dim, self.threads = n_dim, threads
-        self.tlss = [ThreadLocalStorage(n_dim) for _ in range(threads)]
+        self.tls_0 = ThreadLocalStorage(n_dim)
+        self.tls_1 = ThreadLocalStorage(n_dim)
+        self.tls_2 = ThreadLocalStorage(n_dim)
+        self.tls_3 = ThreadLocalStorage(n_dim)
+        self.tls_4 = ThreadLocalStorage(n_dim)
+        self.tls_5 = ThreadLocalStorage(n_dim)
 
     cpdef calculate_fields(self,
                            np.ndarray[RoJ_t, ndim=2] roj_cur,
@@ -869,7 +857,6 @@ cdef class FieldSolver:
                            bint variant_A):
         cdef int n_dim = self.n_dim, threads = self.threads
         cdef Py_ssize_t i, j
-        cdef ThreadLocalStorage tls
 
         if variant_A:
             roj = np.zeros_like(roj_cur)
@@ -889,27 +876,24 @@ cdef class FieldSolver:
         cdef double[:, :] out_Bx_T = out_Bx.T
 
         cdef double[:] zz = np.zeros(n_dim)
-        cdef int I, t
+        cdef int I
         for I in cython.parallel.prange(6, schedule='dynamic', nogil=True,
                                         num_threads=min(threads, 6)):
-            t = cython.parallel.threadid()
-            with gil:
-                tls = self.tlss[t]
             if I == 0:
-                calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, tls,
+                calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, self.tls_0,
                              n_dim, h, h3, npq, zz, variant_A)
             elif I == 1:
-                calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, tls,
+                calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, self.tls_1,
                              n_dim, h, h3, npq, zz, variant_A)
             elif I == 2:
-                calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, tls,
+                calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, self.tls_2,
                              n_dim, h, h3, npq, zz, variant_A)
             elif I == 3:
-                calculate_By(in_By, out_By, jz, jx, jx_prev, tls,
+                calculate_By(in_By, out_By, jz, jx, jx_prev, self.tls_3,
                              n_dim, h, h3, npq, zz, variant_A)
             elif I == 4:
-                calculate_Bz(in_Bz, out_Bz, jx, jy, tls,
+                calculate_Bz(in_Bz, out_Bz, jx, jy, self.tls_4,
                              n_dim, h, npq, x_max, B_0, zz, variant_A)
             elif I == 5:
-                calculate_Ez(in_Ez, out_Ez, jx, jy, tls,
+                calculate_Ez(in_Ez, out_Ez, jx, jy, self.tls_5,
                              n_dim, h, npq, variant_A)

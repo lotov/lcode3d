@@ -63,11 +63,11 @@ def make_plasma(window_width, steps, per_r_step=1):
 ### Routines written by I. A. Shalimova, adapted by A. P. Sosedkin
 
 
-from .. import plasma_particle
 from .. cimport plasma_particle
+from .. import plasma_particle
 
-from .field_solver import FieldSolver
 from .field_solver cimport FieldSolver
+from .field_solver import FieldSolver
 
 
 # Config

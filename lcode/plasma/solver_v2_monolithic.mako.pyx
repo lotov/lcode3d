@@ -41,8 +41,15 @@ from .. import plasma_particle
 
 def make_plasma(window_width, steps, per_r_step=1):
     plasma_step = window_width / steps / per_r_step
-    plasma_grid_half = np.arange(plasma_step / 2, window_width / 2, plasma_step)
-    plasma_grid = np.concatenate([-plasma_grid_half[::-1], plasma_grid_half])
+    if per_r_step % 2:  # some on zero axes, none on cell corners
+        right_half = np.arange(0, window_width / 2, plasma_step)
+        left_half = -right_half[:0:-1]  # invert, reverse, drop zero
+        plasma_grid = np.concatenate([left_half, right_half])
+    else:  # none on zero axes, none on cell corners
+        right_half = np.arange(plasma_step / 2, window_width / 2, plasma_step)
+        left_half = -right_half[::-1]  # invert, reverse
+        plasma_grid = np.concatenate([left_half, right_half])
+    assert(np.array_equal(plasma_grid, -plasma_grid[::-1]))
     N = len(plasma_grid)
     plasma_grid_xs, plasma_grid_ys = plasma_grid[:, None], plasma_grid[None, :]
 

@@ -27,13 +27,6 @@ cdef packed struct RoJ_t:
     double jx
     double jy
 
-RoJ_dtype = np.dtype([
-    ('ro', np.double),
-    ('jz', np.double),
-    ('jx', np.double),
-    ('jy', np.double),
-], align=False)
-
 
 
 cdef class FieldSolver:

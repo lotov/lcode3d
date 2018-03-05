@@ -32,6 +32,14 @@ cimport numpy as np
 import cython.parallel
 
 
+RoJ_dtype = np.dtype([
+    ('ro', np.double),
+    ('jz', np.double),
+    ('jx', np.double),
+    ('jy', np.double),
+], align=False)
+
+
 cdef class ThreadLocalStorage:
     # two very popular temporary arrays
     cdef double[:] alf  # n_dim

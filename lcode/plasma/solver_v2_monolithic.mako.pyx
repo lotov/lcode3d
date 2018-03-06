@@ -584,8 +584,8 @@ cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
     cdef double coord_deviation, p_m_deviation
     cdef double dp_friction, dp_equalization
     # TODO: allow noise reductor parameters to be specified as 2d arrays!
-    cdef double friction_c = config.noise_reductor_friction * config.h  # empiric for now
-    cdef double equalization_c = config.noise_reductor_equalization / config.h  # empiric for now
+    cdef double friction_c = config.noise_reductor_friction / config.h  # empiric for now
+    cdef double equalization_c = config.noise_reductor_equalization * config.h  # empiric for now
     cdef double reach = config.noise_reductor_reach * config.h  # empiric for now
     cdef Py_ssize_t i, j
 
@@ -594,26 +594,25 @@ cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
     #for i in range(1, N - 1):
         for j in range(N):
             coord_deviation = plasma1[i, j].x - (plasma1[i - 1, j].x + plasma1[i + 1, j].x) / 2
-            if coord_deviation < config.noise_reductor_reach:
+            if coord_deviation < reach:
                 p_m_deviation = (plasma1[i, j].p[1] / plasma1[i, j].m -
                                  (plasma1[i - 1, j].p[1] / plasma1[i - 1, j].m +
                                   plasma1[i + 1, j].p[1] / plasma1[i + 1, j].m) / 2)
-                dp_equalization = equalization_c * sin(pi * reach * coord_deviation)
+                dp_equalization = equalization_c * sin(pi * coord_deviation / reach)
                 dp_friction = friction_c * plasma1[i, j].m * p_m_deviation
                 plasma2[i, j].p[1] -= config.h3 * (dp_friction + dp_equalization)
 
     # pass in y direction
     # TODO: skip copying most of the stuff?
-    for i in cython.parallel.prange(N,
-                                    nogil=True, num_threads=config.threads):
+    for i in cython.parallel.prange(N, nogil=True, num_threads=config.threads):
     #for i in range(N):
         for j in range(1, N - 1):
             coord_deviation = plasma1[i, j].y - (plasma1[i, j - 1].y + plasma1[i, j + 1].y) / 2
-            if coord_deviation < config.noise_reductor_reach:
+            if coord_deviation < reach:
                 p_m_deviation = (plasma1[i, j].p[2] / plasma1[i, j].m -
                                  (plasma1[i, j - 1].p[2] / plasma1[i, j - 1].m +
                                   plasma1[i, j + 1].p[2] / plasma1[i, j + 1].m) / 2)
-                dp_equalization = equalization_c * sin(pi * reach * coord_deviation)
+                dp_equalization = equalization_c * sin(pi * coord_deviation / reach)
                 dp_friction = friction_c * plasma1[i, j].m * p_m_deviation
                 plasma2[i, j].p[2] -= config.h3 * (dp_friction + dp_equalization)
 

@@ -594,7 +594,7 @@ cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
     #for i in range(1, N - 1):
         for j in range(N):
             coord_deviation = plasma1[i, j].x - (plasma1[i - 1, j].x + plasma1[i + 1, j].x) / 2
-            if coord_deviation < reach:
+            if abs(coord_deviation) < reach:
                 p_m_deviation = (plasma1[i, j].p[1] / plasma1[i, j].m -
                                  (plasma1[i - 1, j].p[1] / plasma1[i - 1, j].m +
                                   plasma1[i + 1, j].p[1] / plasma1[i + 1, j].m) / 2)
@@ -608,7 +608,7 @@ cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
     #for i in range(N):
         for j in range(1, N - 1):
             coord_deviation = plasma1[i, j].y - (plasma1[i, j - 1].y + plasma1[i, j + 1].y) / 2
-            if coord_deviation < reach:
+            if abs(coord_deviation) < reach:
                 p_m_deviation = (plasma1[i, j].p[2] / plasma1[i, j].m -
                                  (plasma1[i, j - 1].p[2] / plasma1[i, j - 1].m +
                                   plasma1[i, j + 1].p[2] / plasma1[i, j + 1].m) / 2)

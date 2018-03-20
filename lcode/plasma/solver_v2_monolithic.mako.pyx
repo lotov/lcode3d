@@ -90,6 +90,7 @@ cdef class PlasmaSolverConfig:
     cdef public double noise_reductor_friction
     cdef public double noise_reductor_reach
     cdef public double noise_reductor_final_only
+    cdef public double density_noise_reductor
     cdef public unsigned int threads
 
     def __init__(self, global_config):
@@ -116,7 +117,10 @@ cdef class PlasmaSolverConfig:
         self.noise_reductor_reach = global_config.noise_reductor_reach
         self.noise_reductor_final_only = global_config.noise_reductor_final_only
 
+        self.density_noise_reductor = global_config.density_noise_reductor
+
         self.threads = global_config.openmp_limit_threads
+
 
 # RoJ for both scalar charge density ro and vector current j, TODO: get rid of
 cdef packed struct RoJ_t:
@@ -147,15 +151,18 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
                                   np.ndarray[double] Ezs,
                                   np.ndarray[double] Bxs,
                                   np.ndarray[double] Bys,
-                                  np.ndarray[double] Bzs):
+                                  np.ndarray[double] Bzs,
+                                  np.ndarray[double, ndim=2] ro
+                                  ):
     """
     Calculates fields at particle positions.
     TODO: describe
     """
     cdef long k
-    cdef unsigned int i1, j1
+    cdef unsigned int i, j
     cdef double x_loc, y_loc
     cdef double fx1, fy1, fx2, fy2, fx3, fy3
+    cdef double Ax, Ay
 
     #assert Ex.shape[0] == Ex.shape[1] == config.n_dim
 
@@ -165,13 +172,13 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
         #assert -config.particle_boundary < xs[k] < config.particle_boundary
         #assert -config.particle_boundary < ys[k] < config.particle_boundary
 
-        i1 = <unsigned int> ((config.x_max + xs[k]) / config.h)
-        j1 = <unsigned int> ((config.x_max + ys[k]) / config.h)
-        #assert 0 < i1 < Ex.shape[0] - 1
-        #assert 0 < j1 < Ex.shape[0] - 1
+        i = <unsigned int> ((config.x_max + xs[k]) / config.h)
+        j = <unsigned int> ((config.x_max + ys[k]) / config.h)
+        #assert 0 < i < Ex.shape[0] - 1
+        #assert 0 < j < Ex.shape[0] - 1
 
-        x_loc = config.x_max + xs[k] - i1 * config.h - .5 * config.h
-        y_loc = config.x_max + ys[k] - j1 * config.h - .5 * config.h
+        x_loc = config.x_max + xs[k] - i * config.h - .5 * config.h
+        y_loc = config.x_max + ys[k] - j * config.h - .5 * config.h
         #assert 0 <= x_loc < 1
         #assert 0 <= x_loc < 1
 
@@ -184,17 +191,28 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
 
         % for Fl in 'Ex', 'Ey', 'Ez', 'Bx', 'By', 'Bz':
         ${Fl}s[k] = (  # noqa: E201
-            ${Fl}[i1 + 0, j1 + 0] * fx1 * fy1 +            # noqa: E222
-            ${Fl}[i1 + 1, j1 + 0] * fx2**2 * fy1 / 2 +     # noqa: E222
-            ${Fl}[i1 + 0, j1 + 1] * fy2**2 * fx1 / 2 +     # noqa: E222
-            ${Fl}[i1 + 1, j1 + 1] * fx2**2 * fy2**2 / 4 +  # noqa: E222
-            ${Fl}[i1 - 1, j1 + 0] * fx3**2 * fy1 / 2 +  +  # noqa: E222
-            ${Fl}[i1 + 0, j1 - 1] * fy3**2 * fx1 / 2 +  +  # noqa: E222
-            ${Fl}[i1 - 1, j1 - 1] * fx3**2 * fy3**2 / 4 +  # noqa: E222
-            ${Fl}[i1 - 1, j1 + 1] * fx3**2 * fy2**2 / 4 +  # noqa: E222
-            ${Fl}[i1 + 1, j1 - 1] * fx2**2 * fy3**2 / 4
+            ${Fl}[i + 0, j + 0] * fx1 * fy1 +            # noqa: E222
+            ${Fl}[i + 1, j + 0] * fx2**2 * fy1 / 2 +     # noqa: E222
+            ${Fl}[i + 0, j + 1] * fy2**2 * fx1 / 2 +     # noqa: E222
+            ${Fl}[i + 1, j + 1] * fx2**2 * fy2**2 / 4 +  # noqa: E222
+            ${Fl}[i - 1, j + 0] * fx3**2 * fy1 / 2 +  +  # noqa: E222
+            ${Fl}[i + 0, j - 1] * fy3**2 * fx1 / 2 +  +  # noqa: E222
+            ${Fl}[i - 1, j - 1] * fx3**2 * fy3**2 / 4 +  # noqa: E222
+            ${Fl}[i - 1, j + 1] * fx3**2 * fy2**2 / 4 +  # noqa: E222
+            ${Fl}[i + 1, j - 1] * fx2**2 * fy3**2 / 4
         )
         % endfor
+
+        if config.density_noise_reductor:
+            if k >= xs.shape[0] // 2:  # electrons
+                if 12 < i < Ex.shape[0] - 1 - 12:
+                    Ax = (ro[i - 1, j] + ro[i + 1, j] - 2 * ro[i, j]) / 4
+                    Ax *= config.density_noise_reductor
+                    Exs[k] -= (Ax * config.h / pi) * sin(pi * x_loc / config.h)
+                if 12 < j < Ey.shape[1] - 1 - 12:
+                    Ay = (ro[i, j - 1] + ro[i, j + 1] - 2 * ro[i, j]) / 4
+                    Ay *= config.density_noise_reductor
+                    Eys[k] -= (Ay * config.h / pi) * sin(pi * y_loc / config.h)
 
 
 cpdef void ro_and_j_ie_Vshivkov(PlasmaSolverConfig config,
@@ -281,7 +299,7 @@ cpdef void sum_roj(np.ndarray[RoJ_t, ndim=3] roj_tmp,
 
 ### Convenience Python wrappers above them; TODO: get rid of
 
-def interpolate_fields(config, xs, ys, Ex, Ey, Ez, Bx, By, Bz):
+def interpolate_fields(config, xs, ys, Ex, Ey, Ez, Bx, By, Bz, ro):
     Exs = np.empty_like(xs)
     Eys = np.empty_like(xs)
     Ezs = np.empty_like(xs)
@@ -290,7 +308,7 @@ def interpolate_fields(config, xs, ys, Ex, Ey, Ez, Bx, By, Bz):
     Bzs = np.empty_like(xs)
     interpolate_fields_fs9(config, xs, ys,
                            Ex, Ey, Ez, Bx, By, Bz,
-                           Exs, Eys, Ezs, Bxs, Bys, Bzs)
+                           Exs, Eys, Ezs, Bxs, Bys, Bzs, ro)
     # may assert that particles are contained in +- particle_boundary
     # and remove a lot of inner ifs
     return Exs, Eys, Ezs, Bxs, Bys, Bzs
@@ -653,7 +671,7 @@ cdef class PlasmaSolver:
         hs_xs, hs_ys = plasma_predicted_half1['x'], plasma_predicted_half1['y']
         #Exs, Eys, Ezs, Bxs, Bys, Bzs = interpolate_fields(config, hs_xs, hs_ys, *Fl)
         #plasma_1 = move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs)
-        Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl)
+        Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl, roj_prev['ro'])
         plasma_1 = move_smart_fast(config, plasma, *Fls,
                                    noise_reductor_enable=noise_reductor_predictions)
         roj_1 = deposit(config, plasma_1)
@@ -664,7 +682,7 @@ cdef class PlasmaSolver:
 
         # ===  3  ===  + hs_xs, hs_ys, Fl_pred
         Fl_avg_1 = average_fields(Fl, Fl_pred)
-        Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
+        Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1, roj_1['ro'])
         plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1,
                                    noise_reductor_enable=noise_reductor_predictions)
         roj_2 = deposit(config, plasma_2)
@@ -675,7 +693,7 @@ cdef class PlasmaSolver:
 
         # ===  5  ===  + hs_xs, hs_ys, Fl_new
         Fl_avg_2 = average_fields(Fl, Fl_new)
-        Fls_avg_2 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_2)
+        Fls_avg_2 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_2, roj_2['ro'])
         plasma_new = move_smart_fast(config, plasma, *Fls_avg_2,
                                      noise_reductor_enable=config.noise_reductor_enable)
         roj_new = deposit(config, plasma_new)

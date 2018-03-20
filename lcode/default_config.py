@@ -62,6 +62,8 @@ noise_reductor_friction = 0.1
 noise_reductor_reach = 1
 noise_reductor_final_only = False
 
+density_noise_reductor = 0
+
 def virtualize(a):
     return a
 

@@ -438,7 +438,7 @@ cpdef void move_simple_fast_(PlasmaSolverConfig config,
         if p.y > config.particle_boundary:
             p.y = +2 * config.particle_boundary - p.y
             p.p[2] *= -1
-        if p.x < -config.particle_boundary:
+        if p.y < -config.particle_boundary:
             p.y = -2 * config.particle_boundary - p.y
             p.p[2] *= -1
 
@@ -558,7 +558,7 @@ cpdef void move_smart_fast_(PlasmaSolverConfig config,
         if p.y > config.particle_boundary:
             p.y = +2 * config.particle_boundary - p.y
             p.p[2] *= -1
-        if p.x < -config.particle_boundary:
+        if p.y < -config.particle_boundary:
             p.y = -2 * config.particle_boundary - p.y
             p.p[2] *= -1
 

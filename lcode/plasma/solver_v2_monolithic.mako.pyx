@@ -676,6 +676,8 @@ cdef class PlasmaSolver:
                                    noise_reductor_enable=noise_reductor_predictions)
         roj_1 = deposit(config, plasma_1)
 
+        hs_xs = (plasma['x'] + plasma_1['x']) / 2
+        hs_ys = (plasma['y'] + plasma_1['y']) / 2
         # ===  2  ===  + hs_xs, hs_ys, roj_1
         Fl_pred = calculate_fields(config, self.field_solver, roj_1, roj_prev,
                                    *Fl, beam_ro, config.variant_A_predictor)
@@ -687,6 +689,8 @@ cdef class PlasmaSolver:
                                    noise_reductor_enable=noise_reductor_predictions)
         roj_2 = deposit(config, plasma_2)
 
+        hs_xs = (plasma['x'] + plasma_2['x']) / 2
+        hs_ys = (plasma['y'] + plasma_2['y']) / 2
         # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
         Fl_new = calculate_fields(config, self.field_solver, roj_2, roj_prev,
                                   *Fl_avg_1, beam_ro, config.variant_A_corrector)

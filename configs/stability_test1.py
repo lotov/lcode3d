@@ -45,7 +45,7 @@ xi_steps = int(3000 // xi_step_size)
 
 A, B = 0.08, 0.32
 
-noise_reductor_enable = True
+noise_reductor_enable = False
 noise_reductor_final_only = True
 #noise_reductor_equalization = 1
 #noise_reductor_friction = 0.001

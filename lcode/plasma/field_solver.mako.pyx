@@ -31,6 +31,8 @@ cimport numpy as np
 
 import cython.parallel
 
+import scipy.fftpack
+
 
 RoJ_dtype = np.dtype([
     ('ro', np.double),
@@ -41,7 +43,7 @@ RoJ_dtype = np.dtype([
 
 
 cdef class ThreadLocalStorage:
-    def __init__(self, n_dim):
+    def __init__(self, n_dim, h):
         self.alf = np.zeros(n_dim)
         self.bet = np.zeros(n_dim + 1)
         self.RedFi = np.zeros(n_dim)
@@ -56,6 +58,16 @@ cdef class ThreadLocalStorage:
         self.rhs = np.zeros((n_dim, n_dim))
         self.grad1 = np.zeros((n_dim, n_dim))
         self.grad2 = np.zeros((n_dim, n_dim))
+
+        self.Ez_a = 2 + 4 * np.sin(np.arange(1, n_dim) * np.pi / (2 * n_dim))**2  #  +  h**2  # only used with xi derivatives
+        self.Ez_bet = np.zeros((n_dim - 1, n_dim))
+        self.Ez_alf = np.zeros((n_dim - 1, n_dim))
+        self.Ez_alf[:, 0] = 0
+        for k in range(n_dim - 1):
+            for i in range(n_dim - 1):
+                self.Ez_alf[k, i + 1] = 1 / (self.Ez_a[k] - self.Ez_alf[k, i])
+        self.Ez_PrFi = np.zeros((n_dim - 1, n_dim - 1))
+        self.Ez_P = np.zeros((n_dim - 1, n_dim - 1))
 
 
 cdef void Progonka(double aa,
@@ -659,15 +671,70 @@ cpdef void pader_xi(double[:, :] in_prev, double[:, :] in_cur,
             out[i, j] = (in_prev[i, j] - in_cur[i, j]) / h3
 
 
+cdef class MixedSolver:
+    def __init__(MixedSolver self, int N, double h, bint subtraction_trick=False):
+        self.h, self.N = h, N
+        self.mul = h**2  / (2 * (N - 1))  # total multiplier to compensate for the iDCT+DCT transforms
+
+        aa = 2 + 4 * np.sin(np.arange(0, N) * np.pi / (2 * (N - 1)))**2  # diagonal matrix elements
+        if subtraction_trick:
+            aa += self.h**2
+        alf = np.zeros((N, N + 1))  # precalculated internal coefficients for tridiagonal solving
+        for i in range(1, N):
+            alf[:, i + 1] = 1 / (aa - alf[:, i])
+        self.alf = alf
+
+        self.bet = np.zeros((N, N))
+        # TODO: save space by using fewer arrays? or that would be negated with the FFTW interface?
+        self.rhs_fixed = np.zeros((N, N))
+        self.tmp1 = np.zeros((N, N))
+        self.tmp2 = np.zeros((N, N))
+
+    cpdef solve(MixedSolver self, double[:, :] rhs, double[:] bound_top, double[:] bound_bot, double[:, :] out):
+        # Solve Laplace x = (-)? RHS for x with mixed boundary conditions using DCT-1
+        cdef int i, j
+        assert rhs.shape[0] == rhs.shape[1] == self.N
+
+        # 1. Apply boundary conditions to the rhs
+        self.rhs_fixed[...] = rhs
+        for i in range(self.N):
+            self.rhs_fixed[i, 0] += bound_top[i] * (2 / self.h)
+            self.rhs_fixed[i, self.N - 1] += bound_bot[i] * (2 / self.h)
+            # self.rhs_fixed[0, i] = self.rhs_fixed[self.N - 1, i] = 0  # changes nothing???
+
+        # 2. Apply iDCT-1 (inverse Discrete Cosine Transform Type 1) to the RHS
+        # TODO: accelerated version using fftw with extra codelets via ctypes?
+        cdef double[:, :] tmp1 = scipy.fftpack.idct(x=self.rhs_fixed, type=1, overwrite_x=True).T
+        self.tmp1[...] = tmp1
+
+        # 3. Solve tridiagonal matrix equation for each spectral column with Thomas method:
+        # A @ tmp_2[k, :] = tmp_1[k, :]
+        # A has -1 on superdiagonal, -1 on subdiagonal and aa[k] at the main diagonal
+        # The edge elements of each column are forced to 0!
+        for i in range(self.N):  # TODO: change indices
+            self.bet[i, 0] = 0
+            for j in range(1, self.N - 1):
+                self.bet[i, j + 1] = (self.mul * self.tmp1[i, j] + self.bet[i, j]) * self.alf[i, j + 1]
+            self.tmp2[i, self.N - 1] = 0  # note the forced zero
+            for j in range(self.N - 2, 0 - 1, -1):
+                self.tmp2[i, j] = self.alf[i, j + 1] * self.tmp2[i, j + 1] + self.bet[i, j + 1]
+            # self.tmp2[:, 0] == 0, it happens by itself
+
+        # 4. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
+        cdef double[:, :] tmp_out = scipy.fftpack.dct(self.tmp2.T, type=1, overwrite_x=True)
+        out[...] = tmp_out
+
+
 cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
                         double[:, :] ro,
                         double[:, :] jx, double[:, :] jx_prev,
                         ThreadLocalStorage tls,
+                        MixedSolver mxs,
                         unsigned int n_dim, double h, double h3,
                         unsigned int npq,
                         double[:] zz,
                         bint variant_A=False,
-                        ) nogil:
+                        ):
     cdef int i, j
     cdef double[:, :] dro_dx = tls.grad1
     cdef double[:, :] djx_dxi = tls.grad2
@@ -677,26 +744,25 @@ cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
         for j in range(n_dim):
             out_Ex[i, j] = in_Ex[i, j]  # start from an approximation
             tls.rhs[i, j] = (+in_Ex[i, j] - (dro_dx[i, j] - djx_dxi[i, j]))
-    Posson_reduct_12(zz, zz,
-                     tls.rhs, out_Ex,
-                     tls, n_dim, h, npq)
-    
+    #Posson_reduct_12(zz, zz, tls.rhs, out_Ex, tls, n_dim, h, npq)
+    mxs.solve(tls.rhs, zz, zz, out_Ex)
+
     if variant_A:
         for i in range(n_dim):
             for j in range(n_dim):
                 out_Ex[i, j] = 2 * out_Ex[i, j] - in_Ex[i, j]
 
 
-
 cpdef void calculate_Ey(double[:, :] in_Ey, double[:, :] out_Ey_T,
                         double[:, :] ro,
                         double[:, :] jy, double[:, :] jy_prev,
                         ThreadLocalStorage tls,
+                        MixedSolver mxs,
                         unsigned int n_dim, double h, double h3,
                         unsigned int npq,
                         double[:] zz,
                         bint variant_A=False,
-                        ) nogil:
+                        ):
     cdef int i, j
     cdef double[:, :] dro_dy = tls.grad1
     cdef double[:, :] djy_dxi = tls.grad2
@@ -706,10 +772,9 @@ cpdef void calculate_Ey(double[:, :] in_Ey, double[:, :] out_Ey_T,
         for j in range(n_dim):
             out_Ey_T[j, i] = in_Ey[i, j]  # start from an approximation
             tls.rhs[j, i] = (+in_Ey[i, j] - (dro_dy[i, j] - djy_dxi[i, j]))
-    Posson_reduct_12(zz, zz,
-                     tls.rhs, out_Ey_T,
-                     tls, n_dim, h, npq)
-    
+    #Posson_reduct_12(zz, zz, tls.rhs, out_Ey_T, tls, n_dim, h, npq)
+    mxs.solve(tls.rhs, zz, zz, out_Ey_T)
+
     if variant_A:
         for i in range(n_dim):
             for j in range(n_dim):
@@ -720,11 +785,12 @@ cpdef void calculate_Bx(double[:, :] in_Bx, double[:, :] out_Bx_T,
                         double[:, :] jz,
                         double[:, :] jy, double[:, :] jy_prev,
                         ThreadLocalStorage tls,
+                        MixedSolver mxs,
                         unsigned int n_dim, double h, double h3,
                         unsigned int npq,
                         double[:] zz,
                         bint variant_A=False,
-                        ) nogil:
+                        ):
     cdef int i, j
     cdef double[:, :] djz_dy = tls.grad1
     cdef double[:, :] djy_dxi = tls.grad2
@@ -734,10 +800,9 @@ cpdef void calculate_Bx(double[:, :] in_Bx, double[:, :] out_Bx_T,
         for j in range(n_dim):
             out_Bx_T[j, i] = in_Bx[i, j]  # start from an approximation
             tls.rhs[j, i] = (+in_Bx[i, j] + (djz_dy[i, j] - djy_dxi[i, j]))
-    Posson_reduct_12(zz, zz,
-                     tls.rhs, out_Bx_T,
-                     tls, n_dim, h, npq)
-    
+    #Posson_reduct_12(zz, zz, tls.rhs, out_Bx_T, tls, n_dim, h, npq)
+    mxs.solve(tls.rhs, zz, zz, out_Bx_T)
+
     if variant_A:
         for i in range(n_dim):
             for j in range(n_dim):
@@ -748,11 +813,12 @@ cpdef void calculate_By(double[:, :] in_By, double[:, :] out_By,
                         double[:, :] jz,
                         double[:, :] jx, double[:, :] jx_prev,
                         ThreadLocalStorage tls,
+                        MixedSolver mxs,
                         unsigned int n_dim, double h, double h3,
                         unsigned int npq,
                         double[:] zz,
                         bint variant_A=False,
-                        ) nogil:
+                        ):
     cdef int i, j
     cdef double[:, :] djz_dx = tls.grad1
     cdef double[:, :] djx_dxi = tls.grad2
@@ -762,10 +828,9 @@ cpdef void calculate_By(double[:, :] in_By, double[:, :] out_By,
         for j in range(n_dim):
             out_By[i, j] = in_By[i, j]  # start from an approximation
             tls.rhs[i, j] = (+in_By[i, j] - (djz_dx[i, j] - djx_dxi[i, j]))
-    Posson_reduct_12(zz, zz,
-                     tls.rhs, out_By,
-                     tls, n_dim, h, npq)
-    
+    #Posson_reduct_12(zz, zz, tls.rhs, out_By, tls, n_dim, h, npq)
+    mxs.solve(tls.rhs, zz, zz, out_By)
+
     if variant_A:
         for i in range(n_dim):
             for j in range(n_dim):
@@ -789,14 +854,28 @@ cpdef void calculate_Bz(double[:, :] in_Bz, double[:, :] out_Bz,
             tls.rhs[i, j] = -(djx_dy[i, j] - djy_dx[i, j])
 
     Neuman_red(B_0, zz, zz, zz, zz, tls.rhs, out_Bz, tls, n_dim, h, npq, x_max)
-    
+
     if variant_A:
         for i in range(n_dim):
             for j in range(n_dim):
                 out_Bz[i, j] = 2 * out_Bz[i, j] - in_Bz[i, j]
 
 
-cpdef void calculate_Ez(double[:, :] in_Ez,
+cpdef inline void Progonka_Dirichlet_2D(double[:, :] alf, double[:, :] ff, double[:, :] out_vv, int Nq, double mul,
+                                        double[:, :] bet) nogil:
+    #assert ff.shape[0] == Nq - 1 
+    #assert out_vv.shape[0] == Nq
+    cdef long i, j, k
+    for k in range(Nq - 1):
+        bet[k, 0] = 0
+        for i in range(Nq - 1):
+            bet[k, i + 1] = (mul * ff[k, i] + bet[k, i]) * alf[k, i + 1]
+        out_vv[k, Nq - 2] = 0 + bet[k, i + 1]  # 0 = out_vv[i + 1] (fake)
+        for i in range(Nq - 3, 0 - 1, -1):
+            out_vv[k, i] = alf[k, i + 1] * out_vv[k, i + 1] + bet[k, i + 1]
+
+
+cpdef calculate_Ez(double[:, :] in_Ez,
                         double[:, :] out_Ez,
                         double[:, :] jx,
                         double[:, :] jy,
@@ -805,7 +884,7 @@ cpdef void calculate_Ez(double[:, :] in_Ez,
                         double h,
                         unsigned int npq,
                         bint variant_A=False,
-                        ) nogil:
+                        ):
     cdef int i, j
     cdef double[:, :] djx_dx = tls.grad1
     cdef double[:, :] djy_dy = tls.grad2
@@ -816,7 +895,15 @@ cpdef void calculate_Ez(double[:, :] in_Ez,
             tls.rhs[i, j] = -(djx_dx[i, j] + djy_dy[i, j])
 
     reduction_Dirichlet1(tls.rhs, out_Ez, tls, n_dim, h, npq)
-    
+    #cdef double mul = h**2 / (2 * n_dim)
+    #Ez_PrFi = scipy.fftpack.dst(tls.rhs[1:-1, 1:-1], type=1).T
+    #Progonka_Dirichlet_2D(tls.Ez_alf, Ez_PrFi, tls.Ez_P, n_dim - 1, mul, tls.Ez_bet)
+    #out = scipy.fftpack.dst(tls.Ez_P.T, type=1)
+    #out_Ez[:, :] = 0
+    #for i in range(n_dim - 2):
+    #    for j in range(n_dim - 2):
+    #        out_Ez[i + 1, j + 1] = out[i, j]
+
     if variant_A:
         for i in range(n_dim):
             for j in range(n_dim):
@@ -824,14 +911,18 @@ cpdef void calculate_Ez(double[:, :] in_Ez,
 
 
 cdef class FieldSolver:
-    def __init__(self, n_dim, threads=1):
+    def __init__(self, n_dim, h, threads=1):
         self.n_dim, self.threads = n_dim, threads
-        self.tls_0 = ThreadLocalStorage(n_dim)
-        self.tls_1 = ThreadLocalStorage(n_dim)
-        self.tls_2 = ThreadLocalStorage(n_dim)
-        self.tls_3 = ThreadLocalStorage(n_dim)
-        self.tls_4 = ThreadLocalStorage(n_dim)
-        self.tls_5 = ThreadLocalStorage(n_dim)
+        self.tls_0 = ThreadLocalStorage(n_dim, h)
+        self.tls_1 = ThreadLocalStorage(n_dim, h)
+        self.tls_2 = ThreadLocalStorage(n_dim, h)
+        self.tls_3 = ThreadLocalStorage(n_dim, h)
+        self.tls_4 = ThreadLocalStorage(n_dim, h)
+        self.tls_5 = ThreadLocalStorage(n_dim, h)
+        self.mxs_Ex = MixedSolver(n_dim, h, subtraction_trick=True)
+        self.mxs_Ey = MixedSolver(n_dim, h, subtraction_trick=True)
+        self.mxs_Bx = MixedSolver(n_dim, h, subtraction_trick=True)
+        self.mxs_By = MixedSolver(n_dim, h, subtraction_trick=True)
 
     cpdef calculate_fields(self,
                            np.ndarray[RoJ_t, ndim=2] roj_cur,
@@ -876,24 +967,15 @@ cdef class FieldSolver:
         cdef double[:, :] out_Bx_T = out_Bx.T
 
         cdef double[:] zz = np.zeros(n_dim)
-        cdef int I
-        for I in cython.parallel.prange(6, schedule='dynamic', nogil=True,
-                                        num_threads=min(threads, 6)):
-            if I == 0:
-                calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, self.tls_0,
-                             n_dim, h, h3, npq, zz, variant_A)
-            elif I == 1:
-                calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, self.tls_1,
-                             n_dim, h, h3, npq, zz, variant_A)
-            elif I == 2:
-                calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, self.tls_2,
-                             n_dim, h, h3, npq, zz, variant_A)
-            elif I == 3:
-                calculate_By(in_By, out_By, jz, jx, jx_prev, self.tls_3,
-                             n_dim, h, h3, npq, zz, variant_A)
-            elif I == 4:
-                calculate_Bz(in_Bz, out_Bz, jx, jy, self.tls_4,
-                             n_dim, h, npq, x_max, B_0, zz, variant_A)
-            elif I == 5:
-                calculate_Ez(in_Ez, out_Ez, jx, jy, self.tls_5,
-                             n_dim, h, npq, variant_A)
+        calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, self.tls_0, self.mxs_Ex,
+                     n_dim, h, h3, npq, zz, variant_A)
+        calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, self.tls_1, self.mxs_Ey,
+                     n_dim, h, h3, npq, zz, variant_A)
+        calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, self.tls_2, self.mxs_Bx,
+                     n_dim, h, h3, npq, zz, variant_A)
+        calculate_By(in_By, out_By, jz, jx, jx_prev, self.tls_3, self.mxs_By,
+                     n_dim, h, h3, npq, zz, variant_A)
+        calculate_Bz(in_Bz, out_Bz, jx, jy, self.tls_4,
+                     n_dim, h, npq, x_max, B_0, zz, variant_A)
+        calculate_Ez(in_Ez, out_Ez, jx, jy, self.tls_5,
+                     n_dim, h, npq, variant_A)

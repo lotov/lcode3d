@@ -649,6 +649,7 @@ cdef class PlasmaSolver:
     def __init__(self, config):
         # TODO: incapsulate PlasmaSolverConfig creation here?
         self.field_solver = FieldSolver(config.grid_steps,
+                                        config.window_width / config.grid_steps,
                                         config.openmp_limit_threads)
         self.RoJ_dtype = RoJ_dtype
 

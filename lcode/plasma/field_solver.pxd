@@ -46,10 +46,29 @@ cdef class ThreadLocalStorage:
     cdef double[:, :] grad1  # n_dim, n_dim
     cdef double[:, :] grad2  # n_dim, n_dim
 
+    cdef double[:] Ez_a  # n_dim - 1
+    cdef double[:, :] Ez_bet  # n_dim - 1, n_dim
+    cdef double[:, :] Ez_alf  # n_dim - 1, n_dim
+    cdef double[:, :] Ez_PrFi  # n_dim - 1, n_dim - 1
+    cdef double[:, :] Ez_P  # n_dim - 1, n_dim - 1
+
+
+cdef class MixedSolver:
+    cdef public int N
+    cdef double h, mul
+    # TODO: tune C/F layout, specify with ::1?
+    cdef double[:, :] alf
+    cdef double[:, :] bet
+    cdef double[:, :] rhs_fixed
+    cdef double[:, :] tmp1
+    cdef double[:, :] tmp2
+    cpdef solve(MixedSolver self, double[:, :] rhs, double[:] bound_top, double[:] bound_bot, double[:, :] out)
+
 
 cdef class FieldSolver:
     cdef int n_dim, threads
     cdef ThreadLocalStorage tls_0, tls_1, tls_2, tls_3, tls_4, tls_5
+    cdef MixedSolver mxs_Ex, mxs_Ey, mxs_Bx, mxs_By
 
     cpdef calculate_fields(self,
                            np.ndarray[RoJ_t, ndim=2] roj_cur,

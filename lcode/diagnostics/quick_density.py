@@ -42,6 +42,6 @@ class QuickDensity:
 
         ro = roj['ro'].repeat(3, axis=0).repeat(3, axis=1)
         plt.imsave(os.path.join('transverse', 'ro_%09.2f.png' % xi),
-                   ro,
+                   ro.T, origin='lower',
                    vmin=-0.1, vmax=0.1,
                    cmap=cm.bwr)

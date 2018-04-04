@@ -23,7 +23,7 @@ Secondary author: A. P. Sosedkin <A.P.Sosedkin@inp.nsk.su>
 '''
 
 
-from libc.math cimport sin, cos
+from libc.math cimport sin, cos, exp
 from libc.math cimport M_PI as pi  # 3.141592653589793 on my machine
 
 import numpy as np
@@ -696,7 +696,7 @@ cdef class MixedSolver:
         assert rhs.shape[0] == rhs.shape[1] == self.N
 
         # 1. Apply boundary conditions to the rhs
-        self.rhs_fixed[...] = rhs
+        self.rhs_fixed[...] = rhs.T
         for i in range(self.N):
             self.rhs_fixed[i, 0] += bound_top[i] * (2 / self.h)
             self.rhs_fixed[i, self.N - 1] += bound_bot[i] * (2 / self.h)
@@ -720,9 +720,15 @@ cdef class MixedSolver:
                 self.tmp2[i, j] = self.alf[i, j + 1] * self.tmp2[i, j + 1] + self.bet[i, j + 1]
             # self.tmp2[:, 0] == 0, it happens by itself
 
+        # EXTRA: suppression
+        #for i in range(self.N):
+        #    for j in range(self.N):
+        #        #self.tmp2[i, j] *= exp(-((i+1)/self.N + .1)**10)
+        #        self.tmp2[i, j] *= 1 - (i/self.N)**2
+
         # 4. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
         cdef double[:, :] tmp_out = scipy.fftpack.dct(self.tmp2.T, type=1, overwrite_x=True)
-        out[...] = tmp_out
+        out[...] = tmp_out.T
 
 
 cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
@@ -744,6 +750,7 @@ cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
         for j in range(n_dim):
             out_Ex[i, j] = in_Ex[i, j]  # start from an approximation
             tls.rhs[i, j] = (+in_Ex[i, j] - (dro_dx[i, j] - djx_dxi[i, j]))
+            #tls.rhs[i, j] = - (dro_dx[i, j] - djx_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_Ex, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Ex)
 
@@ -772,6 +779,7 @@ cpdef void calculate_Ey(double[:, :] in_Ey, double[:, :] out_Ey_T,
         for j in range(n_dim):
             out_Ey_T[j, i] = in_Ey[i, j]  # start from an approximation
             tls.rhs[j, i] = (+in_Ey[i, j] - (dro_dy[i, j] - djy_dxi[i, j]))
+            #tls.rhs[j, i] = -(dro_dy[i, j] - djy_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_Ey_T, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Ey_T)
 
@@ -800,6 +808,7 @@ cpdef void calculate_Bx(double[:, :] in_Bx, double[:, :] out_Bx_T,
         for j in range(n_dim):
             out_Bx_T[j, i] = in_Bx[i, j]  # start from an approximation
             tls.rhs[j, i] = (+in_Bx[i, j] + (djz_dy[i, j] - djy_dxi[i, j]))
+            #tls.rhs[j, i] = +(djz_dy[i, j] - djy_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_Bx_T, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Bx_T)
 
@@ -828,6 +837,7 @@ cpdef void calculate_By(double[:, :] in_By, double[:, :] out_By,
         for j in range(n_dim):
             out_By[i, j] = in_By[i, j]  # start from an approximation
             tls.rhs[i, j] = (+in_By[i, j] - (djz_dx[i, j] - djx_dxi[i, j]))
+            #tls.rhs[i, j] = -(djz_dx[i, j] - djx_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_By, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_By)
 
@@ -861,18 +871,48 @@ cpdef void calculate_Bz(double[:, :] in_Bz, double[:, :] out_Bz,
                 out_Bz[i, j] = 2 * out_Bz[i, j] - in_Bz[i, j]
 
 
-cpdef inline void Progonka_Dirichlet_2D(double[:, :] alf, double[:, :] ff, double[:, :] out_vv, int Nq, double mul,
-                                        double[:, :] bet) nogil:
-    #assert ff.shape[0] == Nq - 1 
-    #assert out_vv.shape[0] == Nq
-    cdef long i, j, k
-    for k in range(Nq - 1):
-        bet[k, 0] = 0
-        for i in range(Nq - 1):
-            bet[k, i + 1] = (mul * ff[k, i] + bet[k, i]) * alf[k, i + 1]
-        out_vv[k, Nq - 2] = 0 + bet[k, i + 1]  # 0 = out_vv[i + 1] (fake)
-        for i in range(Nq - 3, 0 - 1, -1):
-            out_vv[k, i] = alf[k, i + 1] * out_vv[k, i + 1] + bet[k, i + 1]
+cdef class DirichletSolver:
+    def __init__(DirichletSolver self, int N, double h):
+        self.h, self.N = h, N
+        self.mul = h**2 / (2 * (N - 1))  # total multiplier to compensate for the iDCT+DCT transforms
+
+        aa = 2 + 4 * np.sin(np.arange(1, N - 1) * np.pi / (2 * (N - 1)))**2
+        alf = np.zeros((N - 2, N - 1))  # precalculated internal coefficients for tridiagonal solving
+        for i in range(N - 2):
+            alf[:, i + 1] = 1 / (aa - alf[:, i])
+        self.alf = alf
+
+        self.bet = np.zeros((N, N))
+        # TODO: save space by using fewer arrays? or that would be negated with the FFTW interface?
+        self.tmp1 = np.zeros((N - 2, N - 2))
+        self.tmp2 = np.zeros((N - 2, N - 2))
+
+    cpdef solve(DirichletSolver self, double[:, :] rhs, double[:, :] out):
+        # Solve Laplace x = (-)? RHS for x with Dirichlet boundary conditions using DST-1
+        # Only operates on the internal cells of rhs and out
+        cdef int i, j
+        assert rhs.shape[0] == rhs.shape[1] == self.N
+
+        # 1. Apply iDCT-1 (inverse Discrete Cosine Transform Type 1) to the RHS
+        # TODO: accelerated version using fftw with extra codelets via ctypes?
+        cdef double[:, :] tmp1 = scipy.fftpack.dst(x=rhs[1:-1, 1:-1], type=1).T
+        self.tmp1[...] = tmp1
+
+        # 2. Solve tridiagonal matrix equation for each spectral column with Thomas method:
+        # A @ tmp_2[k, :] = tmp_1[k, :]
+        # A has -1 on superdiagonal, -1 on subdiagonal and aa[i] at the main diagonal
+        for i in range(self.N - 2):
+            self.bet[i, 0] = 0
+            for j in range(self.N - 2):
+                self.bet[i, j + 1] = (self.mul * self.tmp1[i, j] + self.bet[i, j]) * self.alf[i, j + 1]
+            self.tmp2[i, self.N - 3] = 0 + self.bet[i, self.N - 2]  # 0 = self.tmp2[self.N - 2] (fake)
+            for j in range(self.N - 4, 0 - 1, -1):
+                self.tmp2[i, j] = self.alf[i, j + 1] * self.tmp2[i, j + 1] + self.bet[i, j + 1]
+
+        # 3. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
+        cdef double[:, :] tmp_out = scipy.fftpack.dst(self.tmp2.T, type=1, overwrite_x=True)
+        out[...] = 0
+        out[1:-1, 1:-1] = tmp_out
 
 
 cpdef calculate_Ez(double[:, :] in_Ez,
@@ -880,6 +920,7 @@ cpdef calculate_Ez(double[:, :] in_Ez,
                         double[:, :] jx,
                         double[:, :] jy,
                         ThreadLocalStorage tls,
+                        DirichletSolver ds,
                         unsigned int n_dim,
                         double h,
                         unsigned int npq,
@@ -894,15 +935,8 @@ cpdef calculate_Ez(double[:, :] in_Ez,
         for j in range(n_dim):
             tls.rhs[i, j] = -(djx_dx[i, j] + djy_dy[i, j])
 
-    reduction_Dirichlet1(tls.rhs, out_Ez, tls, n_dim, h, npq)
-    #cdef double mul = h**2 / (2 * n_dim)
-    #Ez_PrFi = scipy.fftpack.dst(tls.rhs[1:-1, 1:-1], type=1).T
-    #Progonka_Dirichlet_2D(tls.Ez_alf, Ez_PrFi, tls.Ez_P, n_dim - 1, mul, tls.Ez_bet)
-    #out = scipy.fftpack.dst(tls.Ez_P.T, type=1)
-    #out_Ez[:, :] = 0
-    #for i in range(n_dim - 2):
-    #    for j in range(n_dim - 2):
-    #        out_Ez[i + 1, j + 1] = out[i, j]
+    #reduction_Dirichlet1(tls.rhs, out_Ez, tls, n_dim, h, npq)
+    ds.solve(tls.rhs, out_Ez)
 
     if variant_A:
         for i in range(n_dim):
@@ -919,6 +953,7 @@ cdef class FieldSolver:
         self.tls_3 = ThreadLocalStorage(n_dim, h)
         self.tls_4 = ThreadLocalStorage(n_dim, h)
         self.tls_5 = ThreadLocalStorage(n_dim, h)
+        self.ds_Ez = DirichletSolver(n_dim, h)
         self.mxs_Ex = MixedSolver(n_dim, h, subtraction_trick=True)
         self.mxs_Ey = MixedSolver(n_dim, h, subtraction_trick=True)
         self.mxs_Bx = MixedSolver(n_dim, h, subtraction_trick=True)
@@ -975,7 +1010,8 @@ cdef class FieldSolver:
                      n_dim, h, h3, npq, zz, variant_A)
         calculate_By(in_By, out_By, jz, jx, jx_prev, self.tls_3, self.mxs_By,
                      n_dim, h, h3, npq, zz, variant_A)
-        calculate_Bz(in_Bz, out_Bz, jx, jy, self.tls_4,
-                     n_dim, h, npq, x_max, B_0, zz, variant_A)
-        calculate_Ez(in_Ez, out_Ez, jx, jy, self.tls_5,
+        #calculate_Bz(in_Bz, out_Bz, jx, jy, self.tls_4,
+        #             n_dim, h, npq, x_max, B_0, zz, variant_A)
+        out_Bz[...] = 0
+        calculate_Ez(in_Ez, out_Ez, jx, jy, self.tls_5, self.ds_Ez,
                      n_dim, h, npq, variant_A)

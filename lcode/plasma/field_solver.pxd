@@ -65,9 +65,21 @@ cdef class MixedSolver:
     cpdef solve(MixedSolver self, double[:, :] rhs, double[:] bound_top, double[:] bound_bot, double[:, :] out)
 
 
+cdef class DirichletSolver:
+    cdef public int N
+    cdef double h, mul
+    # TODO: tune C/F layout, specify with ::1?
+    cdef double[:, :] alf
+    cdef double[:, :] bet
+    cdef double[:, :] tmp1
+    cdef double[:, :] tmp2
+    cpdef solve(DirichletSolver self, double[:, :] rhs, double[:, :] out)
+
+
 cdef class FieldSolver:
     cdef int n_dim, threads
     cdef ThreadLocalStorage tls_0, tls_1, tls_2, tls_3, tls_4, tls_5
+    cdef DirichletSolver ds_Ez
     cdef MixedSolver mxs_Ex, mxs_Ey, mxs_Bx, mxs_By
 
     cpdef calculate_fields(self,

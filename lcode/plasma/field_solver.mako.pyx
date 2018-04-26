@@ -672,14 +672,14 @@ cpdef void pader_xi(double[:, :] in_prev, double[:, :] in_cur,
 
 
 cdef class MixedSolver:
-    def __init__(MixedSolver self, int N, double h, bint subtraction_trick=False):
+    def __init__(MixedSolver self, int N, double h, double subtraction_trick=1):
         self.h, self.N = h, N
         self.subtraction_trick = subtraction_trick
         self.mul = h**2  / (2 * (N - 1))  # total multiplier to compensate for the iDCT+DCT transforms
 
         aa = 2 + 4 * np.sin(np.arange(0, N) * np.pi / (2 * (N - 1)))**2  # diagonal matrix elements
         if subtraction_trick:
-            aa += self.h**2
+            aa += self.h**2 * subtraction_trick
         alf = np.zeros((N, N + 1))  # precalculated internal coefficients for tridiagonal solving
         for i in range(1, N):
             alf[:, i + 1] = 1 / (aa - alf[:, i])
@@ -752,7 +752,7 @@ cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
             out_Ex[i, j] = in_Ex[i, j]  # start from an approximation
             tls.rhs[i, j] = -(dro_dx[i, j] - djx_dxi[i, j])
             if mxs.subtraction_trick:
-                tls.rhs[i, j] += in_Ex[i, j]
+                tls.rhs[i, j] += in_Ex[i, j] * mxs.subtraction_trick
             #tls.rhs[i, j] = - (dro_dx[i, j] - djx_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_Ex, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Ex)
@@ -783,7 +783,7 @@ cpdef void calculate_Ey(double[:, :] in_Ey, double[:, :] out_Ey_T,
             out_Ey_T[j, i] = in_Ey[i, j]  # start from an approximation
             tls.rhs[j, i] = -(dro_dy[i, j] - djy_dxi[i, j])
             if mxs.subtraction_trick:
-                tls.rhs[j, i] += in_Ey[i, j]
+                tls.rhs[j, i] += in_Ey[i, j] * mxs.subtraction_trick
             #tls.rhs[j, i] = -(dro_dy[i, j] - djy_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_Ey_T, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Ey_T)
@@ -814,7 +814,7 @@ cpdef void calculate_Bx(double[:, :] in_Bx, double[:, :] out_Bx_T,
             out_Bx_T[j, i] = in_Bx[i, j]  # start from an approximation
             tls.rhs[j, i] = +(djz_dy[i, j] - djy_dxi[i, j])
             if mxs.subtraction_trick:
-                tls.rhs[j, i] += in_Bx[i, j]
+                tls.rhs[j, i] += in_Bx[i, j] * mxs.subtraction_trick
             #tls.rhs[j, i] = +(djz_dy[i, j] - djy_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_Bx_T, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Bx_T)
@@ -845,7 +845,7 @@ cpdef void calculate_By(double[:, :] in_By, double[:, :] out_By,
             out_By[i, j] = in_By[i, j]  # start from an approximation
             tls.rhs[i, j] = -(djz_dx[i, j] - djx_dxi[i, j])
             if mxs.subtraction_trick:
-                tls.rhs[i, j] += in_By[i, j]
+                tls.rhs[i, j] += in_By[i, j] * mxs.subtraction_trick
             #tls.rhs[i, j] = -(djz_dx[i, j] - djx_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_By, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_By)
@@ -954,7 +954,7 @@ cpdef calculate_Ez(double[:, :] in_Ez,
 
 
 cdef class FieldSolver:
-    def __init__(self, n_dim, h, subtraction_trick=True, threads=1):
+    def __init__(self, n_dim, h, subtraction_trick=1, threads=1):
         self.n_dim, self.threads = n_dim, threads
         self.tls_0 = ThreadLocalStorage(n_dim, h)
         self.tls_1 = ThreadLocalStorage(n_dim, h)

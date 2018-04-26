@@ -55,7 +55,7 @@ cdef class ThreadLocalStorage:
 
 cdef class MixedSolver:
     cdef public int N
-    cdef public bint subtraction_trick
+    cdef public double subtraction_trick
     cdef double h, mul
     # TODO: tune C/F layout, specify with ::1?
     cdef double[:, :] alf

@@ -53,7 +53,7 @@ plasma_solver_boundary_suppression = 1
 Ez = Ex = Ey = Bz = Bx = By = 0
 
 plasma_solver = 'v2'
-field_solver_subtraction_trick = True
+field_solver_subtraction_trick = 1
 plasma_padding = 3
 variant_A_predictor = variant_A_corrector = False
 

@@ -674,6 +674,7 @@ cpdef void pader_xi(double[:, :] in_prev, double[:, :] in_cur,
 cdef class MixedSolver:
     def __init__(MixedSolver self, int N, double h, bint subtraction_trick=False):
         self.h, self.N = h, N
+        self.subtraction_trick = subtraction_trick
         self.mul = h**2  / (2 * (N - 1))  # total multiplier to compensate for the iDCT+DCT transforms
 
         aa = 2 + 4 * np.sin(np.arange(0, N) * np.pi / (2 * (N - 1)))**2  # diagonal matrix elements
@@ -749,7 +750,9 @@ cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
     for i in range(n_dim):
         for j in range(n_dim):
             out_Ex[i, j] = in_Ex[i, j]  # start from an approximation
-            tls.rhs[i, j] = (+in_Ex[i, j] - (dro_dx[i, j] - djx_dxi[i, j]))
+            tls.rhs[i, j] = -(dro_dx[i, j] - djx_dxi[i, j])
+            if mxs.subtraction_trick:
+                tls.rhs[i, j] += in_Ex[i, j]
             #tls.rhs[i, j] = - (dro_dx[i, j] - djx_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_Ex, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Ex)
@@ -778,7 +781,9 @@ cpdef void calculate_Ey(double[:, :] in_Ey, double[:, :] out_Ey_T,
     for i in range(n_dim):
         for j in range(n_dim):
             out_Ey_T[j, i] = in_Ey[i, j]  # start from an approximation
-            tls.rhs[j, i] = (+in_Ey[i, j] - (dro_dy[i, j] - djy_dxi[i, j]))
+            tls.rhs[j, i] = -(dro_dy[i, j] - djy_dxi[i, j])
+            if mxs.subtraction_trick:
+                tls.rhs[j, i] += in_Ey[i, j]
             #tls.rhs[j, i] = -(dro_dy[i, j] - djy_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_Ey_T, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Ey_T)
@@ -807,7 +812,9 @@ cpdef void calculate_Bx(double[:, :] in_Bx, double[:, :] out_Bx_T,
     for i in range(n_dim):
         for j in range(n_dim):
             out_Bx_T[j, i] = in_Bx[i, j]  # start from an approximation
-            tls.rhs[j, i] = (+in_Bx[i, j] + (djz_dy[i, j] - djy_dxi[i, j]))
+            tls.rhs[j, i] = +(djz_dy[i, j] - djy_dxi[i, j])
+            if mxs.subtraction_trick:
+                tls.rhs[j, i] += in_Bx[i, j]
             #tls.rhs[j, i] = +(djz_dy[i, j] - djy_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_Bx_T, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Bx_T)
@@ -836,7 +843,9 @@ cpdef void calculate_By(double[:, :] in_By, double[:, :] out_By,
     for i in range(n_dim):
         for j in range(n_dim):
             out_By[i, j] = in_By[i, j]  # start from an approximation
-            tls.rhs[i, j] = (+in_By[i, j] - (djz_dx[i, j] - djx_dxi[i, j]))
+            tls.rhs[i, j] = -(djz_dx[i, j] - djx_dxi[i, j])
+            if mxs.subtraction_trick:
+                tls.rhs[i, j] += in_By[i, j]
             #tls.rhs[i, j] = -(djz_dx[i, j] - djx_dxi[i, j])
     #Posson_reduct_12(zz, zz, tls.rhs, out_By, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_By)
@@ -945,7 +954,7 @@ cpdef calculate_Ez(double[:, :] in_Ez,
 
 
 cdef class FieldSolver:
-    def __init__(self, n_dim, h, threads=1):
+    def __init__(self, n_dim, h, subtraction_trick=True, threads=1):
         self.n_dim, self.threads = n_dim, threads
         self.tls_0 = ThreadLocalStorage(n_dim, h)
         self.tls_1 = ThreadLocalStorage(n_dim, h)
@@ -954,10 +963,10 @@ cdef class FieldSolver:
         self.tls_4 = ThreadLocalStorage(n_dim, h)
         self.tls_5 = ThreadLocalStorage(n_dim, h)
         self.ds_Ez = DirichletSolver(n_dim, h)
-        self.mxs_Ex = MixedSolver(n_dim, h, subtraction_trick=True)
-        self.mxs_Ey = MixedSolver(n_dim, h, subtraction_trick=True)
-        self.mxs_Bx = MixedSolver(n_dim, h, subtraction_trick=True)
-        self.mxs_By = MixedSolver(n_dim, h, subtraction_trick=True)
+        self.mxs_Ex = MixedSolver(n_dim, h, subtraction_trick=subtraction_trick)
+        self.mxs_Ey = MixedSolver(n_dim, h, subtraction_trick=subtraction_trick)
+        self.mxs_Bx = MixedSolver(n_dim, h, subtraction_trick=subtraction_trick)
+        self.mxs_By = MixedSolver(n_dim, h, subtraction_trick=subtraction_trick)
 
     cpdef calculate_fields(self,
                            np.ndarray[RoJ_t, ndim=2] roj_cur,

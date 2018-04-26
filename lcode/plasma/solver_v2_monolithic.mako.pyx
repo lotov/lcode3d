@@ -1,4 +1,4 @@
-# Copyright (c) 2016-2017 LCODE team <team@lcode.info>.
+#9 Copyright (c) 2016-2017 LCODE team <team@lcode.info>.
 
 # LCODE is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -642,7 +642,7 @@ cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
 
 
 cdef class PlasmaSolver:
-    cdef FieldSolver field_solver
+    cdef public FieldSolver field_solver
     cdef public object RoJ_dtype
     # TODO: allocate everything else to make the solver allocation-free
 

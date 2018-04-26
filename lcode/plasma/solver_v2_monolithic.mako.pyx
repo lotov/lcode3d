@@ -29,7 +29,7 @@ cimport cython
 from cython.parallel import prange, parallel
 cimport openmp
 
-from libc.math cimport sqrt, log2, sin, pi, fabs
+from libc.math cimport sqrt, log2, sin, pi, fabs, floor
 
 import numpy as np
 cimport numpy as np
@@ -159,8 +159,8 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
     TODO: describe
     """
     cdef long k
-    cdef unsigned int i, j
-    cdef double x_loc, y_loc
+    cdef int i, j
+    cdef double x_loc, y_loc, x_h, y_h
     cdef double fx1, fy1, fx2, fy2, fx3, fy3
     cdef double Ax, Ay
 
@@ -172,22 +172,23 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
         #assert -config.particle_boundary < xs[k] < config.particle_boundary
         #assert -config.particle_boundary < ys[k] < config.particle_boundary
 
-        i = <unsigned int> ((config.x_max + xs[k]) / config.h)
-        j = <unsigned int> ((config.x_max + ys[k]) / config.h)
-        #assert 0 < i < Ex.shape[0] - 1
-        #assert 0 < j < Ex.shape[0] - 1
+        # i = <unsigned int> ((config.x_max + xs[k]) / config.h)
+        # j = <unsigned int> ((config.x_max + ys[k]) / config.h)
+        # x_loc = config.x_max + xs[k] - i * config.h - .5 * config.h
+        # y_loc = config.x_max + ys[k] - j * config.h - .5 * config.h
+        x_h = xs[k] / config.h + .5
+        y_h = ys[k] / config.h + .5
+        i = <int> floor(x_h) + config.n_dim // 2
+        j = <int> floor(y_h) + config.n_dim // 2
+        x_loc = x_h - floor(x_h) - 0.5  # centered to -.5 to 5, not 0 to 1 because
+        y_loc = y_h - floor(y_h) - 0.5  # the latter formulas use offset from cell center
 
-        x_loc = config.x_max + xs[k] - i * config.h - .5 * config.h
-        y_loc = config.x_max + ys[k] - j * config.h - .5 * config.h
-        #assert 0 <= x_loc < 1
-        #assert 0 <= x_loc < 1
-
-        fx1 = .75 - x_loc**2 / config.h**2
-        fy1 = .75 - y_loc**2 / config.h**2
-        fx2 = .5 + x_loc / config.h
-        fy2 = .5 + y_loc / config.h
-        fx3 = .5 - x_loc / config.h
-        fy3 = .5 - y_loc / config.h
+        fx1 = .75 - x_loc**2
+        fy1 = .75 - y_loc**2
+        fx2 = .5 + x_loc
+        fy2 = .5 + y_loc
+        fx3 = .5 - x_loc
+        fy3 = .5 - y_loc
 
         % for Fl in 'Ex', 'Ey', 'Ez', 'Bx', 'By', 'Bz':
         ${Fl}s[k] = (  # noqa: E201
@@ -220,10 +221,10 @@ cpdef void ro_and_j_ie_Vshivkov(PlasmaSolverConfig config,
                                 # n_dim, n_dim
                                 np.ndarray[RoJ_t, ndim=2] roj,
                                 ):
-    cdef unsigned int i, j, z
+    cdef int i, j, z
     cdef int q
     cdef long k
-    cdef double x_loc, y_loc
+    cdef double x_loc, y_loc, x_h, y_h
     cdef double fx1, fy1, fx2, fy2, fx3, fy3
     cdef double dro, djx, djy, djz
     cdef double gamma_m
@@ -253,19 +254,23 @@ cpdef void ro_and_j_ie_Vshivkov(PlasmaSolverConfig config,
             djy = p.p[2] * (dro / gamma_m)
 
             # particle indices in roj and adge arrays
-            i = <unsigned int> ((config.x_max + p.x) / config.h)
-            j = <unsigned int> ((config.x_max + p.y) / config.h)
-            #assert 0 < i < n_dim - 1 and 0 < j < n_dim - 1
+            # i = <unsigned int> ((config.x_max + p.x) / config.h)
+            # j = <unsigned int> ((config.x_max + p.y) / config.h)
+            # x_loc = config.x_max + p.x - i * config.h - .5 * config.h
+            # y_loc = config.x_max + p.y - j * config.h - .5 * config.h
+            x_h = p.x / config.h + .5
+            y_h = p.y / config.h + .5
+            i = <int> floor(x_h) + config.n_dim // 2
+            j = <int> floor(y_h) + config.n_dim // 2
+            x_loc = x_h - floor(x_h) - 0.5  # centered to -.5 to 5, not 0 to 1 because
+            y_loc = y_h - floor(y_h) - 0.5  # the latter formulas use offset from cell center
 
-            x_loc = config.x_max + p.x - i * config.h - .5 * config.h
-            y_loc = config.x_max + p.y - j * config.h - .5 * config.h
-
-            fx1 = .75 - x_loc**2 / config.h**2
-            fy1 = .75 - y_loc**2 / config.h**2
-            fx2 = .5 + x_loc / config.h
-            fy2 = .5 + y_loc / config.h
-            fx3 = .5 - x_loc / config.h
-            fy3 = .5 - y_loc / config.h
+            fx1 = .75 - x_loc**2
+            fy1 = .75 - y_loc**2
+            fx2 = .5 + x_loc
+            fy2 = .5 + y_loc
+            fx3 = .5 - x_loc
+            fy3 = .5 - y_loc
 
             % for comp in 'ro', 'jz', 'jx', 'jy':
             roj_tmp[tid, i + 0, j + 0].${comp} += d${comp} * fx1 * fy1

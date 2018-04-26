@@ -656,6 +656,7 @@ cdef class PlasmaSolver:
         self.field_solver = FieldSolver(config.grid_steps,
                                         config.window_width / config.grid_steps,
                                         config.field_solver_subtraction_trick,
+                                        config.field_solver_iterations,
                                         config.openmp_limit_threads)
         self.RoJ_dtype = RoJ_dtype
 

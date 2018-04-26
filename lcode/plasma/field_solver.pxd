@@ -78,7 +78,8 @@ cdef class DirichletSolver:
 
 
 cdef class FieldSolver:
-    cdef int n_dim, threads
+    cdef int n_dim, iterations, threads
+    cdef double subtraction_trick
     cdef ThreadLocalStorage tls_0, tls_1, tls_2, tls_3, tls_4, tls_5
     cdef DirichletSolver ds_Ez
     cdef MixedSolver mxs_Ex, mxs_Ey, mxs_Bx, mxs_By

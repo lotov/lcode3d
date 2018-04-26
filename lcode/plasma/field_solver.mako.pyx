@@ -954,8 +954,8 @@ cpdef calculate_Ez(double[:, :] in_Ez,
 
 
 cdef class FieldSolver:
-    def __init__(self, n_dim, h, subtraction_trick=1, threads=1):
-        self.n_dim, self.threads = n_dim, threads
+    def __init__(self, n_dim, h, subtraction_trick=1, iterations=1, threads=1):
+        self.n_dim, self.threads, self.iterations = n_dim, threads, iterations
         self.tls_0 = ThreadLocalStorage(n_dim, h)
         self.tls_1 = ThreadLocalStorage(n_dim, h)
         self.tls_2 = ThreadLocalStorage(n_dim, h)
@@ -971,12 +971,12 @@ cdef class FieldSolver:
     cpdef calculate_fields(self,
                            np.ndarray[RoJ_t, ndim=2] roj_cur,
                            np.ndarray[RoJ_t, ndim=2] roj_prev,
-                           double[:, :] in_Ex,
-                           double[:, :] in_Ey,
-                           double[:, :] in_Ez,
-                           double[:, :] in_Bx,
-                           double[:, :] in_By,
-                           double[:, :] in_Bz,
+                           double[:, :] in_Ex_,
+                           double[:, :] in_Ey_,
+                           double[:, :] in_Ez_,
+                           double[:, :] in_Bx_,
+                           double[:, :] in_By_,
+                           double[:, :] in_Bz_,
                            double[:, :] beam_ro,
                            double h,
                            unsigned int npq,
@@ -991,7 +991,7 @@ cdef class FieldSolver:
                            double[:, :] out_Bz,
                            bint variant_A):
         cdef int n_dim = self.n_dim, threads = self.threads
-        cdef Py_ssize_t i, j
+        cdef int i
 
         if variant_A:
             roj = np.zeros_like(roj_cur)
@@ -1000,6 +1000,12 @@ cdef class FieldSolver:
         else:
             roj = roj_cur
 
+        cdef double[:, :] in_Ex = in_Ex_.copy()
+        cdef double[:, :] in_Ey = in_Ey_.copy()
+        cdef double[:, :] in_Ez = in_Ez_.copy()
+        cdef double[:, :] in_Bx = in_Bx_.copy()
+        cdef double[:, :] in_By = in_By_.copy()
+        cdef double[:, :] in_Bz = in_Bz_.copy()
         cdef double[:, :] ro = roj['ro'] + beam_ro
         cdef double[:, :] jx = roj['jx']
         cdef double[:, :] jy = roj['jy']
@@ -1011,14 +1017,20 @@ cdef class FieldSolver:
         cdef double[:, :] out_Bx_T = out_Bx.T
 
         cdef double[:] zz = np.zeros(n_dim)
-        calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, self.tls_0, self.mxs_Ex,
-                     n_dim, h, h3, npq, zz, variant_A)
-        calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, self.tls_1, self.mxs_Ey,
-                     n_dim, h, h3, npq, zz, variant_A)
-        calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, self.tls_2, self.mxs_Bx,
-                     n_dim, h, h3, npq, zz, variant_A)
-        calculate_By(in_By, out_By, jz, jx, jx_prev, self.tls_3, self.mxs_By,
-                     n_dim, h, h3, npq, zz, variant_A)
+
+        for i in range(self.iterations):
+            calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, self.tls_0, self.mxs_Ex,
+                         n_dim, h, h3, npq, zz, variant_A)
+            calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, self.tls_1, self.mxs_Ey,
+                         n_dim, h, h3, npq, zz, variant_A)
+            calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, self.tls_2, self.mxs_Bx,
+                         n_dim, h, h3, npq, zz, variant_A)
+            calculate_By(in_By, out_By, jz, jx, jx_prev, self.tls_3, self.mxs_By,
+                         n_dim, h, h3, npq, zz, variant_A)
+            in_Ex[...] = out_Ex
+            in_Ey[...] = out_Ey
+            in_Bx[...] = out_Bx
+            in_By[...] = out_By
         #calculate_Bz(in_Bz, out_Bz, jx, jy, self.tls_4,
         #             n_dim, h, npq, x_max, B_0, zz, variant_A)
         out_Bz[...] = 0

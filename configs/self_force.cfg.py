@@ -16,10 +16,11 @@ def print_plasma(*a, plasma=hks.steal):
 
 hacks = [
     'lcode.beam.ro_function:BeamRoFunction',
-    #'lcode.diagnostics.quick_density:QuickDensity',
     'lcode.diagnostics.force_cut:ForceCut',
     #'lcode.diagnostics.transverse_peek:TransversePeek',
     print_plasma,
+    #'lcode.diagnostics.main:Diagnostics',
+    #'lcode.diagnostics.live:LiveDiagnostics',
 ]
 
 
@@ -28,29 +29,41 @@ dt = t_max = 1
 def beam(xi, x, y):
     return 0
 
+plasma_solver = 'v2_monolithic'
+#plasma_padding = 6
+#field_solver_subtraction_trick = 0
+#field_solver_iterations = 2
+print_every_xi_steps = 5
+
 window_width = 12.85
 grid_steps = 2**5 + 1
-plasma_solver_eps = 0.0000001
-plasma_solver_B_0 = 0
-plasma_solver_corrector_passes = 1
-plasma_solver_corrector_transverse_passes = 3
-plasma_solver_particle_mover_corrector = 2
-xi_step_size = .05 * 4
-xi_steps = int(180 / xi_step_size)
+xi_step_size = .05
+xi_steps = int(360 / xi_step_size)
 print_every_xi_steps = 1
 openmp_limit_threads = 0
-plasma_solver_fields_interpolation_order = 1
-#plasma_solver_fields_smoothing_level = 0.001
 
-the_only_electron = lcode.plasma_particle.Electron(x=0, y=0, p_x=.01 * 2)
-plasma = lcode.plasma_particle.PlasmaParticleArray([the_only_electron])
+the_only_electron = lcode.plasma_particle.Electron(x=-3, y=0, p_x=.02)
+useless_ion = lcode.plasma_particle.Ion(x=0, y=0, q=1e-300, m=1e300)
+plasma = lcode.plasma_particle.PlasmaParticleArray([the_only_electron, useless_ion])
+
+openmp_limit_threads = 4
 
 def force_cut_enabled(xi, xi_i):
-    return True
+    #return True
     return xi_i % 2 == 0
 
 def transverse_peek_enabled(xi, xi_i):
     return xi_i % 100 == 0
 
 def track_plasma_particles(plasma):
-    return plasma
+    return plasma[:0+1]
+
+#from lcode.diagnostics.main import EachXi, EachXi2D
+#diagnostics_enabled = True
+#diagnostics = [
+#    EachXi2D('ro', lambda roj: roj['ro'], vmin=-0.2, vmax=0.2),
+#    EachXi2D('roT', lambda roj: roj['ro'].T, vmin=-0.2, vmax=0.2),
+#    EachXi2D('Ex', lambda Ex: Ex, vmin=-0.001, vmax=0.001),
+#    EachXi2D('jz', lambda roj: roj['jz'], vmin=-0.001, vmax=0.001),
+#    EachXi('Ez_00', lambda Ez: Ez[grid_steps // 2, grid_steps // 2]),
+#]

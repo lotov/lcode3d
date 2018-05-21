@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 import hacks  # noqa: E402
 
-from .. import plasma_solver  # noqa: E402
+from ..plasma import solver_v2_monolithic as plasma_solver  # noqa: E402
 
 
 class ForceCut:
@@ -43,8 +43,8 @@ class ForceCut:
     def plot(self, config, t_i, xi_i, roj, plasma,
              Ex, Ey, Ez, Bx, By, Bz,
              plasma_solver_config=hacks.steal):
-        # tracked = config.track_plasma_particles(plasma)
-        tracked = plasma
+        tracked = config.track_plasma_particles(plasma)
+        #tracked = plasma
 
         x = tracked['x'][0]
         p = tracked['p'][0, 1]
@@ -55,27 +55,25 @@ class ForceCut:
         self.dp_dxi.append(dp_dxi)
 
         SUBCELL = 30
-        xs = np.linspace(-config.window_width / 2, +config.window_width / 2,
-                         config.grid_steps * SUBCELL)
-        cells = np.linspace(-config.window_width / 2, +config.window_width / 2,
-                            config.grid_steps + 1)
-        assert len(cells) == config.grid_steps + 1
+        G = 6  # 2x gap from the edge
+        grid_step = config.window_width / config.grid_steps
+        less_half_width = (config.window_width - G * grid_step) / 2
+        less_grid_steps = config.grid_steps - G
+        xs = np.linspace(-less_half_width, less_half_width,
+                         less_grid_steps * SUBCELL)
+        cells = np.linspace(-less_half_width, less_half_width,
+                            less_grid_steps + 1)
         cell_centers = (cells[:-1] +
-                        .5 * config.window_width / config.grid_steps)
-        assert len(cell_centers) == Ex.shape[0]
-        probes = tracked.repeat(config.grid_steps * SUBCELL)
+                        .5 * grid_step)
+        assert len(cell_centers) == Ex.shape[0] - 6
+        probes = tracked.repeat(less_grid_steps * SUBCELL)
         probes['x'] = xs
 
         Exs, Eys, Ezs, Bxs, Bys, Bzs = [np.zeros(len(probes))
                                         for i in range(6)]
         Ext, Eyt, Ezt, Bxt, Byt, Bzt = [np.zeros(1) for i in range(6)]
 
-        if config.plasma_solver_fields_interpolation_order == -1:
-            interpolate_fields = plasma_solver.interpolate_fields_fs
-        elif config.plasma_solver_fields_interpolation_order == -2:
-            interpolate_fields = plasma_solver.interpolate_fields_fs9
-        else:
-            interpolate_fields = plasma_solver.interpolate_fields_sl
+        interpolate_fields = plasma_solver.interpolate_fields_fs9
 
         for x_scan in np.linspace(-config.window_width / 2,
                                   +config.window_width / 2,
@@ -85,13 +83,15 @@ class ForceCut:
                                probes['x'],
                                probes['y'],
                                Ex, Ey, Ez, Bx, By, Bz,
-                               Exs, Eys, Ezs, Bxs, Bys, Bzs)
+                               Exs, Eys, Ezs, Bxs, Bys, Bzs,
+                               np.zeros((config.grid_steps,) * 2))
 
             interpolate_fields(plasma_solver_config,
                                tracked['x'],
                                tracked['y'],
                                Ex, Ey, Ez, Bx, By, Bz,
-                               Ext, Eyt, Ezt, Bxt, Byt, Bzt)
+                               Ext, Eyt, Ezt, Bxt, Byt, Bzt,
+                               np.zeros((config.grid_steps,) * 2))
 
         self.Ex.append(Ext)
 
@@ -126,7 +126,7 @@ class ForceCut:
         plt.axvline(tracked['x'][0], color='orange')
 
         # Ex from a particle as seen by probe particles, interpolated
-        plt.ylim(-0.1, 0.1)
+        plt.ylim(-0.07, 0.07)
         plt.plot(xs, Exs, '-', color='blue', label='Ex, interpolated')
 
         # Ex from a particle, not interpolated
@@ -134,18 +134,19 @@ class ForceCut:
             config.grid_steps *
             (tracked['y'][0] + config.window_width / 2) / config.window_width
         )
-        plt.plot(cell_centers, Ex[:, tracked_y_cell], '*', markersize=5,
+        plt.plot(cell_centers, Ex[:, tracked_y_cell][3:-3], '*', markersize=5,
                  color='black', label='Ex, not interpolated')
 
         # The original particle
         plt.axvline(tracked['x'][0], color='orange')
         plt.scatter(tracked['x'], Ext, s=15, color='orange')
 
-        plt.plot(self.x, self.dp_dxi, color='pink')
-        plt.plot(self.x, self.p, color='cyan')
         if len(self.dp_dxi) > 1:
-            plt.plot(self.p[1:], self.dp_dxi[1:], color='green')
-        plt.plot(self.x, self.Ex, color='yellow')
+            plt.plot(self.x[1:], np.array(self.dp_dxi[1:]) * 10, color='pink', label='self-acceleration x 10')
+            plt.plot(np.array(self.p[1:]) * 10, np.array(self.Ex[1:]) * 10, color='lightgreen', label='Ex(dp_dxi) x10 both')
+        plt.plot(self.x, self.p, color='cyan', label='p')
+        plt.plot(self.x, self.Ex, color='orange', label='self-Ex')
+        plt.plot(self.x, np.array(self.Ex) * 10, color='yellow', label='self-Ex x10')
 
         plt.legend()
 

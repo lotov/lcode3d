@@ -43,16 +43,17 @@ grid_steps = 2**8 + 1
 xi_step_size = .05
 xi_steps = int(3000 // xi_step_size)
 
-A, B = 0.08, 0.32
+#density_noise_reductor = 1
+#noise_reductor_enable = True
+#noise_reductor_equalization = 0
+#noise_reductor_friction = 0.02
+#noise_reductor_reach = 1
+#noise_reductor_final_only = False
 
-noise_reductor_enable = False
-noise_reductor_final_only = True
-#noise_reductor_equalization = 1
-#noise_reductor_friction = 0.001
-noise_reductor_equalization = A
-noise_reductor_friction = A * B
-#noise_reductor_reach = 2.5
 plasma_solver = 'v2_monolithic'
+field_solver_subtraction_trick = 1
+field_solver_iterations = 1
+plasma_padding = 3
 #variant_A_predictor = variant_A_corrector = True
 print_every_xi_steps = 20
 
@@ -60,8 +61,9 @@ grid_step = window_width / grid_steps
 plasma = lcode.plasma.solver_v2_monolithic.make_plasma(
     window_width - 6 * grid_step, grid_steps - 6, 1
 )
-openmp_limit_threads = 8
+openmp_limit_threads = 4
 
+close_range_compensation = -1
 
 def transverse_peek_enabled(xi, xi_i):
     return xi_i % 5 == 0
@@ -71,6 +73,5 @@ from lcode.diagnostics.main import EachXi, EachXi2D
 diagnostics_enabled = True
 diagnostics = [
     EachXi('Ez_00', lambda Ez: Ez[grid_steps // 2, grid_steps // 2]),
-    EachXi('zn', lambda roj: abs(np.gradient(roj['ro'], axis=0).sum())),
     #EachXi2D('ro', lambda roj: roj['ro'], vmin=-0.2, vmax=0.2),
 ]

@@ -66,6 +66,8 @@ noise_reductor_final_only = False
 
 density_noise_reductor = 0
 
+close_range_compensation = 0
+
 def virtualize(a):
     return a
 

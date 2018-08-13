@@ -107,7 +107,7 @@ def simulation_time_step(config=None, t_i=0):
             beam_layer = next(beam_source)
             beam_layer = beam_append(beam_layer, fell_from_prev_layer)
 
-            deposit_beam(config, xi, t, beam_layer,
+            deposit_beam(config, t, xi, beam_layer,
                          beam_ro_from_prev,
                          out_beam_ro_curr=beam_ro,
                          out_beam_ro_next=beam_ro_next)
@@ -140,6 +140,7 @@ def simulation_time_step(config=None, t_i=0):
             hacks.call.each_xi(config, t_i, xi_i, roj, plasma,
                                Ex, Ey, Ez, Bx, By, Bz)
 
+            sys.stdout.flush()
             if config.print_every_xi_steps:
                 if xi_i % config.print_every_xi_steps == 0:
                     logger.info('xi=%.4f ' % xi + ' '.join(
@@ -189,12 +190,16 @@ def deposit_beam(config, t, xi, beam_layer,
         assert particles_layer.dtype == beam_particle.dtype
         # TODO: come up with a better criterion
 
-        active = particles_layer[
-            particles_layer['t'] <= t + config.time_step_size / 2
-        ]
+        if config.time_step_size:
+            active = particles_layer[
+                particles_layer['t'] <= t + config.time_step_size / 2
+            ]
+        else:
+            active = particles_layer
 
         beam_xis = active['r'][:, 0]
-        weights_curr, weights_next = 1 - (beam_xis - xi), beam_xis - xi
+        weights_next = (-beam_xis - -xi) / config.xi_step_size
+        weights_curr = 1 - weights_next
         out_beam_ro_curr += beam_depositor.deposit_beam(config, active,
                                                         weights_curr)
         out_beam_ro_next += beam_depositor.deposit_beam(config, active,

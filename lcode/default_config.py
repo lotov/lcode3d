@@ -52,15 +52,16 @@ base_plasma_density = 7e14
 plasma_solver_boundary_suppression = 1
 Ez = Ex = Ey = Bz = Bx = By = 0
 
-plasma_solver = 'v2'
+plasma_solver = 'v2_monolithic'
 field_solver_subtraction_trick = 1
 field_solver_iterations = 1
 plasma_padding = 3
 variant_A_predictor = variant_A_corrector = False
 
 noise_reductor_enable = False
-noise_reductor_equalization = 0.05
-noise_reductor_friction = 0.1
+noise_reductor_equalization = 0.02
+noise_reductor_friction = 0.02
+noise_reductor_friction_pz = 0.02
 noise_reductor_reach = 1
 noise_reductor_final_only = False
 

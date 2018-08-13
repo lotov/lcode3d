@@ -30,14 +30,15 @@ from ... cimport plasma_particle
 
 
 cpdef void preweighted_interpolator(
-        np.ndarray[plasma_particle.t, ndim=2] coarse_plasma,
-        np.ndarray[long] indices_prev,  # in both x and y
-        np.ndarray[long] indices_next,  # in both x and y
-        np.ndarray[double, ndim=2] A_weights,
-        np.ndarray[double, ndim=2] B_weights,
-        np.ndarray[double, ndim=2] C_weights,
-        np.ndarray[double, ndim=2] D_weights,
-        np.ndarray[plasma_particle.t, ndim=2] out_fine_plasma):
+        plasma_particle.t[:, :] coarse_plasma,
+        long[:] indices_prev,  # in both x and y
+        long[:] indices_next,  # in both x and y
+        double[:, :] A_weights,
+        double[:, :] B_weights,
+        double[:, :] C_weights,
+        double[:, :] D_weights,
+        double ratio,
+        plasma_particle.t[:, :] out_fine_plasma) nogil:
     cdef long i, j, px, nx, py, ny
     cdef double A_w, B_w, C_w, D_w
     cdef plasma_particle.t A, B, C, D
@@ -54,7 +55,7 @@ cpdef void preweighted_interpolator(
             B_w = B_weights[i, j]
             C_w = C_weights[i, j]
             D_w = D_weights[i, j]
-            <% cs = 'x', 'y', 'p[0]', 'p[1]', 'p[2]', 'v[0]', 'v[1]', 'v[2]' %>
+            <% cs = 'x', 'y' %>
             % for component in cs:
             out_fine_plasma[i, j].${component} = (
                 A.${component} * A_w +
@@ -63,6 +64,40 @@ cpdef void preweighted_interpolator(
                 D.${component} * D_w
             )
             % endfor
+            <% cs = 'p[0]', 'p[1]', 'p[2]' %>
+            % for component in cs:
+            out_fine_plasma[i, j].${component} = (
+                A.${component} * A_w +
+                B.${component} * B_w +
+                C.${component} * C_w +
+                D.${component} * D_w
+            ) / ratio
+            % endfor
+            # hack: ignore v for now, as v2_monolithic ignores it
+
+
+def make_coarse_plasma_grid(window_width, steps, coarseness):
+    plasma_step = window_width * coarseness / steps
+    right_half = np.arange(0, window_width / 2, plasma_step)
+    left_half = -right_half[:0:-1]  # invert, reverse, drop zero
+    plasma_grid = np.concatenate([left_half, right_half])
+    assert(np.array_equal(plasma_grid, -plasma_grid[::-1]))
+    return plasma_grid
+
+
+def make_fine_plasma_grid(window_width, steps, fineness):
+    plasma_step = window_width / steps / fineness
+    assert(fineness == int(fineness))
+    if fineness % 2:  # some on zero axes, none on cell corners
+        right_half = np.arange(0, window_width / 2, plasma_step)
+        left_half = -right_half[:0:-1]  # invert, reverse, drop zero
+        plasma_grid = np.concatenate([left_half, right_half])
+    else:  # none on zero axes, none on cell corners
+        right_half = np.arange(plasma_step / 2, window_width / 2, plasma_step)
+        left_half = -right_half[::-1]  # invert, reverse
+        plasma_grid = np.concatenate([left_half, right_half])
+    assert(np.array_equal(plasma_grid, -plasma_grid[::-1]))
+    return plasma_grid
 
 
 def make(window_width, steps, coarseness=2, fineness=2):
@@ -74,39 +109,32 @@ def make(window_width, steps, coarseness=2, fineness=2):
     # Coarse is the one that will evolve and fine is the one to be bilinearly
     # interpolated from the coarse one based on the initial positions.
 
-    coarse_grid_half = np.arange(coarse_step / 2, half_width, coarse_step)
-    coarse_grid = np.concatenate([-coarse_grid_half[::-1], coarse_grid_half])
+    coarse_grid = make_coarse_plasma_grid(window_width, steps, coarseness)
     coarse_grid_xs, coarse_grid_ys = coarse_grid[:, None], coarse_grid[None, :]
 
-    fine_grid = np.arange(-half_width + fine_step / 2, half_width, fine_step)
+    fine_grid = make_fine_plasma_grid(window_width, steps, fineness)
     fine_grid_xs, fine_grid_ys = fine_grid[:, None], fine_grid[None, :]
 
     Nc, Nf = len(coarse_grid), len(fine_grid)
 
     # Create plasma particles on that grids
 
-    coarse_plasma = np.zeros(2 * Nc**2, plasma_particle.dtype)
+    coarse_plasma = np.zeros(Nc**2, plasma_particle.dtype)
     coarse_plasma['N'] = np.arange(coarse_plasma.size)
     coarse_plasma['N'] = np.arange(coarse_plasma.size)
-    coarse_ions = coarse_plasma[::2].reshape(Nc, Nc)
-    coarse_electrons = coarse_plasma[1::2].reshape(Nc, Nc)
-    coarse_ions['x'] = coarse_electrons['x'] = coarse_grid_xs
-    coarse_ions['y'] = coarse_electrons['y'] = coarse_grid_ys
-    coarse_ions['m'] = plasma_particle.USUAL_ION_MASS * coarseness**2
-    coarse_ions['q'] = plasma_particle.USUAL_ION_CHARGE * coarseness**2
+    coarse_electrons = coarse_plasma.reshape(Nc, Nc)
+    coarse_electrons['x'] = coarse_grid_xs
+    coarse_electrons['y'] = coarse_grid_ys
     coarse_electrons['m'] = plasma_particle.USUAL_ELECTRON_MASS * coarseness**2
     coarse_electrons['q'] = (plasma_particle.USUAL_ELECTRON_CHARGE *
                              coarseness**2)
     # v, p == 0
 
-    fine_plasma = np.zeros(2 * Nf**2, plasma_particle.dtype)
+    fine_plasma = np.zeros(Nf**2, plasma_particle.dtype)
     fine_plasma['N'] = np.arange(fine_plasma.size)       # not really needed
-    fine_ions = fine_plasma[::2].reshape(Nf, Nf)
-    fine_electrons = fine_plasma[1::2].reshape(Nf, Nf)
-    fine_ions['x'] = fine_electrons['x'] = fine_grid_xs  # not really needed
-    fine_ions['y'] = fine_electrons['y'] = fine_grid_ys  # not really needed
-    fine_ions['m'] = plasma_particle.USUAL_ION_MASS / fineness**2
-    fine_ions['q'] = plasma_particle.USUAL_ION_CHARGE / fineness**2
+    fine_electrons = fine_plasma.reshape(Nf, Nf)
+    fine_electrons['x'] = fine_grid_xs
+    fine_electrons['y'] = fine_grid_ys
     fine_electrons['m'] = plasma_particle.USUAL_ELECTRON_MASS / fineness**2
     fine_electrons['q'] = (plasma_particle.USUAL_ELECTRON_CHARGE / fineness**2)
 
@@ -162,26 +190,22 @@ def make(window_width, steps, coarseness=2, fineness=2):
 
     # Finally, writing a virtualizer is trivial now
 
+    ratio = coarseness ** 2 * fineness ** 2
+
     # A performance trick: a reusable array is stored in the closure.
     # Could've made a copy inside virtualize(...), but this way is faster.
     evolved_fine = fine_plasma.copy()
-    evolved_fine_ions = evolved_fine[::2].reshape(Nf, Nf)
-    evolved_fine_electrons = evolved_fine[1::2].reshape(Nf, Nf)
+    evolved_fine_electrons = evolved_fine.reshape(Nf, Nf)
     # But it forces us to trust the caller not to mess up the array
 
     def virtualize(evolved_coarse):
         # This function will get called a lot (several times per xi step)
-        evolved_coarse_ions = evolved_coarse[::2].reshape(Nc, Nc)
-        evolved_coarse_electrons = evolved_coarse[1::2].reshape(Nc, Nc)
-
-        preweighted_interpolator(evolved_coarse_ions,
-                                 indices_prev, indices_next,
-                                 A_weights, B_weights, C_weights, D_weights,
-                                 out_fine_plasma=evolved_fine_ions)
+        evolved_coarse_electrons = evolved_coarse.reshape(Nc, Nc)
 
         preweighted_interpolator(evolved_coarse_electrons,
                                  indices_prev, indices_next,
                                  A_weights, B_weights, C_weights, D_weights,
+                                 ratio,
                                  out_fine_plasma=evolved_fine_electrons)
 
         return evolved_fine

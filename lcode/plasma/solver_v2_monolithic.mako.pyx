@@ -31,6 +31,8 @@ cimport openmp
 
 from libc.math cimport sqrt, log2, sin, cos, pi, fabs, floor, atan2
 
+import scipy.signal
+
 cdef extern from "math.h":
     float floorf(float) nogil
     float sqrtf(float) nogil
@@ -61,14 +63,12 @@ def make_plasma(window_width, steps, per_r_step=1):
     N = len(plasma_grid)
     plasma_grid_xs, plasma_grid_ys = plasma_grid[:, None], plasma_grid[None, :]
 
-    plasma = np.zeros(N**2 * 2, plasma_particle.dtype)
+    # Electron-only plasma
+    plasma = np.zeros(N**2, plasma_particle.dtype)
     plasma['N'] = np.arange(plasma.shape[0])
-    ions, electrons = plasma[:N**2].reshape(N, N), plasma[N**2:].reshape(N, N)
-    #ions, electrons = plasma[::2].reshape(N, N), plasma[1::2].reshape(N, N)
-    ions['x'] = electrons['x'] = plasma_grid_xs
-    ions['y'] = electrons['y'] = plasma_grid_ys
-    ions['m'] = plasma_particle.USUAL_ION_MASS / per_r_step**2
-    ions['q'] = plasma_particle.USUAL_ION_CHARGE / per_r_step**2
+    electrons = plasma.reshape(N, N)
+    electrons['x'] = plasma_grid_xs
+    electrons['y'] = plasma_grid_ys
     electrons['m'] = plasma_particle.USUAL_ELECTRON_MASS / per_r_step**2
     electrons['q'] = plasma_particle.USUAL_ELECTRON_CHARGE / per_r_step**2
     # v, p == 0
@@ -96,6 +96,7 @@ cdef class PlasmaSolverConfig:
     cdef public bint noise_reductor_enable
     cdef public double noise_reductor_equalization
     cdef public double noise_reductor_friction
+    cdef public double noise_reductor_friction_pz
     cdef public double noise_reductor_reach
     cdef public double noise_reductor_final_only
     cdef public double density_noise_reductor
@@ -104,9 +105,10 @@ cdef class PlasmaSolverConfig:
 
     def __init__(self, global_config):
         self.npq, unwanted = divmod(log2(global_config.grid_steps - 1), 1)
-        if unwanted:
-            raise RuntimeError('Grid step must be N**2 + 1')
-        self.n_dim = 2**self.npq + 1
+        #if unwanted:
+        #    raise RuntimeError('Grid step must be N**2 + 1')
+        #self.n_dim = 2**self.npq + 1
+        self.n_dim = global_config.grid_steps
         self.x_max = global_config.window_width / 2
         self.h = global_config.window_width / self.n_dim
         self.h3 = global_config.xi_step_size
@@ -123,6 +125,7 @@ cdef class PlasmaSolverConfig:
         self.noise_reductor_enable = global_config.noise_reductor_enable
         self.noise_reductor_equalization = global_config.noise_reductor_equalization
         self.noise_reductor_friction = global_config.noise_reductor_friction
+        self.noise_reductor_friction_pz = global_config.noise_reductor_friction_pz
         self.noise_reductor_reach = global_config.noise_reductor_reach
         self.noise_reductor_final_only = global_config.noise_reductor_final_only
 
@@ -154,7 +157,7 @@ cdef inline float error_by_dist(float[:] error_lut, float dist) nogil:
     cdef float p = dist * (16000 / 0.35)  # calculate an index in LUT
     cdef float sign = 1 if p > 0 else -1
     p = fabsf(p)
-    cdef unsigned int i1 = <int> floorf(p)
+    cdef unsigned int i1 = <unsigned int> floorf(p)
     if i1 >= 16000 - 1:
         return 0
     cdef unsigned int i2 = i1 + 1
@@ -188,9 +191,12 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
     """
     cdef long k
     cdef int i, j
+    cdef int ii, jj
     cdef double x_loc, y_loc, x_h, y_h
     cdef double fx1, fy1, fx2, fy2, fx3, fy3
     cdef double Ax, Ay
+    cdef double Ax1, Ax2, Ax3, Ax4, Ay1, Ay2, Ay3, Ay4
+    cdef double lx, ly, rx, ry
 
     #assert Ex.shape[0] == Ex.shape[1] == config.n_dim
 
@@ -208,8 +214,8 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
         y_h = ys[k] / config.h + .5
         i = <int> floor(x_h) + config.n_dim // 2
         j = <int> floor(y_h) + config.n_dim // 2
-        x_loc = x_h - floor(x_h) - 0.5  # centered to -.5 to 5, not 0 to 1 because
-        y_loc = y_h - floor(y_h) - 0.5  # the latter formulas use offset from cell center
+        x_loc = x_h - floor(x_h) - .5  # centered to -.5 to 5, not 0 to 1 because
+        y_loc = y_h - floor(y_h) - .5  # the latter formulas use offset from cell center
 
         fx1 = .75 - x_loc**2
         fy1 = .75 - y_loc**2
@@ -233,15 +239,50 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
         % endfor
 
         if config.density_noise_reductor:
-            if k >= xs.shape[0] // 2:  # electrons
-                if 12 < i < Ex.shape[0] - 1 - 12:
-                    Ax = (ro[i - 1, j] + ro[i + 1, j] - 2 * ro[i, j]) / 4
-                    Ax *= config.density_noise_reductor
-                    Exs[k] -= (Ax * config.h / pi) * sin(pi * x_loc / config.h)
-                if 12 < j < Ey.shape[1] - 1 - 12:
-                    Ay = (ro[i, j - 1] + ro[i, j + 1] - 2 * ro[i, j]) / 4
-                    Ay *= config.density_noise_reductor
-                    Eys[k] -= (Ay * config.h / pi) * sin(pi * y_loc / config.h)
+            #if 12 < i < Ex.shape[0] - 1 - 12:
+            #    Ax = (ro[i - 1, j] + ro[i + 1, j] - 2 * ro[i, j]) / 4
+            #    Ax *= config.density_noise_reductor
+            #    Exs[k] -= (Ax * config.h / pi) * sin(pi * x_loc / config.h)
+            #if 12 < j < Ey.shape[1] - 1 - 12:
+            #    Ay = (ro[i, j - 1] + ro[i, j + 1] - 2 * ro[i, j]) / 4
+            #    Ay *= config.density_noise_reductor
+            #    Eys[k] -= (Ay * config.h / pi) * sin(pi * y_loc / config.h)
+            x_h = xs[k] / config.h
+            y_h = ys[k] / config.h
+            i = <int> floor(x_h) + config.n_dim // 2
+            j = <int> floor(y_h) + config.n_dim // 2
+            lx = (x_h - floor(x_h)) * config.h
+            ly = (y_h - floor(y_h)) * config.h
+            rx = config.h - lx
+            ry = config.h - ly
+            if 1 < i < Ex.shape[0] - 1 - 2 and 1 < j < Ex.shape[1] - 1 - 2:
+                Ax1 = (ro[i - 1, j] + ro[i + 1, j] - 2 * ro[i + 0, j]) / 4
+                Ax2 = (ro[i - 1 + 1, j] + ro[i + 1 + 1, j] - 2 * ro[i + 0 + 1, j]) / 4
+                Ax3 = (ro[i - 1, j + 1] + ro[i + 1, j + 1] - 2 * ro[i + 0, j + 1]) / 4
+                Ax4 = (ro[i - 1 + 1, j + 1] + ro[i + 1 + 1, j + 1] - 2 * ro[i + 0 + 1, j + 1]) / 4
+
+                Exs[k] -= config.density_noise_reductor / pi / config.h * (
+                    (ry *
+                     (Ax1 * rx * sin(pi * lx / config.h) +
+                      Ax2 * lx * sin(pi * -rx / config.h))) +  # -???
+                    (ly *
+                     (Ax3 * rx * sin(pi * lx / config.h) +
+                      Ax4 * lx * sin(pi * -rx / config.h)))  # -???
+                )
+
+                Ay1 = (ro[i, j - 1] + ro[i, j + 1] - 2 * ro[i, j + 0]) / 4
+                Ay2 = (ro[i, j - 1 + 1] + ro[i, j + 1 + 1] - 2 * ro[i, j + 0 + 1]) / 4
+                Ay3 = (ro[i + 1, j - 1] + ro[i + 1, j + 1] - 2 * ro[i + 1, j + 0]) / 4
+                Ay4 = (ro[i + 1, j - 1 + 1] + ro[i + 1, j + 1 + 1] - 2 * ro[i + 1, j + 0 + 1]) / 4
+
+                Eys[k] -= config.density_noise_reductor / pi / config.h * (
+                    (rx *
+                     (Ay1 * ry * sin(pi * ly / config.h) +
+                      Ay2 * ly * sin(pi * -ry / config.h))) +
+                    (lx *
+                     (Ay3 * ry * sin(pi * ly / config.h) +
+                      Ay4 * ly * sin(pi * -ry / config.h)))
+                )
 
 
 cpdef void ro_and_j_ie_Vshivkov(PlasmaSolverConfig config,
@@ -319,37 +360,44 @@ cpdef void ro_and_j_ie_Vshivkov(PlasmaSolverConfig config,
                 roj[i, j].${comp} += roj_tmp[z, i, j].${comp}
                 % endfor
 
-    #sum_roj(roj_tmp, roj)
-
-cpdef void sum_roj(np.ndarray[RoJ_t, ndim=3] roj_tmp,
-                   np.ndarray[RoJ_t, ndim=2] roj,
-                  ):
-    np.sum(roj_tmp['ro'], axis=0, out=roj['ro'])
-    np.sum(roj_tmp['jx'], axis=0, out=roj['jx'])
-    np.sum(roj_tmp['jy'], axis=0, out=roj['jy'])
-    np.sum(roj_tmp['jz'], axis=0, out=roj['jz'])
-
 
 cdef inline void compensate_single_pair(PlasmaSolverConfig config,
-                                        float[:] error_lut,
+                                        float[:] error_lut_straight,
+                                        float[:] error_lut_diagonal,
                                         plasma_particle.t to,
                                         plasma_particle.t fr,
                                         double[:, :] mut_Exs,
                                         double[:, :] mut_Eys,
                                         Py_ssize_t i, Py_ssize_t j) nogil:
     cdef double dx, dy, comp, dist2, dist, nsin, ncos
+    cdef double hscale = config.h / 0.049999999999999996
     dx = fr.x - to.x
     dy = fr.y - to.y
     dist2 = dx**2 + dy**2
     if not dist2: return
     dist = sqrt(dist2)
+    #if dist > config.h * 3:
+    #    return
     ncos = dx / dist
     nsin = dy / dist
     #cdef double angle = atan2(dy, dx)
-    #nsin = sin(angle)
-    #ncos = cos(angle)
+    #cdef double a = angle % (pi / 2)
 
-    comp = fr.q * error_by_dist(error_lut, dist)
+    cdef double error_straight = error_by_dist(error_lut_straight, dist / hscale) * hscale
+    #error_straight = error_straight if error_straight > 0 else 0
+    cdef double error_diagonal = error_by_dist(error_lut_diagonal, dist / hscale) * hscale
+
+    #cdef double diagonality = min(fabs(dx), fabs(dy)) / max(fabs(dx), fabs(dy))
+    #cdef double diagonality = sin(2 * angle)**2
+    cdef double diagonality = .5
+    cdef double error = error_straight * (1 - diagonality) + error_diagonal * diagonality
+    #cdef double error
+    #if error_straight < error_diagonal:
+    #    error = error_straight
+    #else:
+    #    error = error_diagonal
+
+    comp = fr.q * error
     mut_Exs[i, j] += config.close_range_compensation * (comp * ncos)
     mut_Eys[i, j] += config.close_range_compensation * (comp * nsin)
     #with gil:
@@ -362,7 +410,6 @@ cpdef void compensate_fields_(PlasmaSolverConfig config,
                               float[:] error_lut,
                               float[:] error_lut_diag,
                               np.ndarray[plasma_particle.t] in_plasma,
-                              np.ndarray[plasma_particle.t] in_alt_plasma,
                               np.ndarray[double] mut_Exs_,
                               np.ndarray[double] mut_Eys_,
                               ):
@@ -370,7 +417,6 @@ cpdef void compensate_fields_(PlasmaSolverConfig config,
     cdef Py_ssize_t N = <int> sqrt(T)
     assert N**2 == T
     cdef np.ndarray[plasma_particle.t, ndim=2] plasma = in_plasma.reshape(N, N)
-    cdef np.ndarray[plasma_particle.t, ndim=2] alt_plasma = in_alt_plasma.reshape(N, N)
     cdef double[:, :] mut_Exs = mut_Exs_.reshape(N, N)
     cdef double[:, :] mut_Eys = mut_Eys_.reshape(N, N)
     cdef Py_ssize_t i, j
@@ -378,39 +424,44 @@ cpdef void compensate_fields_(PlasmaSolverConfig config,
 
     cdef double dx, dy, comp, dist2, dist, nsin, ncos
     cdef scale = config.close_range_compensation
-    cdef plasma_particle.t to, fr, fa
+    cdef plasma_particle.t to, fr
 
-    #for i in prange(1, N - 1, nogil=True, num_threads=config.threads):
-    for i in range(2, N - 2):
-        for j in range(2, N - 2):
+    for i in prange(5, N - 5, nogil=True, num_threads=config.threads):
+    #for i in range(7, N - 7):
+        for j in range(5, N - 5):
             to = plasma[i, j]
 
-            for io in range(-2, +2 + 1):
-                if not io: continue
-                fr = plasma[i + io, j]
-                compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
+            for io in range(-5, +5 + 1):
+                for jo in range(-5, +5 + 1):
+                    if not io and not jo: continue
+                    fr = plasma[i + io, j + jo]
+                    compensate_single_pair(config, error_lut, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
 
-            for jo in range(-2, +2 + 1):
-                if not jo: continue
-                fr = plasma[i, j + jo]
-                compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
+            #for jo in range(-3, +3 + 1):
+            #    if not jo: continue
+            #    fr = plasma[i, j + jo]
+            #    compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
+            #for io in range(-3, +3 + 1):
+            #    if not io: continue
+            #    fr = plasma[i + io, j]
+            #    compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
 
-            for jo in range(-1, +1 + 1):
-                if not jo: continue
-                fr = plasma[i + jo, j + jo]
-                compensate_single_pair(config, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
+            #for jo in range(-3, +3 + 1):
+            #    if not jo: continue
+            #    fr = plasma[i, j + jo]
+            #    compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
 
-            for jo in range(-1, +1 + 1):
-                if not jo: continue
-                fr = plasma[i + jo, j - jo]
-                compensate_single_pair(config, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
+            #for jo in range(-2, +2 + 1):
+            #    if not jo: continue
+            #    fr = plasma[i + jo, j + jo]
+            #    compensate_single_pair(config, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
+
+            #for jo in range(-2, +2 + 1):
+            #    if not jo: continue
+            #    fr = plasma[i + jo, j - jo]
+            #    compensate_single_pair(config, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
 
             #dx, dy = fr.x - to.x, fr.y - to.y
-
-            #fa = alt_plasma[i, j]  # 'sibling' particle from the other sort
-            #mut_Exs[i, j] += scale * fa.q * error_by_dist(error_lut, fa.x - to.x)
-            #mut_Eys[i, j] += scale * fa.q * error_by_dist(error_lut, fa.y - to.y)
-            #compensate_single_pair(config, error_lut, to, fa, mut_Exs, mut_Eys, i, j)
 
             # no correction of self-force as it was checked to be zero
             # (save for the image charge interactions, but these are kept)
@@ -418,30 +469,18 @@ cpdef void compensate_fields_(PlasmaSolverConfig config,
             #fr = plasma[i + 0, j + 1]  # right
             #compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
             #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut, fr.x - to.x)
-            #fa = alt_plasma[i + 0, j + 1]  # right
-            #compensate_single_pair(config, error_lut, to, fa, mut_Exs, mut_Eys, i, j)
-            #mut_Exs[i, j] += scale * fa.q * error_by_dist(error_lut, fa.x - to.x)
 
             #fr = plasma[i + 0, j - 1]  # left
             #compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
             #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut, fr.x - to.x)
-            #fa = alt_plasma[i + 0, j - 1]  # left
-            #compensate_single_pair(config, error_lut, to, fa, mut_Exs, mut_Eys, i, j)
-            #mut_Exs[i, j] += scale * fa.q * error_by_dist(error_lut, fa.x - to.x)
 
             #fr = plasma[i + 1, j + 0]  # top
             #compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
             #mut_Eys[i, j] += scale * fr.q * error_by_dist(error_lut, fr.y - to.y)
-            #fa = alt_plasma[i + 1, j + 0]  # top
-            #compensate_single_pair(config, error_lut, to, fa, mut_Exs, mut_Eys, i, j)
-            #mut_Eys[i, j] += scale * fa.q * error_by_dist(error_lut, fa.y - to.y)
 
             #fr = plasma[i - 1, j + 0]  # bottom
             #compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
             #mut_Eys[i, j] += scale * fr.q * error_by_dist(error_lut, fr.y - to.y)
-            #fa = alt_plasma[i - 1, j + 0]  # bottom
-            #compensate_single_pair(config, error_lut, to, fa, mut_Exs, mut_Eys, i, j)
-            #mut_Eys[i, j] += scale * fa.q * error_by_dist(error_lut, fa.y - to.y)
 
             #fr = plasma[i + 0, j + 2]  # right
             #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut, fr.x - to.x)
@@ -480,9 +519,7 @@ cpdef void compensate_fields_(PlasmaSolverConfig config,
 
 def compensate_fields(config, error_lut, error_lut_diag, plasma, mut_Exs, mut_Eys):
     if config.close_range_compensation:
-        N2 = len(plasma) // 2
-        compensate_fields_(config, error_lut, error_lut_diag, plasma[:N2], plasma[N2:], mut_Exs[:N2], mut_Eys[:N2])  # ions
-        compensate_fields_(config, error_lut, error_lut_diag, plasma[N2:], plasma[:N2], mut_Exs[N2:], mut_Eys[N2:])  # electrons
+        compensate_fields_(config, error_lut, error_lut_diag, plasma, mut_Exs, mut_Eys)
 
 def interpolate_fields(config, xs, ys, Ex, Ey, Ez, Bx, By, Bz, ro):
     Exs = np.empty_like(xs)
@@ -499,13 +536,14 @@ def interpolate_fields(config, xs, ys, Ex, Ey, Ez, Bx, By, Bz, ro):
     return Exs, Eys, Ezs, Bxs, Bys, Bzs
 
 
-def deposit(config, plasma):
+def deposit(config, plasma, ion_initial_ro):
     plasma_virtualized = config.virtualize(plasma)
 
     roj = np.zeros((config.n_dim, config.n_dim), dtype=RoJ_dtype)
     ro_and_j_ie_Vshivkov(config, plasma_virtualized, roj)
     # may assert that particles are contained in +- particle_boundary
     # and remove a lot of inner ifs
+    roj['ro'] += ion_initial_ro  # background ions
     return roj
 
 def calculate_fields(config, field_solver,
@@ -750,26 +788,90 @@ cpdef void move_smart_fast_(PlasmaSolverConfig config,
         out_plasma[k] = p
 
 
-def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, noise_reductor_enable=False):
+def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, initial_plasma, window, noise_reductor_enable=False):
     out_plasma = np.empty_like(plasma)
+    #if noise_reductor_enable:
+    #    plasma = noise_reductor(config, plasma)
     move_smart_fast_(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, out_plasma)
     # TODO: call noisereductor only on final movement or on all movements?
     if noise_reductor_enable:
-        out_plasma = noise_reductor(config, out_plasma)
+        out_plasma = noise_reductor(config, initial_plasma, window, out_plasma)
     return out_plasma
 
 
 ### Noise reductor draft
 
-def noise_reductor(config, plasma):
-    plasma = plasma.copy()
-    N2 = len(plasma) // 2
-    plasma[:N2] = noise_reductor_(config, plasma[:N2])  # ions
-    plasma[N2:] = noise_reductor_(config, plasma[N2:])  # electrons
-    #plasma[::2] = noise_reductor_(config, plasma[::2])  # ions
-    #plasma[1::2] = noise_reductor_(config, plasma[1::2])  # electrons
-    return plasma
+def blur(arr, window):
+    #assert arr.shape[0] == arr.shape[1]
+    #return np.abs(np.fft.ifft2(np.fft.fft2(arr) * window))
+    return np.fft.ifft2(np.fft.fft2(arr) * window).real
+    #import scipy.ndimage
+    #blurred = scipy.ndimage.gaussian_filter(arr, sigma=1.5, mode='nearest')
+    #return arr * (1 - mix) + blurred * mix
 
+def noise_reductor(config, initial_plasma, window, in_plasma):
+    #T = in_plasma.shape[0]
+    #N = int(sqrt(T))
+    #assert N**2 == T
+    #plasma = in_plasma.copy().reshape(N, N)
+
+    ##sigma = 0.25 * config.h * config.noise_reductor_reach
+    #offt_x = plasma['x'] - initial_plasma['x']
+    #offt_y = plasma['y'] - initial_plasma['y']
+    #plasma['x'] = blur(offt_x, window) + initial_plasma['x']
+    #plasma['y'] = blur(offt_y, window) + initial_plasma['y']
+
+    #plasma['p'][:, :, 0] = blur(plasma['p'][:, :, 0], window)
+    #plasma['p'][:, :, 1] = blur(plasma['p'][:, :, 1], window)
+    #plasma['p'][:, :, 2] = blur(plasma['p'][:, :, 2], window)
+
+    #return plasma.reshape(T)
+
+    #return noise_reductor_(config, in_plasma)
+    return noise_reductor_3x3(config, in_plasma)
+
+
+#@cython.boundscheck(False)
+@cython.cdivision(True)
+cpdef np.ndarray[plasma_particle.t] noise_reductor_3x3(PlasmaSolverConfig config,
+                                                    np.ndarray[plasma_particle.t] in_plasma,
+                                                    # np.ndarray[double, ndim=2] ro
+                                                    ):
+    cdef Py_ssize_t T = in_plasma.shape[0]
+    cdef Py_ssize_t N = <int> sqrt(T)
+    assert N**2 == T
+    if N % 3:
+        print('N', N)
+    assert N % 3 == 0
+    cdef np.ndarray[plasma_particle.t, ndim=2] plasma1 = in_plasma.reshape(N, N)
+    # TODO: skip copying most of the stuff?
+    cdef np.ndarray[plasma_particle.t, ndim=2] plasma2 = plasma1.copy()
+    cdef np.ndarray[double, ndim=2] pxs_avg = np.zeros((N, N))
+    cdef np.ndarray[double, ndim=2] pys_avg = np.zeros((N, N))
+    cdef np.ndarray[double, ndim=2] pzs_avg = np.zeros((N, N))
+    cdef double dp_friction, dp_friction_pz
+    # TODO: allow noise reductor parameters to be specified as 2d arrays!
+    cdef double friction_c = config.noise_reductor_friction / config.h  # empiric for now
+    cdef double friction_c_pz = config.noise_reductor_friction_pz / config.h  # empiric for now
+    cdef Py_ssize_t i, j
+    cdef int ii, jj
+
+    for i in prange(1, N - 1, 3, nogil=True, num_threads=config.threads):
+        for j in range(1, N - 1, 3):
+            for ii in range(-1, 1 + 1):
+                for jj in range(-1, 1 + 1):
+                    pxs_avg[i, j] += plasma1[i + ii, j + jj].p[1] / 9
+                    pys_avg[i, j] += plasma1[i + ii, j + jj].p[2] / 9
+                    pzs_avg[i, j] += plasma1[i + ii, j + jj].p[0] / 9
+    for i in prange(1, N - 1, 3, nogil=True, num_threads=config.threads):
+        for j in range(1, N - 1, 3):
+            for ii in range(-1, 1 + 1):
+                for jj in range(-1, 1 + 1):
+                    plasma2[i + ii, j + jj].p[1] = plasma1[i + ii, j + jj].p[1] * (1 - friction_c) + pxs_avg[i, j] * friction_c
+                    plasma2[i + ii, j + jj].p[2] = plasma1[i + ii, j + jj].p[2] * (1 - friction_c) + pys_avg[i, j] * friction_c
+                    plasma2[i + ii, j + jj].p[0] = plasma1[i + ii, j + jj].p[0] * (1 - friction_c_pz) + pzs_avg[i, j] * friction_c_pz
+
+    return plasma2.reshape(T)
 
 @cython.boundscheck(False)
 @cython.cdivision(True)
@@ -783,44 +885,68 @@ cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
     cdef np.ndarray[plasma_particle.t, ndim=2] plasma1 = in_plasma.reshape(N, N)
     # TODO: skip copying most of the stuff?
     cdef np.ndarray[plasma_particle.t, ndim=2] plasma2 = plasma1.copy()
-    cdef plasma_particle.t neighbor1, neighbor2
+    cdef np.ndarray[plasma_particle.t, ndim=2] plasma3
     cdef double coord_deviation, p_m_deviation
-    cdef double dp_friction, dp_equalization
+    cdef double dp_friction, dp_friction_pz, dp_equalization
     # TODO: allow noise reductor parameters to be specified as 2d arrays!
     cdef double friction_c = config.noise_reductor_friction / config.h  # empiric for now
+    cdef double friction_c_pz = config.noise_reductor_friction_pz / config.h  # empiric for now
     cdef double equalization_c = config.noise_reductor_equalization * config.h  # empiric for now
     cdef double reach = config.noise_reductor_reach * config.h  # empiric for now
     cdef Py_ssize_t i, j
 
-    # pass in x direction
+    # pass in x direction, equalization
     for i in prange(1, N - 1, nogil=True, num_threads=config.threads):
-    #for i in range(1, N - 1):
         for j in range(N):
             coord_deviation = plasma1[i, j].x - (plasma1[i - 1, j].x + plasma1[i + 1, j].x) / 2
             if fabs(coord_deviation) < reach:
-                p_m_deviation = (plasma1[i, j].p[1] / plasma1[i, j].m -
-                                 (plasma1[i - 1, j].p[1] / plasma1[i - 1, j].m +
-                                  plasma1[i + 1, j].p[1] / plasma1[i + 1, j].m) / 2)
                 dp_equalization = equalization_c * sin(pi * coord_deviation / reach)
-                dp_friction = friction_c * plasma1[i, j].m * p_m_deviation
-                plasma2[i, j].p[1] -= config.h3 * (dp_friction + dp_equalization)
+                plasma2[i, j].p[1] -= config.h3 * dp_equalization
 
-    # pass in y direction
-    # TODO: skip copying most of the stuff?
+    # pass in y direction, equalization
     for i in cython.parallel.prange(N, nogil=True, num_threads=config.threads):
-    #for i in range(N):
         for j in range(1, N - 1):
             coord_deviation = plasma1[i, j].y - (plasma1[i, j - 1].y + plasma1[i, j + 1].y) / 2
             if fabs(coord_deviation) < reach:
-                p_m_deviation = (plasma1[i, j].p[2] / plasma1[i, j].m -
-                                 (plasma1[i, j - 1].p[2] / plasma1[i, j - 1].m +
-                                  plasma1[i, j + 1].p[2] / plasma1[i, j + 1].m) / 2)
                 dp_equalization = equalization_c * sin(pi * coord_deviation / reach)
-                dp_friction = friction_c * plasma1[i, j].m * p_m_deviation
-                plasma2[i, j].p[2] -= config.h3 * (dp_friction + dp_equalization)
+                plasma2[i, j].p[2] -= config.h3 * dp_equalization
 
+    plasma3 = plasma2.copy()
 
-    return plasma2.reshape(T)
+    # pass in x direction, friction
+    for i in prange(1, N - 1, nogil=True, num_threads=config.threads):
+        for j in range(N):
+            coord_deviation = plasma2[i, j].x - (plasma2[i - 1, j].x + plasma2[i + 1, j].x) / 2
+            if fabs(coord_deviation) < reach:
+                p_m_deviation = (plasma2[i, j].p[1] / plasma2[i, j].m -
+                                 (plasma2[i - 1, j].p[1] / plasma2[i - 1, j].m +
+                                  plasma2[i + 1, j].p[1] / plasma2[i + 1, j].m) / 2)
+                dp_friction = friction_c * plasma2[i, j].m * p_m_deviation
+                plasma3[i, j].p[1] -= config.h3 * dp_friction
+
+    # pass in y direction, friction
+    for i in cython.parallel.prange(N, nogil=True, num_threads=config.threads):
+        for j in range(1, N - 1):
+            coord_deviation = plasma2[i, j].y - (plasma2[i, j - 1].y + plasma2[i, j + 1].y) / 2
+            if fabs(coord_deviation) < reach:
+                p_m_deviation = (plasma2[i, j].p[2] / plasma2[i, j].m -
+                                 (plasma2[i, j - 1].p[2] / plasma2[i, j - 1].m +
+                                  plasma2[i, j + 1].p[2] / plasma2[i, j + 1].m) / 2)
+                dp_friction = friction_c * plasma2[i, j].m * p_m_deviation
+                plasma3[i, j].p[2] -= config.h3 * dp_friction
+
+    # pass in x and y, friction in pz
+    for i in prange(1, N - 1, nogil=True, num_threads=config.threads):
+        for j in range(1, N - 1):
+            p_m_deviation = (plasma2[i, j].p[0] / plasma2[i, j].m -
+                             (plasma2[i - 1, j].p[0] / plasma2[i - 1, j].m +
+                              plasma2[i + 1, j].p[0] / plasma2[i + 1, j].m +
+                              plasma2[i, j - 1].p[0] / plasma2[i, j - 1].m +
+                              plasma2[i, j + 1].p[0] / plasma2[i, j + 1].m) / 4)
+            dp_friction_pz = friction_c_pz * plasma2[i, j].m * p_m_deviation
+            plasma3[i, j].p[0] -= config.h3 * dp_friction_pz
+
+    return plasma3.reshape(T)
 
 
 ### The main plot, written by K. V. Lotov
@@ -831,6 +957,9 @@ cdef class PlasmaSolver:
     cdef public object RoJ_dtype
     cdef public float[:] error_lut
     cdef public float[:] error_lut_diag
+    cdef public object ion_initial_ro
+    cdef public object initial_plasma
+    cdef public object window
     # TODO: allocate everything else to make the solver allocation-free
 
     def __init__(self, config):
@@ -855,9 +984,26 @@ cdef class PlasmaSolver:
                    out_plasma, out_plasma_cor, out_roj
                    ):
         plasma = in_plasma.copy()
+        #config.noise_reductor_enable = (xi_i % 5 == 0)
         noise_reductor_predictions = config.noise_reductor_enable and not config.noise_reductor_final_only
 
         Fl = mut_Ex.copy(), mut_Ey.copy(), mut_Ez.copy(), mut_Bx.copy(), mut_By.copy(), mut_Bz.copy()
+
+        if xi_i == 0:
+            self.ion_initial_ro = -deposit(config, plasma, 0)['ro']
+            T = plasma.shape[0]
+            N = int(sqrt(T))
+            assert N**2 == T
+            self.initial_plasma = plasma.copy().reshape(N, N)
+
+            #self.window = scipy.signal.windows.tukey(N, .75)
+            #PAD = int(N * .05) // 2
+            PAD = int(N * .05) // 2
+            #self.window = scipy.signal.windows.tukey(N - 2 * PAD, .75)
+            self.window = scipy.signal.windows.tukey(N - 2 * PAD, .75)
+            self.window = np.hstack([np.zeros(PAD), self.window, np.zeros(PAD)])
+            self.window = np.fft.ifftshift(self.window[:, None] * self.window[None, :])
+
 
         # ===  1  ===
         plasma_predicted_half1 = move_simple_fast(config, plasma, config.h3 / 2)
@@ -866,9 +1012,9 @@ cdef class PlasmaSolver:
         #plasma_1 = move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs)
         Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl, roj_prev['ro'])
         compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls[0], Fls[1])
-        plasma_1 = move_smart_fast(config, plasma, *Fls,
+        plasma_1 = move_smart_fast(config, plasma, *Fls, self.initial_plasma, self.window,
                                    noise_reductor_enable=noise_reductor_predictions)
-        roj_1 = deposit(config, plasma_1)
+        roj_1 = deposit(config, plasma_1, self.ion_initial_ro)
 
         hs_xs = (plasma['x'] + plasma_1['x']) / 2
         hs_ys = (plasma['y'] + plasma_1['y']) / 2
@@ -880,9 +1026,9 @@ cdef class PlasmaSolver:
         Fl_avg_1 = average_fields(Fl, Fl_pred)
         Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1, roj_1['ro'])
         compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls_avg_1[0], Fls_avg_1[1])
-        plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1,
+        plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1, self.initial_plasma, self.window,
                                    noise_reductor_enable=noise_reductor_predictions)
-        roj_2 = deposit(config, plasma_2)
+        roj_2 = deposit(config, plasma_2, self.ion_initial_ro)
 
         hs_xs = (plasma['x'] + plasma_2['x']) / 2
         hs_ys = (plasma['y'] + plasma_2['y']) / 2
@@ -894,9 +1040,9 @@ cdef class PlasmaSolver:
         Fl_avg_2 = average_fields(Fl, Fl_new)
         Fls_avg_2 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_2, roj_2['ro'])
         compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls_avg_2[0], Fls_avg_2[1])
-        plasma_new = move_smart_fast(config, plasma, *Fls_avg_2,
+        plasma_new = move_smart_fast(config, plasma, *Fls_avg_2, self.initial_plasma, self.window,
                                      noise_reductor_enable=config.noise_reductor_enable)
-        roj_new = deposit(config, plasma_new)
+        roj_new = deposit(config, plasma_new, self.ion_initial_ro)
 
         #test_particle = plasma[plasma['q'] < 0]
         #test_particle = test_particle[np.abs(test_particle['x']) < 0.5]

@@ -45,7 +45,7 @@ window_width = 12.85 * (401 / 257)  # window size
 grid_steps = 801
 #window_width = 20  # window size
 #grid_steps = 513
-xi_step_size = .01
+xi_step_size = .005
 xi_steps = int(3000 // xi_step_size)
 
 plasma_solver = 'v2_monolithic'

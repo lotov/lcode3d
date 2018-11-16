@@ -33,11 +33,20 @@ def maybe_enable_openmp(cmd):
 def optimize(cmd):
     '''Tell compiler to use optimizations, see setup.cfg'''
     # Should be a compiler check, not a platform check...
+    import os
     import platform
     if platform.system() == 'Linux':
-        for extension in cmd.extensions:
-            extension.extra_compile_args.append('-O2')
-            extension.extra_compile_args.append('-g0')
+        if os.environ.get('OPTIMIZE') == '1':
+            cmd.announce('enabling aggressive optimizations')
+            for extension in cmd.extensions:
+                extension.extra_compile_args.append('-O3')
+                extension.extra_compile_args.append('-g0')
+                extension.extra_compile_args.append('-march=native')
+                extension.extra_compile_args.append('-mtune=native')
+        else:
+            for extension in cmd.extensions:
+                extension.extra_compile_args.append('-O2')
+                extension.extra_compile_args.append('-g0')
 
 
 def optimize_native(cmd):

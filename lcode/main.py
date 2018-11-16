@@ -134,11 +134,18 @@ def simulation_time_step(config=None, t_i=0):
             beam_sink.put(moved)
             fell_from_prev_layer = fell
 
-            # TODO: come up with better array names, skip this copying
-            beam_ro_from_prev[...] = beam_ro_next
-
             hacks.call.each_xi(config, t_i, xi_i, roj, plasma,
                                Ex, Ey, Ez, Bx, By, Bz)
+
+            if xi_i % 10000 == 0:
+                np.savez('%08d.resume.npz' % xi_i,
+                         xi_i=xi_i,
+                         roj_pprv=roj_pprv, roj_prev=roj_prev, roj=roj,
+                         Ex=Ex, Ey=Ey, Ez=Ez, Bx=Bx, By=By, Bz=Bz,
+                         plasma=plasma, plasma_cor=plasma_cor)
+
+            # TODO: come up with better array names, skip this copying
+            beam_ro_from_prev[...] = beam_ro_next
 
             sys.stdout.flush()
             if config.print_every_xi_steps:

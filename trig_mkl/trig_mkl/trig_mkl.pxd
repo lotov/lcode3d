@@ -22,7 +22,7 @@ import numpy as np
 cimport numpy as np
 
 cdef class TrigTransform:
-    cdef double[:, ::1] array
+    cdef public double[:, ::1] array
 
     cdef double[:, ::1] _full_array
     cdef MKL_INT n

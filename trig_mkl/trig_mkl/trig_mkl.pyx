@@ -9,13 +9,24 @@ cimport cython
 from cython.parallel import prange, parallel, threadid
 np.import_array()
 
+
+cpdef np.ndarray[double, ndim=1] aligned_array(long l, int alignment=1024):
+    cdef np.npy_intp shape = l
+    cdef double* aligned_arr = <double*>mkl_calloc(l, sizeof(double), alignment)
+    return np.PyArray_SimpleNewFromData(1, &shape, np.NPY_DOUBLE, aligned_arr)
+
+cpdef np.ndarray[double, ndim=2] aligned_array_2d(m, n, alignment=1024):
+    return aligned_array(m * n, alignment).reshape(m, n)
+
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
 cdef class TrigTransform:
-    def __cinit__(self, MKL_INT n, str tt_type = 'dst', int num_threads = 1):
-        cdef np.ndarray[double, ndim=1, mode="c"] commit_arr
-        cdef int i,
+    def __cinit__(self, MKL_INT n, str tt_type='dst', int num_threads=1,
+                  alignment=1024):
+        cdef int i
+
         cdef MKL_INT ir
         if n <= 0:
             raise ValueError("n must be greater than 0")
@@ -26,9 +37,13 @@ cdef class TrigTransform:
         self.dpar = NULL
         self.handles = NULL
 
-        self.ipar = <MKL_INT **>mkl_calloc(self.num_threads, sizeof(MKL_INT *), 64)
-        self.handles = <DFTI_DESCRIPTOR_HANDLE *>mkl_calloc(self.num_threads, sizeof(DFTI_DESCRIPTOR_HANDLE), 64)
-        self.errcodes = <MKL_INT *>mkl_calloc(self.num_threads, sizeof(MKL_INT), 64)
+        self.ipar = <MKL_INT **>mkl_calloc(self.num_threads,
+                                           sizeof(MKL_INT *), 128)
+        self.handles = <DFTI_DESCRIPTOR_HANDLE *>mkl_calloc(self.num_threads,
+                                                            sizeof(DFTI_DESCRIPTOR_HANDLE),
+                                                            128)
+        self.errcodes = <MKL_INT *>mkl_calloc(self.num_threads,
+                                              sizeof(MKL_INT), 128)
         if self.ipar == NULL:
             raise MemoryError
         if self.handles == NULL:
@@ -36,22 +51,29 @@ cdef class TrigTransform:
         if self.errcodes == NULL:
             raise MemoryError
         for i in range(self.num_threads):
-            self.ipar[i] = <MKL_INT *>mkl_calloc(128, sizeof(MKL_INT), 64)
+            self.ipar[i] = <MKL_INT *>mkl_calloc(128, sizeof(MKL_INT),
+                                                 128)
             if self.ipar[i] == NULL:
                 raise MemoryError
+
+        cdef int oversize = n + 1
+        while oversize % alignment:
+            oversize += 1
 
         if tt_type == 'dst':
             self.n = n + 1
             self.tt_type = mkltt.MKL_SINE_TRANSFORM
-            self.dpar = <double *>mkl_malloc((self.n // 2 + 2) * sizeof(double), 64)
-            self._full_array = np.zeros((self.n - 1, self.n + 1), dtype=np.double, order="c")
+            self.dpar = <double *>mkl_malloc((5 * self.n // 2 + 2) * sizeof(double),
+                                             128)
+            self._full_array = aligned_array_2d(self.n - 1, oversize, alignment)
             self.array = self._full_array[:, 1:self.n]
         elif tt_type == 'dct':
             self.n = n - 1
             self.tt_type = mkltt.MKL_COSINE_TRANSFORM
-            self.dpar = <double *>mkl_malloc((self.n + 2) * sizeof(double), 64)
-            self._full_array = np.zeros((self.n + 1, self.n + 1), dtype=np.double, order="c")
-            self.array = self._full_array
+            self.dpar = <double *>mkl_malloc((5 * self.n // 2 + 2) * sizeof(double),
+                                             128)
+            self._full_array = aligned_array_2d(self.n + 1, oversize, alignment)
+            self.array = self._full_array[:, :self.n+1]
         else:
             raise ValueError("tt_type must be either 'dct' or 'dst'")
 
@@ -63,9 +85,11 @@ cdef class TrigTransform:
             if ir != 0:
                 raise RuntimeError
 
-        commit_arr = np.zeros(self.n + 1, dtype=np.double, order="c")
         for i in range(self.num_threads):
-            mkltt.d_commit_trig_transform(&commit_arr[0], &self.handles[i], self.ipar[i], self.dpar, &ir)
+            assert <long> &self._full_array[i, 0] % alignment == 0
+            mkltt.d_commit_trig_transform(&self._full_array[i, 0],
+                                          &self.handles[i],
+                                          self.ipar[i], self.dpar, &ir)
             self.ipar[i][7] = 0
             if ir != 0:
                 raise RuntimeError
@@ -147,4 +171,7 @@ cdef class TrigTransform:
             mkl_free(self.dpar)
         if self.errcodes != NULL:
             mkl_free(self.errcodes)
+        cdef void* full = &self._full_array[0, 0]
+        if full != NULL:
+            mkl_free(full)
         mkl_free_buffers()

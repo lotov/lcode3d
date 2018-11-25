@@ -15,10 +15,16 @@
 
 # cython: language_level=3, unraisable_tracebacks=True, profile=True
 
-from mkl_types cimport MKL_INT
-from mkl_dfti cimport DFTI_DESCRIPTOR_HANDLE
+from .mkl_types cimport MKL_INT
+from .mkl_dfti cimport DFTI_DESCRIPTOR_HANDLE
+
+import numpy as np
+cimport numpy as np
 
 cdef class TrigTransform:
+    cdef double[:, ::1] array
+
+    cdef double[:, ::1] _full_array
     cdef MKL_INT n
     cdef MKL_INT tt_type
     cdef int num_threads
@@ -26,12 +32,9 @@ cdef class TrigTransform:
     cdef double *dpar
     cdef DFTI_DESCRIPTOR_HANDLE *handles
 
-    cpdef double[:] dst_1d(TrigTransform self, double[:] x)
-    cpdef double[:] dct_1d(TrigTransform self, double[:] x)
-    cpdef double[:, :] dst_2d(TrigTransform self, double[:, :] x)
-    cpdef double[:, :] dct_2d(TrigTransform self, double[:, :] x)
-    cpdef double[:, :] idct_2d(TrigTransform self, double[:, :] x)
+    cpdef void dst_2d(TrigTransform self)
+    cpdef void dct_2d(TrigTransform self)
+    cpdef void idct_2d(TrigTransform self)
 
     cdef MKL_INT _forward(self, double *data, int thread) nogil
     cdef MKL_INT _backward(self, double *data, int thread) nogil
-    #cdef MKL_INT _commit(self, double *data, int thread) nogil

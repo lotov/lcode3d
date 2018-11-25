@@ -16,6 +16,13 @@
 # cython: language_level=3, unraisable_tracebacks=True, profile=True
 
 
+#import trig_mkl
+#cimport trig_mkl
+#import trig_mkl.trig_mkl
+#cimport trig_mkl.trig_mkl
+from trig_mkl.trig_mkl import TrigTransform
+from trig_mkl.trig_mkl cimport TrigTransform
+
 import numpy as np
 cimport numpy as np
 
@@ -60,11 +67,9 @@ cdef class MixedSolver:
     # TODO: tune C/F layout, specify with ::1?
     cdef double[:, :] alf
     cdef double[:, :] bet
-    cdef double[:, :] rhs_fixed
-    cdef double[:, :] tmp1
-    cdef double[:, :] tmp2
     cdef int num_threads
-    cdef object tt  # FIXME: pxd it?
+    cdef TrigTransform tt1
+    cdef TrigTransform tt2
     cpdef solve(MixedSolver self, double[:, :] rhs, double[:] bound_top, double[:] bound_bot, double[:, :] out)
 
 
@@ -74,10 +79,9 @@ cdef class DirichletSolver:
     # TODO: tune C/F layout, specify with ::1?
     cdef double[:, :] alf
     cdef double[:, :] bet
-    cdef double[:, :] tmp1
-    cdef double[:, :] tmp2
     cdef int num_threads
-    cdef object tt  # FIXME: pxd it?
+    cdef TrigTransform tt1
+    cdef TrigTransform tt2
     cpdef solve(DirichletSolver self, double[:, :] rhs, double[:, :] out)
 
 

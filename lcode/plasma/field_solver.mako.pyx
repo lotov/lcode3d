@@ -36,8 +36,8 @@ cimport openmp
 
 import scipy.fftpack
 
-from trig_mkl import TrigTransform
-from trig_mkl cimport TrigTransform
+#from trig_mkl import TrigTransform
+#from trig_mkl cimport TrigTransform
 
 RoJ_dtype = np.dtype([
     ('ro', np.double),
@@ -131,12 +131,12 @@ cdef class MixedSolver:
         self.alf = alf
 
         self.bet = np.zeros((N, N))
-        # TODO: save space by using fewer arrays? or that would be negated with the FFTW interface?
-        self.rhs_fixed = np.zeros((N, N))
-        self.tmp1 = np.zeros((N, N))
-        self.tmp2 = np.zeros((N, N))
+        #self.rhs_fixed = np.zeros((N, N))
+        #self.tmp1 = np.zeros((N, N))
+        #self.tmp2 = np.zeros((N, N))
         self.num_threads = num_threads
-        self.tt = TrigTransform(self.N, tt_type='dct', num_threads=self.num_threads)
+        self.tt1 = TrigTransform(self.N, tt_type='dct', num_threads=self.num_threads)
+        self.tt2 = TrigTransform(self.N, tt_type='dct', num_threads=self.num_threads)
 
     cpdef solve(MixedSolver self, double[:, :] rhs, double[:] bound_top, double[:] bound_bot, double[:, :] out):
         # Solve Laplace x = (-)? RHS for x with mixed boundary conditions using DCT-1
@@ -144,18 +144,22 @@ cdef class MixedSolver:
         assert rhs.shape[0] == rhs.shape[1] == self.N
 
         # 1. Apply boundary conditions to the rhs
-        self.rhs_fixed[...] = rhs.T
+        cdef double[:, :] rhs_fixed = self.tt1.array  # a view, not a copy!
+        rhs_fixed[...] = rhs.T
         for i in range(self.N):
-            self.rhs_fixed[i, 0] += bound_top[i] * (2 / self.h)
-            self.rhs_fixed[i, self.N - 1] += bound_bot[i] * (2 / self.h)
-            # self.rhs_fixed[0, i] = self.rhs_fixed[self.N - 1, i] = 0  # changes nothing???
+            rhs_fixed[i, 0] += bound_top[i] * (2 / self.h)
+            rhs_fixed[i, self.N - 1] += bound_bot[i] * (2 / self.h)
+            # rhs_fixed[0, i] = rhs_fixed[self.N - 1, i] = 0  # changes nothing???
 
         # 2. Apply iDCT-1 (inverse Discrete Cosine Transform Type 1) to the RHS
         # TODO: accelerated version using fftw with extra codelets via ctypes?
         #cdef double[:, :] tmp1 = scipy.fftpack.idct(x=self.rhs_fixed, type=1, overwrite_x=True).T
         #cdef double[:, :] tmp1 = self.forward.transform(x=self.rhs_fixed).T
-        cdef double[:, :] tmp1 = self.tt.idct_2d(self.rhs_fixed).T
-        self.tmp1[...] = tmp1
+        #cdef double[:, :] tmp1 = self.tt.idct_2d(self.rhs_fixed).T
+        #self.tmp1[...] = tmp1
+        self.tt1.idct_2d()
+        cdef double[:, :] tmp1 = self.tt1.array.T
+        cdef double[:, :] tmp2 = self.tt2.array.T
 
         # 3. Solve tridiagonal matrix equation for each spectral column with Thomas method:
         # A @ tmp_2[k, :] = tmp_1[k, :]
@@ -164,11 +168,11 @@ cdef class MixedSolver:
         for i in prange(self.N, num_threads=self.num_threads, nogil=True):
             self.bet[i, 0] = 0
             for j in range(1, self.N - 1):
-                self.bet[i, j + 1] = (self.mul * self.tmp1[i, j] + self.bet[i, j]) * self.alf[i, j + 1]
-            self.tmp2[i, self.N - 1] = 0  # note the forced zero
+                self.bet[i, j + 1] = (self.mul * tmp1[i, j] + self.bet[i, j]) * self.alf[i, j + 1]
+            tmp2[i, self.N - 1] = 0  # note the forced zero
             for j in range(self.N - 2, 0 - 1, -1):
-                self.tmp2[i, j] = self.alf[i, j + 1] * self.tmp2[i, j + 1] + self.bet[i, j + 1]
-            # self.tmp2[:, 0] == 0, it happens by itself
+                tmp2[i, j] = self.alf[i, j + 1] * tmp2[i, j + 1] + self.bet[i, j + 1]
+            # tmp2[:, 0] == 0, it happens by itself
 
         # EXTRA: suppression
         #for i in range(self.N):
@@ -178,8 +182,9 @@ cdef class MixedSolver:
 
         # 4. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
         #cdef double[:, :] tmp_out = scipy.fftpack.dct(self.tmp2.T, type=1, overwrite_x=True)
-        cdef double[:, :] tmp_out = self.tt.dct_2d(self.tmp2.T)
-        out[...] = tmp_out.T
+        #cdef double[:, :] tmp_out = self.tt.dct_2d(self.tmp2.T)
+        self.tt2.dct_2d()  # .T of argument implied, see above
+        out[...] = self.tt2.array.T
 
 
 cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
@@ -349,11 +354,9 @@ cdef class DirichletSolver:
         self.alf = alf
 
         self.bet = np.zeros((N, N))
-        # TODO: save space by using fewer arrays? or that would be negated with the FFTW interface?
-        self.tmp1 = np.zeros((N - 2, N - 2))
-        self.tmp2 = np.zeros((N - 2, N - 2))
         self.num_threads = num_threads
-        self.tt = TrigTransform(self.N - 2, tt_type='dst', num_threads=self.num_threads)
+        self.tt1 = TrigTransform(self.N - 2, tt_type='dst', num_threads=self.num_threads)
+        self.tt2 = TrigTransform(self.N - 2, tt_type='dst', num_threads=self.num_threads)
 
     cpdef solve(DirichletSolver self, double[:, :] rhs, double[:, :] out):
         # Solve Laplace x = (-)? RHS for x with Dirichlet boundary conditions using DST-1
@@ -363,8 +366,11 @@ cdef class DirichletSolver:
 
         # 1. Apply DST-1 (Discrete Sine Transform Type 1) to the RHS
         #cdef double[:, :] tmp1 = scipy.fftpack.dst(x=rhs[1:-1, 1:-1], type=1).T
-        cdef double[:, :] tmp1 = self.tt.dst_2d(np.array(rhs[1:-1, 1:-1])).T
-        self.tmp1[...] = tmp1
+        #cdef double[:, :] tmp1 = self.tt.dst_2d(np.array(rhs[1:-1, 1:-1])).T
+        self.tt1.array[...] = rhs[1:-1, 1:-1]
+        self.tt1.dst_2d()
+        cdef double[:, :] tmp1 = self.tt1.array.T  # a view, not a copy!
+        cdef double[:, :] tmp2 = self.tt2.array.T  # a view, not a copy!
 
         # 2. Solve tridiagonal matrix equation for each spectral column with Thomas method:
         # A @ tmp_2[k, :] = tmp_1[k, :]
@@ -372,16 +378,17 @@ cdef class DirichletSolver:
         for i in prange(self.N - 2, num_threads=self.num_threads, nogil=True):
             self.bet[i, 0] = 0
             for j in range(self.N - 2):
-                self.bet[i, j + 1] = (self.mul * self.tmp1[i, j] + self.bet[i, j]) * self.alf[i, j + 1]
-            self.tmp2[i, self.N - 3] = 0 + self.bet[i, self.N - 2]  # 0 = self.tmp2[self.N - 2] (fake)
+                self.bet[i, j + 1] = (self.mul * tmp1[i, j] + self.bet[i, j]) * self.alf[i, j + 1]
+            tmp2[i, self.N - 3] = 0 + self.bet[i, self.N - 2]  # 0 = tmp2[self.N - 2] (fake)
             for j in range(self.N - 4, 0 - 1, -1):
-                self.tmp2[i, j] = self.alf[i, j + 1] * self.tmp2[i, j + 1] + self.bet[i, j + 1]
+                tmp2[i, j] = self.alf[i, j + 1] * tmp2[i, j + 1] + self.bet[i, j + 1]
 
         # 3. Apply DST-1 (Discrete Sine Transform Type 1) to the transformed spectra
         #cdef double[:, :] tmp_out = scipy.fftpack.dst(self.tmp2.T, type=1, overwrite_x=True)
-        cdef double[:, :] tmp_out = self.tt.dst_2d(np.array(self.tmp2.T)).T
+        #cdef double[:, :] tmp_out = self.tt.dst_2d(np.array(self.tmp2.T)).T
+        self.tt2.dst_2d()  # .T of the argument implied, see above
         out[...] = 0
-        out[1:-1, 1:-1] = tmp_out
+        out[1:-1, 1:-1] = self.tt2.array.T
 
 
 cpdef calculate_Ez(double[:, :] in_Ez,

@@ -41,10 +41,14 @@ cdef class TrigTransform:
             self.n = n + 1
             self.tt_type = mkltt.MKL_SINE_TRANSFORM
             self.dpar = <double *>mkl_malloc((self.n // 2 + 2) * sizeof(double), 64)
+            self._full_array = np.zeros((self.n - 1, self.n + 1), dtype=np.double, order="c")
+            self.array = self._full_array[:, 1:self.n]
         elif tt_type == 'dct':
             self.n = n - 1
             self.tt_type = mkltt.MKL_COSINE_TRANSFORM
             self.dpar = <double *>mkl_malloc((self.n + 2) * sizeof(double), 64)
+            self._full_array = np.zeros((self.n + 1, self.n + 1), dtype=np.double, order="c")
+            self.array = self._full_array
         else:
             raise ValueError("tt_type must be either 'dct' or 'dst'")
 
@@ -73,84 +77,55 @@ cdef class TrigTransform:
         mkltt.d_backward_trig_transform(data, &self.handles[thread], self.ipar[thread], self.dpar, &ir)
         return ir
 
-    #cdef MKL_INT _commit(self, double *data, int thread) nogil:
-    #    cdef MKL_INT ir = 0
-    #    mkltt.d_commit_trig_transform(data, &self.handles[thread], self.ipar[thread], self.dpar, &ir)
-    #    return ir
-
-    cpdef double[:] dst_1d(TrigTransform self, double[:] x):
+    cpdef void dst_2d(TrigTransform self):
         assert self.tt_type == mkltt.MKL_SINE_TRANSFORM
-        cdef np.ndarray[double, ndim=1, mode="c"] out1
-        out1 = np.zeros(self.n + 2, dtype=np.double, order="c")
-        out1[1:self.n] = x[:]
-        #if self._commit(&out1[0], 0) != 0 or self._forward(&out1[0], 0) != 0 :
-        if self._forward(&out1[0], 0) != 0 :
-            raise RuntimeError
-        # out1 *= self.n
-        return out1[1:self.n]
-
-    cpdef double[:, :] dst_2d(TrigTransform self, double[:, :] x):
-        assert self.tt_type == mkltt.MKL_SINE_TRANSFORM
-        cdef np.ndarray[double, ndim=2, mode="c"] out2
         cdef int i, k
-        out2 = np.zeros((x.shape[0], x.shape[1] + 2), dtype=np.double, order="c")
-        out2[:, 1:self.n] = x[:, :]
+        # self._full_array is assumed to be set via self.array assignment
+        # except to two columns
         with nogil, parallel(num_threads=self.num_threads):
             k = threadid()
-            for i in prange(x.shape[0]):
+            for i in prange(self.n - 1):
+                self._full_array[i, 0] = self._full_array[i, self.n] = 0
                 #if self._commit(&out2[i, 0], k) != 0 or self._forward(&out2[i, 0], k) != 0:
-                if self._forward(&out2[i, 0], k) != 0:
-                    break
+                #if self._forward(&out2[i, 0], k) != 0:
+                #    break
+                self._forward(&self._full_array[i, 0], k)  # error check below
         for i in range(self.num_threads):
             if self.ipar[i][6] != 0:
                 raise RuntimeError
-        # out2 *= self.n  # MOVED TO OUTER CODE
-        return out2[:, 1:self.n]
+        # *= self.n  # MOVED TO OUTER CODE
 
-    cpdef double[:] dct_1d(TrigTransform self, double[:] x):
+    cpdef void dct_2d(TrigTransform self):
         assert self.tt_type == mkltt.MKL_COSINE_TRANSFORM
-        cdef np.ndarray[double, ndim=1, mode="c"] out1
-        out1 = np.zeros(self.n + 1, dtype=np.double, order="c")
-        out1[:] = x[:]
-        #if self._commit(&out1[0], 0) != 0 or self._forward(&out1[0], 0) != 0 :
-        if self._forward(&out1[0], 0) != 0 :
-            raise RuntimeError
-        # out1 *= self.n
-        return out1[1:self.n]
-
-    cpdef double[:, :] dct_2d(TrigTransform self, double[:, :] x):
-        assert self.tt_type == mkltt.MKL_COSINE_TRANSFORM
-        cdef np.ndarray[double, ndim=2, mode="c"] out2
         cdef int i, k
-        out2 = np.copy(x, order="C")
+        # self._full_array is assumed to be set via self.array assignment
         with nogil, parallel(num_threads=self.num_threads):
             k = threadid()
-            for i in prange(x.shape[0]):
+            for i in prange(self.n + 1):
                 #if self._commit(&out2[i, 0], k) != 0 or self._forward(&out2[i, 0], k) != 0:
-                if self._forward(&out2[i, 0], k) != 0:
-                    break
+                #if self._forward(&self._full_array[i, 0], k) != 0:
+                #    break
+                self._forward(&self._full_array[i, 0], k)  # error check below
         for i in range(self.num_threads):
             if self.ipar[i][6] != 0:
                 raise RuntimeError
-        # out2 *= self.n  # MOVED TO OUTER CODE
-        return out2
+        # *= self.n  # MOVED TO OUTER CODE
 
-    cpdef double[:, :] idct_2d(TrigTransform self, double[:, :] x):
-        cdef np.ndarray[double, ndim=2, mode="c"] out2
-        cdef int i, k
+    cpdef void idct_2d(TrigTransform self):
         assert self.tt_type == mkltt.MKL_COSINE_TRANSFORM
-        out2 = np.copy(x, order="C")
+        cdef int i, k
+        # self._full_array is assumed to be set via self.array assignment
         with nogil, parallel(num_threads=self.num_threads):
             k = threadid()
-            for i in prange(x.shape[0]):
+            for i in prange(self.n + 1):
                 #if self._commit(&out2[i, 0], k) != 0 or self._backward(&out2[i, 0], k) != 0:
-                if self._backward(&out2[i, 0], k) != 0:
-                    break
+                #if self._backward(&out2[i, 0], k) != 0:
+                #    break
+                self._backward(&self._full_array[i, 0], k)  # error check below
         for i in range(self.num_threads):
             if self.ipar[i][6] != 0:
                 raise RuntimeError
-        # out2 *= 2  # MOVED TO OUTER CODE
-        return out2
+        # *= 2  # MOVED TO OUTER CODE
 
     def __dealloc__(self):
         cdef MKL_INT ir

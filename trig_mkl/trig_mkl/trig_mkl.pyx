@@ -28,9 +28,12 @@ cdef class TrigTransform:
 
         self.ipar = <MKL_INT **>mkl_calloc(self.num_threads, sizeof(MKL_INT *), 64)
         self.handles = <DFTI_DESCRIPTOR_HANDLE *>mkl_calloc(self.num_threads, sizeof(DFTI_DESCRIPTOR_HANDLE), 64)
+        self.errcodes = <MKL_INT *>mkl_calloc(self.num_threads, sizeof(MKL_INT), 64)
         if self.ipar == NULL:
             raise MemoryError
         if self.handles == NULL:
+            raise MemoryError
+        if self.errcodes == NULL:
             raise MemoryError
         for i in range(self.num_threads):
             self.ipar[i] = <MKL_INT *>mkl_calloc(128, sizeof(MKL_INT), 64)
@@ -67,63 +70,65 @@ cdef class TrigTransform:
             if ir != 0:
                 raise RuntimeError
 
-    cdef MKL_INT _forward(self, double *data, int thread) nogil:
-        cdef MKL_INT ir = 0
-        mkltt.d_forward_trig_transform(data, &self.handles[thread], self.ipar[thread], self.dpar, &ir)
-        return ir
-
-    cdef MKL_INT _backward(self, double *data, int thread) nogil:
-        cdef MKL_INT ir = 0
-        mkltt.d_backward_trig_transform(data, &self.handles[thread], self.ipar[thread], self.dpar, &ir)
-        return ir
-
     cpdef void dst_2d(TrigTransform self):
         assert self.tt_type == mkltt.MKL_SINE_TRANSFORM
-        cdef int i, k
+        cdef int i, k, err
         # self._full_array is assumed to be set via self.array assignment
         # except to two columns
         with nogil, parallel(num_threads=self.num_threads):
             k = threadid()
+            err = 0
             for i in prange(self.n - 1):
                 self._full_array[i, 0] = self._full_array[i, self.n] = 0
                 #if self._commit(&out2[i, 0], k) != 0 or self._forward(&out2[i, 0], k) != 0:
                 #if self._forward(&out2[i, 0], k) != 0:
                 #    break
-                self._forward(&self._full_array[i, 0], k)  # error check below
+                mkltt.d_forward_trig_transform(&self._full_array[i, 0],
+                                               &self.handles[k],
+                                               self.ipar[k], self.dpar, &err)
+                self.errcodes[i] |= err
         for i in range(self.num_threads):
-            if self.ipar[i][6] != 0:
+            if self.errcodes[i]:
                 raise RuntimeError
         # *= self.n  # MOVED TO OUTER CODE
 
     cpdef void dct_2d(TrigTransform self):
         assert self.tt_type == mkltt.MKL_COSINE_TRANSFORM
-        cdef int i, k
+        cdef int i, k, err
         # self._full_array is assumed to be set via self.array assignment
         with nogil, parallel(num_threads=self.num_threads):
             k = threadid()
+            err = 0
             for i in prange(self.n + 1):
                 #if self._commit(&out2[i, 0], k) != 0 or self._forward(&out2[i, 0], k) != 0:
                 #if self._forward(&self._full_array[i, 0], k) != 0:
                 #    break
-                self._forward(&self._full_array[i, 0], k)  # error check below
+                mkltt.d_forward_trig_transform(&self._full_array[i, 0],
+                                               &self.handles[k],
+                                               self.ipar[k], self.dpar, &err)
+                self.errcodes[i] |= err
         for i in range(self.num_threads):
-            if self.ipar[i][6] != 0:
+            if self.errcodes[i]:
                 raise RuntimeError
         # *= self.n  # MOVED TO OUTER CODE
 
     cpdef void idct_2d(TrigTransform self):
         assert self.tt_type == mkltt.MKL_COSINE_TRANSFORM
-        cdef int i, k
+        cdef int i, k, err
         # self._full_array is assumed to be set via self.array assignment
         with nogil, parallel(num_threads=self.num_threads):
             k = threadid()
+            err = 0
             for i in prange(self.n + 1):
                 #if self._commit(&out2[i, 0], k) != 0 or self._backward(&out2[i, 0], k) != 0:
                 #if self._backward(&out2[i, 0], k) != 0:
                 #    break
-                self._backward(&self._full_array[i, 0], k)  # error check below
+                mkltt.d_backward_trig_transform(&self._full_array[i, 0],
+                                                &self.handles[k],
+                                                self.ipar[k], self.dpar, &err)
+                self.errcodes[i] |= err
         for i in range(self.num_threads):
-            if self.ipar[i][6] != 0:
+            if self.errcodes[i]:
                 raise RuntimeError
         # *= 2  # MOVED TO OUTER CODE
 
@@ -140,4 +145,6 @@ cdef class TrigTransform:
             mkl_free(self.ipar)
         if self.dpar != NULL:
             mkl_free(self.dpar)
+        if self.errcodes != NULL:
+            mkl_free(self.errcodes)
         mkl_free_buffers()

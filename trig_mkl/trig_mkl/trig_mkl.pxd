@@ -31,10 +31,8 @@ cdef class TrigTransform:
     cdef MKL_INT **ipar
     cdef double *dpar
     cdef DFTI_DESCRIPTOR_HANDLE *handles
+    cdef MKL_INT *errcodes
 
     cpdef void dst_2d(TrigTransform self)
     cpdef void dct_2d(TrigTransform self)
     cpdef void idct_2d(TrigTransform self)
-
-    cdef MKL_INT _forward(self, double *data, int thread) nogil
-    cdef MKL_INT _backward(self, double *data, int thread) nogil

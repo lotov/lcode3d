@@ -24,7 +24,7 @@ cpdef np.ndarray[double, ndim=2] aligned_array_2d(m, n, alignment=1024):
 @cython.nonecheck(False)
 cdef class TrigTransform:
     def __cinit__(self, MKL_INT n, str tt_type='dst', int num_threads=1,
-                  alignment=1024):
+                  alignment=64):
         cdef int i
 
         cdef MKL_INT ir
@@ -38,12 +38,12 @@ cdef class TrigTransform:
         self.handles = NULL
 
         self.ipar = <MKL_INT **>mkl_calloc(self.num_threads,
-                                           sizeof(MKL_INT *), 128)
+                                           sizeof(MKL_INT *), 64)
         self.handles = <DFTI_DESCRIPTOR_HANDLE *>mkl_calloc(self.num_threads,
                                                             sizeof(DFTI_DESCRIPTOR_HANDLE),
-                                                            128)
+                                                            64)
         self.errcodes = <MKL_INT *>mkl_calloc(self.num_threads,
-                                              sizeof(MKL_INT), 128)
+                                              sizeof(MKL_INT), 64)
         if self.ipar == NULL:
             raise MemoryError
         if self.handles == NULL:
@@ -52,7 +52,7 @@ cdef class TrigTransform:
             raise MemoryError
         for i in range(self.num_threads):
             self.ipar[i] = <MKL_INT *>mkl_calloc(128, sizeof(MKL_INT),
-                                                 128)
+                                                 64)
             if self.ipar[i] == NULL:
                 raise MemoryError
 
@@ -64,14 +64,14 @@ cdef class TrigTransform:
             self.n = n + 1
             self.tt_type = mkltt.MKL_SINE_TRANSFORM
             self.dpar = <double *>mkl_malloc((5 * self.n // 2 + 2) * sizeof(double),
-                                             128)
+                                             64)
             self._full_array = aligned_array_2d(self.n - 1, oversize, alignment)
             self.array = self._full_array[:, 1:self.n]
         elif tt_type == 'dct':
             self.n = n - 1
             self.tt_type = mkltt.MKL_COSINE_TRANSFORM
             self.dpar = <double *>mkl_malloc((5 * self.n // 2 + 2) * sizeof(double),
-                                             128)
+                                             64)
             self._full_array = aligned_array_2d(self.n + 1, oversize, alignment)
             self.array = self._full_array[:, :self.n+1]
         else:

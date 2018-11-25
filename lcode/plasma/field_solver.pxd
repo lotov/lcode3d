@@ -63,6 +63,8 @@ cdef class MixedSolver:
     cdef double[:, :] rhs_fixed
     cdef double[:, :] tmp1
     cdef double[:, :] tmp2
+    cdef int num_threads
+    cdef object tt  # FIXME: pxd it?
     cpdef solve(MixedSolver self, double[:, :] rhs, double[:] bound_top, double[:] bound_bot, double[:, :] out)
 
 
@@ -74,17 +76,20 @@ cdef class DirichletSolver:
     cdef double[:, :] bet
     cdef double[:, :] tmp1
     cdef double[:, :] tmp2
+    cdef int num_threads
+    cdef object tt  # FIXME: pxd it?
     cpdef solve(DirichletSolver self, double[:, :] rhs, double[:, :] out)
 
 
 cdef class FieldSolver:
-    cdef int n_dim, iterations, threads
+    cdef int n_dim, num_threads
     cdef double subtraction_trick
     cdef ThreadLocalStorage tls_0, tls_1, tls_2, tls_3, tls_4, tls_5
     cdef DirichletSolver ds_Ez
     cdef MixedSolver mxs_Ex, mxs_Ey, mxs_Bx, mxs_By
+    cdef double[:] zz
 
-    cpdef calculate_fields(self,
+    cpdef calculate_fields(FieldSolver self,
                            np.ndarray[RoJ_t, ndim=2] roj_cur,
                            np.ndarray[RoJ_t, ndim=2] roj_prev,
                            double[:, :] in_Ex,

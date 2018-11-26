@@ -388,7 +388,7 @@ cdef class DirichletSolver:
         #cdef double[:, :] tmp_out = self.tt.dst_2d(np.array(self.tmp2.T)).T
         self.tt2.dst_2d()  # .T of the argument implied, see above
         out[...] = 0
-        out[1:-1, 1:-1] = self.tt2.array.T
+        out[1:-1, 1:-1] = self.tt2.array
 
 
 cpdef calculate_Ez(double[:, :] in_Ez,

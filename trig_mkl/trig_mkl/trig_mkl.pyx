@@ -63,14 +63,14 @@ cdef class TrigTransform:
         if tt_type == 'dst':
             self.n = n + 1
             self.tt_type = mkltt.MKL_SINE_TRANSFORM
-            self.dpar = <double *>mkl_malloc((5 * self.n // 2 + 2) * sizeof(double),
+            self.dpar = <double *>mkl_malloc((self.n // 2 + 2) * sizeof(double),
                                              64)
             self._full_array = aligned_array_2d(self.n - 1, oversize, alignment)
             self.array = self._full_array[:, 1:self.n]
         elif tt_type == 'dct':
             self.n = n - 1
             self.tt_type = mkltt.MKL_COSINE_TRANSFORM
-            self.dpar = <double *>mkl_malloc((5 * self.n // 2 + 2) * sizeof(double),
+            self.dpar = <double *>mkl_malloc((self.n + 2) * sizeof(double),
                                              64)
             self._full_array = aligned_array_2d(self.n + 1, oversize, alignment)
             self.array = self._full_array[:, :self.n+1]

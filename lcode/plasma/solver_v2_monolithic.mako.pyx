@@ -182,7 +182,6 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
                                   np.ndarray[double] Bxs,
                                   np.ndarray[double] Bys,
                                   np.ndarray[double] Bzs,
-                                  np.ndarray[double, ndim=2] ro
                                   ):
     """
     Calculates fields at particle positions.
@@ -193,9 +192,6 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
     cdef int ii, jj
     cdef double x_loc, y_loc, x_h, y_h
     cdef double fx1, fy1, fx2, fy2, fx3, fy3
-    cdef double Ax, Ay
-    cdef double Ax1, Ax2, Ax3, Ax4, Ay1, Ay2, Ay3, Ay4
-    cdef double lx, ly, rx, ry
 
     #assert Ex.shape[0] == Ex.shape[1] == config.n_dim
 
@@ -225,16 +221,79 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
 
         % for Fl in 'Ex', 'Ey', 'Ez', 'Bx', 'By', 'Bz':
         ${Fl}s[k] = (  # noqa: E201
-            ${Fl}[i + 0, j + 0] * fx1 * fy1 +            # noqa: E222
-            ${Fl}[i + 1, j + 0] * fx2**2 * fy1 / 2 +     # noqa: E222
-            ${Fl}[i + 0, j + 1] * fy2**2 * fx1 / 2 +     # noqa: E222
-            ${Fl}[i + 1, j + 1] * fx2**2 * fy2**2 / 4 +  # noqa: E222
-            ${Fl}[i - 1, j + 0] * fx3**2 * fy1 / 2 +  +  # noqa: E222
-            ${Fl}[i + 0, j - 1] * fy3**2 * fx1 / 2 +  +  # noqa: E222
-            ${Fl}[i - 1, j - 1] * fx3**2 * fy3**2 / 4 +  # noqa: E222
-            ${Fl}[i - 1, j + 1] * fx3**2 * fy2**2 / 4 +  # noqa: E222
-            ${Fl}[i + 1, j - 1] * fx2**2 * fy3**2 / 4
+            ${Fl}[i + 0, j + 0] * (fx1 * fy1) +              # noqa: E222
+            ${Fl}[i + 1, j + 0] * (fx2**2 * (fy1 / 2)) +     # noqa: E222
+            ${Fl}[i + 0, j + 1] * (fy2**2 * (fx1 / 2)) +     # noqa: E222
+            ${Fl}[i + 1, j + 1] * (fx2**2 * (fy2**2 / 4)) +  # noqa: E222
+            ${Fl}[i - 1, j + 0] * (fx3**2 * (fy1 / 2)) +  +  # noqa: E222
+            ${Fl}[i + 0, j - 1] * (fy3**2 * (fx1 / 2)) +  +  # noqa: E222
+            ${Fl}[i - 1, j - 1] * (fx3**2 * (fy3**2 / 4)) +  # noqa: E222
+            ${Fl}[i - 1, j + 1] * (fx3**2 * (fy2**2 / 4)) +  # noqa: E222
+            ${Fl}[i + 1, j - 1] * (fx2**2 * (fy3**2 / 4))
         )
+        % endfor
+
+cpdef void interpolate_averaged_fields_fs9(PlasmaSolverConfig config,
+                                           np.ndarray[double] xs,
+                                           np.ndarray[double] ys,
+                                           np.ndarray[double, ndim=2] Ex_1,
+                                           np.ndarray[double, ndim=2] Ey_1,
+                                           np.ndarray[double, ndim=2] Ez_1,
+                                           np.ndarray[double, ndim=2] Bx_1,
+                                           np.ndarray[double, ndim=2] By_1,
+                                           np.ndarray[double, ndim=2] Bz_1,
+                                           np.ndarray[double, ndim=2] Ex_2,
+                                           np.ndarray[double, ndim=2] Ey_2,
+                                           np.ndarray[double, ndim=2] Ez_2,
+                                           np.ndarray[double, ndim=2] Bx_2,
+                                           np.ndarray[double, ndim=2] By_2,
+                                           np.ndarray[double, ndim=2] Bz_2,
+                                           np.ndarray[double] Exs,
+                                           np.ndarray[double] Eys,
+                                           np.ndarray[double] Ezs,
+                                           np.ndarray[double] Bxs,
+                                           np.ndarray[double] Bys,
+                                           np.ndarray[double] Bzs,
+                                           ):
+    """
+    Calculates fields at particle positions.
+    TODO: describe
+    """
+    cdef long k
+    cdef int i, j
+    cdef int ii, jj
+    cdef double x_loc, y_loc, x_h, y_h
+    cdef double fx1, fy1, fx2, fy2, fx3, fy3
+
+    # indexed for performance
+    for k in cython.parallel.prange(xs.shape[0],
+                                    nogil=True, num_threads=config.threads):
+        x_h = xs[k] / config.h + .5
+        y_h = ys[k] / config.h + .5
+        i = <int> floor(x_h) + config.n_dim // 2
+        j = <int> floor(y_h) + config.n_dim // 2
+        x_loc = x_h - floor(x_h) - .5  # centered to -.5 to 5, not 0 to 1 because
+        y_loc = y_h - floor(y_h) - .5  # the latter formulas use offset from cell center
+
+        fx1 = .75 - x_loc**2
+        fy1 = .75 - y_loc**2
+        fx2 = .5 + x_loc
+        fy2 = .5 + y_loc
+        fx3 = .5 - x_loc
+        fy3 = .5 - y_loc
+
+        % for Fl in 'Ex', 'Ey', 'Ez', 'Bx', 'By', 'Bz':
+        ${Fl}s[k] = (  # noqa: E201
+            (${Fl}_1[i + 0, j + 0] + ${Fl}_2[i + 0, j + 0]) * (fx1 * fy1) +              # noqa: E222
+            (${Fl}_1[i + 1, j + 0] + ${Fl}_2[i + 1, j + 0]) * (fx2**2 * (fy1 / 2)) +     # noqa: E222
+            (${Fl}_1[i + 0, j + 1] + ${Fl}_2[i + 0, j + 1]) * (fy2**2 * (fx1 / 2)) +     # noqa: E222
+            (${Fl}_1[i + 1, j + 1] + ${Fl}_2[i + 1, j + 1]) * (fx2**2 * (fy2**2 / 4)) +  # noqa: E222
+            (${Fl}_1[i - 1, j + 0] + ${Fl}_2[i - 1, j + 0]) * (fx3**2 * (fy1 / 2)) +  +  # noqa: E222
+            (${Fl}_1[i + 0, j - 1] + ${Fl}_2[i + 0, j - 1]) * (fy3**2 * (fx1 / 2)) +  +  # noqa: E222
+            (${Fl}_1[i - 1, j - 1] + ${Fl}_2[i - 1, j - 1]) * (fx3**2 * (fy3**2 / 4)) +  # noqa: E222
+            (${Fl}_1[i - 1, j + 1] + ${Fl}_2[i - 1, j + 1]) * (fx3**2 * (fy2**2 / 4)) +  # noqa: E222
+            (${Fl}_1[i + 1, j - 1] + ${Fl}_2[i + 1, j - 1]) * (fx2**2 * (fy3**2 / 4))
+        ) / 2
         % endfor
 
 
@@ -474,7 +533,7 @@ def compensate_fields(config, error_lut, error_lut_diag, plasma, mut_Exs, mut_Ey
     if config.close_range_compensation:
         compensate_fields_(config, error_lut, error_lut_diag, plasma, mut_Exs, mut_Eys)
 
-def interpolate_fields(config, xs, ys, Ex, Ey, Ez, Bx, By, Bz, ro):
+def interpolate_fields(config, xs, ys, Ex, Ey, Ez, Bx, By, Bz):
     Exs = np.empty_like(xs)
     Eys = np.empty_like(xs)
     Ezs = np.empty_like(xs)
@@ -483,10 +542,29 @@ def interpolate_fields(config, xs, ys, Ex, Ey, Ez, Bx, By, Bz, ro):
     Bzs = np.empty_like(xs)
     interpolate_fields_fs9(config, xs, ys,
                            Ex, Ey, Ez, Bx, By, Bz,
-                           Exs, Eys, Ezs, Bxs, Bys, Bzs, ro)
+                           Exs, Eys, Ezs, Bxs, Bys, Bzs)
     # may assert that particles are contained in +- particle_boundary
     # and remove a lot of inner ifs
     return Exs, Eys, Ezs, Bxs, Bys, Bzs
+
+
+def interpolate_averaged_fields(config, xs, ys,
+                                Ex_1, Ey_1, Ez_1, Bx_1, By_1, Bz_1,
+                                Ex_2, Ey_2, Ez_2, Bx_2, By_2, Bz_2):
+    Exs = np.empty_like(xs)
+    Eys = np.empty_like(xs)
+    Ezs = np.empty_like(xs)
+    Bxs = np.empty_like(xs)
+    Bys = np.empty_like(xs)
+    Bzs = np.empty_like(xs)
+    interpolate_averaged_fields_fs9(config, xs, ys,
+                                    Ex_1, Ey_1, Ez_1, Bx_1, By_1, Bz_1,
+                                    Ex_2, Ey_2, Ez_2, Bx_2, By_2, Bz_2,
+                                    Exs, Eys, Ezs, Bxs, Bys, Bzs)
+    # may assert that particles are contained in +- particle_boundary
+    # and remove a lot of inner ifs
+    return Exs, Eys, Ezs, Bxs, Bys, Bzs
+
 
 
 def deposit(config, plasma, ion_initial_ro):
@@ -961,7 +1039,7 @@ cdef class PlasmaSolver:
         hs_xs, hs_ys = plasma_predicted_half1['x'], plasma_predicted_half1['y']
         #Exs, Eys, Ezs, Bxs, Bys, Bzs = interpolate_fields(config, hs_xs, hs_ys, *Fl)
         #plasma_1 = move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs)
-        Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl, roj_prev['ro'])
+        Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl)
         compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls[0], Fls[1])
         plasma_1 = move_smart_fast(config, plasma, *Fls, self.initial_plasma, self.window,
                                    noise_reductor_enable=noise_reductor_predictions)
@@ -975,7 +1053,8 @@ cdef class PlasmaSolver:
 
         # ===  3  ===  + hs_xs, hs_ys, Fl_pred
         Fl_avg_1 = average_fields(Fl, Fl_pred)
-        Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1, roj_1['ro'])
+        Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
+        #Fls_avg_1 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_pred)
         compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls_avg_1[0], Fls_avg_1[1])
         plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1, self.initial_plasma, self.window,
                                    noise_reductor_enable=noise_reductor_predictions)
@@ -988,8 +1067,7 @@ cdef class PlasmaSolver:
                                   *Fl_avg_1, beam_ro, config.variant_A_corrector)
 
         # ===  5  ===  + hs_xs, hs_ys, Fl_new
-        Fl_avg_2 = average_fields(Fl, Fl_new)
-        Fls_avg_2 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_2, roj_2['ro'])
+        Fls_avg_2 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_new)
         compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls_avg_2[0], Fls_avg_2[1])
         plasma_new = move_smart_fast(config, plasma, *Fls_avg_2, self.initial_plasma, self.window,
                                      noise_reductor_enable=config.noise_reductor_enable)

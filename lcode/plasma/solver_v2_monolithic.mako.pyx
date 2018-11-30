@@ -101,7 +101,6 @@ cdef class PlasmaSolverConfig:
     cdef public double noise_reductor_friction_pz
     cdef public double noise_reductor_reach
     cdef public double noise_reductor_final_only
-    cdef public double density_noise_reductor
     cdef public double close_range_compensation
     cdef public unsigned int threads
 
@@ -130,8 +129,6 @@ cdef class PlasmaSolverConfig:
         self.noise_reductor_friction_pz = global_config.noise_reductor_friction_pz
         self.noise_reductor_reach = global_config.noise_reductor_reach
         self.noise_reductor_final_only = global_config.noise_reductor_final_only
-
-        self.density_noise_reductor = global_config.density_noise_reductor
 
         self.close_range_compensation = global_config.close_range_compensation
 
@@ -239,52 +236,6 @@ cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
             ${Fl}[i + 1, j - 1] * fx2**2 * fy3**2 / 4
         )
         % endfor
-
-        if config.density_noise_reductor:
-            #if 12 < i < Ex.shape[0] - 1 - 12:
-            #    Ax = (ro[i - 1, j] + ro[i + 1, j] - 2 * ro[i, j]) / 4
-            #    Ax *= config.density_noise_reductor
-            #    Exs[k] -= (Ax * config.h / pi) * sin(pi * x_loc / config.h)
-            #if 12 < j < Ey.shape[1] - 1 - 12:
-            #    Ay = (ro[i, j - 1] + ro[i, j + 1] - 2 * ro[i, j]) / 4
-            #    Ay *= config.density_noise_reductor
-            #    Eys[k] -= (Ay * config.h / pi) * sin(pi * y_loc / config.h)
-            x_h = xs[k] / config.h
-            y_h = ys[k] / config.h
-            i = <int> floor(x_h) + config.n_dim // 2
-            j = <int> floor(y_h) + config.n_dim // 2
-            lx = (x_h - floor(x_h)) * config.h
-            ly = (y_h - floor(y_h)) * config.h
-            rx = config.h - lx
-            ry = config.h - ly
-            if 1 < i < Ex.shape[0] - 1 - 2 and 1 < j < Ex.shape[1] - 1 - 2:
-                Ax1 = (ro[i - 1, j] + ro[i + 1, j] - 2 * ro[i + 0, j]) / 4
-                Ax2 = (ro[i - 1 + 1, j] + ro[i + 1 + 1, j] - 2 * ro[i + 0 + 1, j]) / 4
-                Ax3 = (ro[i - 1, j + 1] + ro[i + 1, j + 1] - 2 * ro[i + 0, j + 1]) / 4
-                Ax4 = (ro[i - 1 + 1, j + 1] + ro[i + 1 + 1, j + 1] - 2 * ro[i + 0 + 1, j + 1]) / 4
-
-                Exs[k] -= config.density_noise_reductor / pi / config.h * (
-                    (ry *
-                     (Ax1 * rx * sin(pi * lx / config.h) +
-                      Ax2 * lx * sin(pi * -rx / config.h))) +  # -???
-                    (ly *
-                     (Ax3 * rx * sin(pi * lx / config.h) +
-                      Ax4 * lx * sin(pi * -rx / config.h)))  # -???
-                )
-
-                Ay1 = (ro[i, j - 1] + ro[i, j + 1] - 2 * ro[i, j + 0]) / 4
-                Ay2 = (ro[i, j - 1 + 1] + ro[i, j + 1 + 1] - 2 * ro[i, j + 0 + 1]) / 4
-                Ay3 = (ro[i + 1, j - 1] + ro[i + 1, j + 1] - 2 * ro[i + 1, j + 0]) / 4
-                Ay4 = (ro[i + 1, j - 1 + 1] + ro[i + 1, j + 1 + 1] - 2 * ro[i + 1, j + 0 + 1]) / 4
-
-                Eys[k] -= config.density_noise_reductor / pi / config.h * (
-                    (rx *
-                     (Ay1 * ry * sin(pi * ly / config.h) +
-                      Ay2 * ly * sin(pi * -ry / config.h))) +
-                    (lx *
-                     (Ay3 * ry * sin(pi * ly / config.h) +
-                      Ay4 * ly * sin(pi * -ry / config.h)))
-                )
 
 
 cpdef void ro_and_j_ie_Vshivkov(PlasmaSolverConfig config,

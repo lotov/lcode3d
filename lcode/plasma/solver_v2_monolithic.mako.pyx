@@ -1,4 +1,4 @@
-#9 Copyright (c) 2016-2017 LCODE team <team@lcode.info>.
+# Copyright (c) 2016-2017 LCODE team <team@lcode.info>.
 
 # LCODE is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -45,6 +45,8 @@ import numpy as np
 cimport numpy as np
 
 from .. import plasma_particle
+
+from . import gpu_functions
 
 
 ### Making compatible plasma
@@ -565,7 +567,6 @@ def calculate_fields(config, field_solver,
 ### More convenience functions
 
 
-
 def average_fields(Fl1, Fl2):
     return [(component1 + component2) / 2
             for component1, component2 in zip(Fl1, Fl2)]
@@ -989,7 +990,7 @@ cdef class PlasmaSolver:
         Fl = mut_Ex.copy(), mut_Ey.copy(), mut_Ez.copy(), mut_Bx.copy(), mut_By.copy(), mut_Bz.copy()
 
         if xi_i == 0:
-            self.ion_initial_ro = -deposit(config, plasma, 0)['ro']
+            self.ion_initial_ro = -gpu_functions.deposit(config, plasma, 0)['ro']
             T = plasma.shape[0]
             N = int(sqrt(T))
             assert N**2 == T
@@ -1013,7 +1014,7 @@ cdef class PlasmaSolver:
         compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls[0], Fls[1])
         plasma_1 = move_smart_fast(config, plasma, *Fls, self.initial_plasma, self.window,
                                    noise_reductor_enable=noise_reductor_predictions)
-        roj_1 = deposit(config, plasma_1, self.ion_initial_ro)
+        roj_1 = gpu_functions.deposit(config, plasma_1, self.ion_initial_ro)
 
         hs_xs = (plasma['x'] + plasma_1['x']) / 2
         hs_ys = (plasma['y'] + plasma_1['y']) / 2
@@ -1027,7 +1028,7 @@ cdef class PlasmaSolver:
         compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls_avg_1[0], Fls_avg_1[1])
         plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1, self.initial_plasma, self.window,
                                    noise_reductor_enable=noise_reductor_predictions)
-        roj_2 = deposit(config, plasma_2, self.ion_initial_ro)
+        roj_2 = gpu_functions.deposit(config, plasma_2, self.ion_initial_ro)
 
         hs_xs = (plasma['x'] + plasma_2['x']) / 2
         hs_ys = (plasma['y'] + plasma_2['y']) / 2
@@ -1041,7 +1042,7 @@ cdef class PlasmaSolver:
         compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls_avg_2[0], Fls_avg_2[1])
         plasma_new = move_smart_fast(config, plasma, *Fls_avg_2, self.initial_plasma, self.window,
                                      noise_reductor_enable=config.noise_reductor_enable)
-        roj_new = deposit(config, plasma_new, self.ion_initial_ro)
+        roj_new = gpu_functions.deposit(config, plasma_new, self.ion_initial_ro)
 
         #test_particle = plasma[plasma['q'] < 0]
         #test_particle = test_particle[np.abs(test_particle['x']) < 0.5]

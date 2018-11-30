@@ -210,4 +210,12 @@ def make(window_width, steps, coarseness=2, fineness=2):
 
         return evolved_fine
 
+    virtualize.A_weights = A_weights
+    virtualize.B_weights = B_weights
+    virtualize.C_weights = C_weights
+    virtualize.D_weights = D_weights
+    virtualize.indices_prev = indices_prev
+    virtualize.indices_next = indices_next
+    virtualize.ratio = ratio
+
     return coarse_plasma.ravel(), virtualize

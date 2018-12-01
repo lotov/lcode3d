@@ -101,7 +101,6 @@ cdef class PlasmaSolverConfig:
     cdef public double noise_reductor_friction_pz
     cdef public double noise_reductor_reach
     cdef public double noise_reductor_final_only
-    cdef public double close_range_compensation
     cdef public unsigned int threads
 
     def __init__(self, global_config):
@@ -129,8 +128,6 @@ cdef class PlasmaSolverConfig:
         self.noise_reductor_friction_pz = global_config.noise_reductor_friction_pz
         self.noise_reductor_reach = global_config.noise_reductor_reach
         self.noise_reductor_final_only = global_config.noise_reductor_final_only
-
-        self.close_range_compensation = global_config.close_range_compensation
 
         self.threads = global_config.openmp_limit_threads
 
@@ -373,165 +370,7 @@ cpdef void ro_and_j_ie_Vshivkov(PlasmaSolverConfig config,
                 % endfor
 
 
-cdef inline void compensate_single_pair(PlasmaSolverConfig config,
-                                        float[:] error_lut_straight,
-                                        float[:] error_lut_diagonal,
-                                        plasma_particle.t to,
-                                        plasma_particle.t fr,
-                                        double[:, :] mut_Exs,
-                                        double[:, :] mut_Eys,
-                                        Py_ssize_t i, Py_ssize_t j) nogil:
-    cdef double dx, dy, comp, dist2, dist, nsin, ncos
-    cdef double hscale = config.h / 0.049999999999999996
-    dx = fr.x - to.x
-    dy = fr.y - to.y
-    dist2 = dx**2 + dy**2
-    if not dist2: return
-    dist = sqrt(dist2)
-    #if dist > config.h * 3:
-    #    return
-    ncos = dx / dist
-    nsin = dy / dist
-    #cdef double angle = atan2(dy, dx)
-    #cdef double a = angle % (pi / 2)
-
-    cdef double error_straight = error_by_dist(error_lut_straight, dist / hscale) * hscale
-    #error_straight = error_straight if error_straight > 0 else 0
-    cdef double error_diagonal = error_by_dist(error_lut_diagonal, dist / hscale) * hscale
-
-    #cdef double diagonality = min(fabs(dx), fabs(dy)) / max(fabs(dx), fabs(dy))
-    #cdef double diagonality = sin(2 * angle)**2
-    cdef double diagonality = .5
-    cdef double error = error_straight * (1 - diagonality) + error_diagonal * diagonality
-    #cdef double error
-    #if error_straight < error_diagonal:
-    #    error = error_straight
-    #else:
-    #    error = error_diagonal
-
-    comp = fr.q * error
-    mut_Exs[i, j] += config.close_range_compensation * (comp * ncos)
-    mut_Eys[i, j] += config.close_range_compensation * (comp * nsin)
-    #with gil:
-    #    print(dx, dy, ncos, nsin)
-    #    import sys; sys.stdout.flush()
-
-
-#@cython.boundscheck(False)
-cpdef void compensate_fields_(PlasmaSolverConfig config,
-                              float[:] error_lut,
-                              float[:] error_lut_diag,
-                              np.ndarray[plasma_particle.t] in_plasma,
-                              np.ndarray[double] mut_Exs_,
-                              np.ndarray[double] mut_Eys_,
-                              ):
-    cdef Py_ssize_t T = in_plasma.shape[0]
-    cdef Py_ssize_t N = <int> sqrt(T)
-    assert N**2 == T
-    cdef np.ndarray[plasma_particle.t, ndim=2] plasma = in_plasma.reshape(N, N)
-    cdef double[:, :] mut_Exs = mut_Exs_.reshape(N, N)
-    cdef double[:, :] mut_Eys = mut_Eys_.reshape(N, N)
-    cdef Py_ssize_t i, j
-    cdef int io, jo
-
-    cdef double dx, dy, comp, dist2, dist, nsin, ncos
-    cdef scale = config.close_range_compensation
-    cdef plasma_particle.t to, fr
-
-    for i in prange(5, N - 5, nogil=True, num_threads=config.threads):
-    #for i in range(7, N - 7):
-        for j in range(5, N - 5):
-            to = plasma[i, j]
-
-            for io in range(-5, +5 + 1):
-                for jo in range(-5, +5 + 1):
-                    if not io and not jo: continue
-                    fr = plasma[i + io, j + jo]
-                    compensate_single_pair(config, error_lut, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
-
-            #for jo in range(-3, +3 + 1):
-            #    if not jo: continue
-            #    fr = plasma[i, j + jo]
-            #    compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
-            #for io in range(-3, +3 + 1):
-            #    if not io: continue
-            #    fr = plasma[i + io, j]
-            #    compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
-
-            #for jo in range(-3, +3 + 1):
-            #    if not jo: continue
-            #    fr = plasma[i, j + jo]
-            #    compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
-
-            #for jo in range(-2, +2 + 1):
-            #    if not jo: continue
-            #    fr = plasma[i + jo, j + jo]
-            #    compensate_single_pair(config, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
-
-            #for jo in range(-2, +2 + 1):
-            #    if not jo: continue
-            #    fr = plasma[i + jo, j - jo]
-            #    compensate_single_pair(config, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
-
-            #dx, dy = fr.x - to.x, fr.y - to.y
-
-            # no correction of self-force as it was checked to be zero
-            # (save for the image charge interactions, but these are kept)
-
-            #fr = plasma[i + 0, j + 1]  # right
-            #compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
-            #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut, fr.x - to.x)
-
-            #fr = plasma[i + 0, j - 1]  # left
-            #compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
-            #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut, fr.x - to.x)
-
-            #fr = plasma[i + 1, j + 0]  # top
-            #compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
-            #mut_Eys[i, j] += scale * fr.q * error_by_dist(error_lut, fr.y - to.y)
-
-            #fr = plasma[i - 1, j + 0]  # bottom
-            #compensate_single_pair(config, error_lut, to, fr, mut_Exs, mut_Eys, i, j)
-            #mut_Eys[i, j] += scale * fr.q * error_by_dist(error_lut, fr.y - to.y)
-
-            #fr = plasma[i + 0, j + 2]  # right
-            #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut, fr.x - to.x)
-
-            #fr = plasma[i + 0, j - 2]  # left
-            #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut, fr.x - to.x)
-
-            #fr = plasma[i + 2, j + 0]  # top
-            #mut_Eys[i, j] += scale * fr.q * error_by_dist(error_lut, fr.y - to.y)
-
-            #fr = plasma[i - 2, j + 0]  # bottom
-            #mut_Eys[i, j] += scale * fr.q * error_by_dist(error_lut, fr.y - to.y)
-
-            #fr = plasma[i + 1, j + 1]  # top right
-            #compensate_single_pair(config, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
-            #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut_diag, fr.x - to.x)
-            #mut_Eys[i, j] += scale * fr.q * error_by_dist(error_lut_diag, fr.y - to.y)
-
-            #fr = plasma[i + 1, j - 1]  # top left
-            #compensate_single_pair(config, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
-            #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut_diag, fr.x - to.x)
-            #mut_Eys[i, j] += scale * fr.q * error_by_dist(error_lut_diag, fr.y - to.y)
-
-            #fr = plasma[i - 1, j + 1]  # bottom right
-            #compensate_single_pair(config, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
-            #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut_diag, fr.x - to.x)
-            #mut_Eys[i, j] += scale * fr.q * error_by_dist(error_lut_diag, fr.y - to.y)
-
-            #fr = plasma[i - 1, j - 1]  # bottom left
-            #compensate_single_pair(config, error_lut_diag, to, fr, mut_Exs, mut_Eys, i, j)
-            #mut_Exs[i, j] += scale * fr.q * error_by_dist(error_lut_diag, fr.x - to.x)
-            #mut_Eys[i, j] += scale * fr.q * error_by_dist(error_lut_diag, fr.y - to.y)
-
-
 ### Convenience Python wrappers above them; TODO: get rid of
-
-def compensate_fields(config, error_lut, error_lut_diag, plasma, mut_Exs, mut_Eys):
-    if config.close_range_compensation:
-        compensate_fields_(config, error_lut, error_lut_diag, plasma, mut_Exs, mut_Eys)
 
 def interpolate_fields(config, xs, ys, Ex, Ey, Ez, Bx, By, Bz):
     Exs = np.empty_like(xs)
@@ -999,9 +838,6 @@ cdef class PlasmaSolver:
                                         config.field_solver_subtraction_trick,
                                         config.openmp_limit_threads)
         self.RoJ_dtype = RoJ_dtype
-        error_compensation = np.load('error_compensation.npz')
-        self.error_lut = error_compensation['error_lut']
-        self.error_lut_diag = error_compensation['error_lut_diag']
 
     def PlasmaSolverConfig(self, config):
         return PlasmaSolverConfig(config)
@@ -1040,7 +876,6 @@ cdef class PlasmaSolver:
         #Exs, Eys, Ezs, Bxs, Bys, Bzs = interpolate_fields(config, hs_xs, hs_ys, *Fl)
         #plasma_1 = move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs)
         Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl)
-        compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls[0], Fls[1])
         plasma_1 = move_smart_fast(config, plasma, *Fls, self.initial_plasma, self.window,
                                    noise_reductor_enable=noise_reductor_predictions)
         roj_1 = gpu_functions.deposit(config, plasma_1, self.ion_initial_ro)
@@ -1055,7 +890,6 @@ cdef class PlasmaSolver:
         Fl_avg_1 = average_fields(Fl, Fl_pred)
         Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
         #Fls_avg_1 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_pred)
-        compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls_avg_1[0], Fls_avg_1[1])
         plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1, self.initial_plasma, self.window,
                                    noise_reductor_enable=noise_reductor_predictions)
         roj_2 = gpu_functions.deposit(config, plasma_2, self.ion_initial_ro)
@@ -1068,25 +902,13 @@ cdef class PlasmaSolver:
 
         # ===  5  ===  + hs_xs, hs_ys, Fl_new
         Fls_avg_2 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_new)
-        compensate_fields(config, self.error_lut, self.error_lut_diag, plasma, Fls_avg_2[0], Fls_avg_2[1])
         plasma_new = move_smart_fast(config, plasma, *Fls_avg_2, self.initial_plasma, self.window,
                                      noise_reductor_enable=config.noise_reductor_enable)
         roj_new = gpu_functions.deposit(config, plasma_new, self.ion_initial_ro)
 
-        #test_particle = plasma[plasma['q'] < 0]
-        #test_particle = test_particle[np.abs(test_particle['x']) < 0.5]
-        #test_particle = test_particle[np.abs(test_particle['y']) < 0.5]
-        #test_particle = test_particle[len(test_particle) // 3]
-        #print('ys', test_particle['p'])
-        #print('xy', test_particle['x'], test_particle['y'])
-        #print('m', test_particle['m'])
-        #print('q', test_particle['q'])
-        #print('gamma_m', gamma_m(np.array([test_particle])))
-
         out_plasma[...] = plasma_new
         out_plasma_cor[...] = plasma_new
         out_roj[...] = roj_new
-        #print(beam_ro.max(), ['%+7e' % fl.ptp() for fl in Fl_new])
         mut_Ex[...], mut_Ey[...], mut_Ez[...], mut_Bx[...], mut_By[...], mut_Bz[...] = Fl_new
 
 

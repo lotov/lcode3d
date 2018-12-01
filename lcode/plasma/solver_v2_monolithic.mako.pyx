@@ -132,22 +132,6 @@ RoJ_dtype = np.dtype([
 
 
 
-# see close_range.ipynb
-cdef inline float error_by_dist(float[:] error_lut, float dist) nogil:
-    cdef float p = dist * (16000 / 0.35)  # calculate an index in LUT
-    cdef float sign = 1 if p > 0 else -1
-    p = fabsf(p)
-    cdef unsigned int i1 = <unsigned int> floorf(p)
-    if i1 >= 16000 - 1:
-        return 0
-    cdef unsigned int i2 = i1 + 1
-    cdef float w1 = i2 - p
-    cdef float w2 = p - i1
-    cdef float v1 = error_lut[i1]
-    cdef float v2 = error_lut[i2]
-    return sign * (v1 * w1 + v2 * w2)
-
-
 cpdef void interpolate_fields_fs9(PlasmaSolverConfig config,
                                   np.ndarray[double] xs,
                                   np.ndarray[double] ys,
@@ -640,7 +624,7 @@ cpdef void move_smart_fast_(PlasmaSolverConfig config,
         out_plasma[k] = p
 
 
-def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, initial_plasma):
+def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs):
     out_plasma = np.empty_like(plasma)
     move_smart_fast_(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, out_plasma)
     return out_plasma
@@ -652,11 +636,9 @@ def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, initial_plasma
 cdef class PlasmaSolver:
     cdef public FieldSolver field_solver
     cdef public object RoJ_dtype
-    cdef public float[:] error_lut
-    cdef public float[:] error_lut_diag
-    cdef public object ion_initial_ro
-    cdef public object initial_plasma
     cdef public object window
+
+    cdef public object gpu
     # TODO: allocate everything else to make the solver allocation-free
 
     def __init__(self, config):
@@ -666,6 +648,7 @@ cdef class PlasmaSolver:
                                         config.field_solver_subtraction_trick,
                                         config.openmp_limit_threads)
         self.RoJ_dtype = RoJ_dtype
+        self.gpu = gpu_functions.GPUMonolith(config)
 
     def PlasmaSolverConfig(self, config):
         return PlasmaSolverConfig(config)
@@ -681,20 +664,15 @@ cdef class PlasmaSolver:
         Fl = mut_Ex.copy(), mut_Ey.copy(), mut_Ez.copy(), mut_Bx.copy(), mut_By.copy(), mut_Bz.copy()
 
         if xi_i == 0:
-            self.ion_initial_ro = -gpu_functions.deposit(config, plasma, 0)['ro']
-            T = plasma.shape[0]
-            N = int(sqrt(T))
-            assert N**2 == T
-            self.initial_plasma = plasma.copy().reshape(N, N)
+             # store matching ion background density
+             self.gpu.initial_deposition(config, plasma)
 
         # ===  1  ===
         plasma_predicted_half1 = move_simple_fast(config, plasma, config.h3 / 2)
         hs_xs, hs_ys = plasma_predicted_half1['x'], plasma_predicted_half1['y']
-        #Exs, Eys, Ezs, Bxs, Bys, Bzs = interpolate_fields(config, hs_xs, hs_ys, *Fl)
-        #plasma_1 = move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs)
         Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl)
-        plasma_1 = move_smart_fast(config, plasma, *Fls, self.initial_plasma)
-        roj_1 = gpu_functions.deposit(config, plasma_1, self.ion_initial_ro)
+        plasma_1 = move_smart_fast(config, plasma, *Fls)
+        roj_1 = self.gpu.step(config, plasma_1)
 
         # ===  2  ===  + hs_xs, hs_ys, roj_1
         Fl_pred = calculate_fields(config, self.field_solver, roj_1, roj_prev,
@@ -706,8 +684,8 @@ cdef class PlasmaSolver:
         hs_ys = (plasma['y'] + plasma_1['y']) / 2
         Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
         #Fls_avg_1 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_pred)
-        plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1, self.initial_plasma)
-        roj_2 = gpu_functions.deposit(config, plasma_2, self.ion_initial_ro)
+        plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1)
+        roj_2 = self.gpu.step(config, plasma_2)
 
         # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
         Fl_new = calculate_fields(config, self.field_solver, roj_2, roj_prev,
@@ -717,8 +695,8 @@ cdef class PlasmaSolver:
         hs_xs = (plasma['x'] + plasma_2['x']) / 2
         hs_ys = (plasma['y'] + plasma_2['y']) / 2
         Fls_avg_2 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_new)
-        plasma_new = move_smart_fast(config, plasma, *Fls_avg_2, self.initial_plasma)
-        roj_new = gpu_functions.deposit(config, plasma_new, self.ion_initial_ro)
+        plasma_new = move_smart_fast(config, plasma, *Fls_avg_2)
+        roj_new = self.gpu.step(config, plasma_new)
 
         out_plasma[...] = plasma_new
         out_plasma_cor[...] = plasma_new

@@ -121,6 +121,7 @@ cdef class MixedSolver:
         #self.mul = h**2  / (2 * (N - 1))  # total multiplier to compensate for the iDCT+DCT transforms
         #self.mul *= 2 * (N - 1)  # for use with unnormed Intel MKL, not scipy
         self.mul = h**2  # total multiplier to compensate for the iDCT+DCT transforms (MKL!)
+        self.mul /= 2 / (N - 1)  # DCT instead of iDCT in MKL
 
         aa = 2 + 4 * np.sin(np.arange(0, N) * np.pi / (2 * (N - 1)))**2  # diagonal matrix elements
         if subtraction_trick:
@@ -151,13 +152,9 @@ cdef class MixedSolver:
             rhs_fixed[i, self.N - 1] += bound_bot[i] * (2 / self.h)
             # rhs_fixed[0, i] = rhs_fixed[self.N - 1, i] = 0  # changes nothing???
 
-        # 2. Apply iDCT-1 (inverse Discrete Cosine Transform Type 1) to the RHS
-        # TODO: accelerated version using fftw with extra codelets via ctypes?
-        #cdef double[:, :] tmp1 = scipy.fftpack.idct(x=self.rhs_fixed, type=1, overwrite_x=True).T
-        #cdef double[:, :] tmp1 = self.forward.transform(x=self.rhs_fixed).T
-        #cdef double[:, :] tmp1 = self.tt.idct_2d(self.rhs_fixed).T
-        #self.tmp1[...] = tmp1
-        self.tt1.idct_2d()
+        # 2. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
+        # iDCT-1 is just DCT-1, except in MKL you have to multiply by an extra (N - 1) / 2
+        self.tt1.dct_2d()
         cdef double[:, :] tmp1 = self.tt1.array.T
         cdef double[:, :] tmp2 = self.tt2.array.T
 

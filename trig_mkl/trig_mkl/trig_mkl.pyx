@@ -136,26 +136,6 @@ cdef class TrigTransform:
                 raise RuntimeError
         # *= self.n  # MOVED TO OUTER CODE
 
-    cpdef void idct_2d(TrigTransform self):
-        assert self.tt_type == mkltt.MKL_COSINE_TRANSFORM
-        cdef int i, k, err
-        # self._full_array is assumed to be set via self.array assignment
-        with nogil, parallel(num_threads=self.num_threads):
-            k = threadid()
-            err = 0
-            for i in prange(self.n + 1):
-                #if self._commit(&out2[i, 0], k) != 0 or self._backward(&out2[i, 0], k) != 0:
-                #if self._backward(&out2[i, 0], k) != 0:
-                #    break
-                mkltt.d_backward_trig_transform(&self._full_array[i, 0],
-                                                &self.handles[k],
-                                                self.ipar[k], self.dpar, &err)
-                self.errcodes[i] |= err
-        for i in range(self.num_threads):
-            if self.errcodes[i]:
-                raise RuntimeError
-        # *= 2  # MOVED TO OUTER CODE
-
     def __dealloc__(self):
         cdef MKL_INT ir
         cdef int i

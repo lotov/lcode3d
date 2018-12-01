@@ -35,4 +35,3 @@ cdef class TrigTransform:
 
     cpdef void dst_2d(TrigTransform self)
     cpdef void dct_2d(TrigTransform self)
-    cpdef void idct_2d(TrigTransform self)

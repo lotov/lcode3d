@@ -52,7 +52,6 @@ plasma_solver = 'v2_monolithic'
 field_solver_subtraction_trick = 1
 field_solver_iterations = 1
 plasma_padding = 3
-#variant_A_predictor = variant_A_corrector = True
 print_every_xi_steps = int(1 / xi_step_size)
 grid_step = window_width / grid_steps
 #plasma = lcode.plasma.solver_v2_monolithic.make_plasma(

@@ -94,7 +94,6 @@ cdef class PlasmaSolverConfig:
     cdef public unsigned long Lq
     cdef public double x_max, h, h3, B_0, particle_boundary#, eps,
     cdef public object virtualize
-    cdef public bint variant_A_predictor, variant_A_corrector
     cdef public unsigned int threads
 
     def __init__(self, global_config):
@@ -113,8 +112,6 @@ cdef class PlasmaSolverConfig:
         #self.eps = global_config.plasma_solver_eps
         self.Lq = global_config.xi_steps
         self.virtualize = global_config.virtualize
-        self.variant_A_predictor = global_config.variant_A_predictor
-        self.variant_A_corrector = global_config.variant_A_corrector
 
         self.threads = global_config.openmp_limit_threads
 
@@ -406,15 +403,14 @@ def deposit(config, plasma, ion_initial_ro):
 def calculate_fields(config, field_solver,
                      roj_cur, roj_prev,
                      Ex, Ey, Ez, Bx, By, Bz,
-                     beam_ro, variant_A=False):
+                     beam_ro):
     out_Ex, out_Ey = np.empty_like(Ex), np.empty_like(Ey)
     out_Ez, out_Bz = np.empty_like(Ez), np.empty_like(Bz)
     out_Bx, out_By = np.empty_like(Bx), np.empty_like(By)
     field_solver.calculate_fields(
         roj_cur, roj_prev, Ex, Ey, Ez, Bx, By, Bz, beam_ro,
         config.h, config.npq, config.x_max, config.h3, config.B_0,
-        out_Ex, out_Ey, out_Ez, out_Bx, out_By, out_Bz,
-        variant_A
+        out_Ex, out_Ey, out_Ez, out_Bx, out_By, out_Bz
     )
     return out_Ex, out_Ey, out_Ez, out_Bx, out_By, out_Bz
 
@@ -702,7 +698,7 @@ cdef class PlasmaSolver:
 
         # ===  2  ===  + hs_xs, hs_ys, roj_1
         Fl_pred = calculate_fields(config, self.field_solver, roj_1, roj_prev,
-                                   *Fl, beam_ro, config.variant_A_predictor)
+                                   *Fl, beam_ro)
 
         # ===  3  ===  + hs_xs, hs_ys, Fl_pred
         Fl_avg_1 = average_fields(Fl, Fl_pred)
@@ -715,7 +711,7 @@ cdef class PlasmaSolver:
 
         # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
         Fl_new = calculate_fields(config, self.field_solver, roj_2, roj_prev,
-                                  *Fl_avg_1, beam_ro, config.variant_A_corrector)
+                                  *Fl_avg_1, beam_ro)
 
         # ===  5  ===  + hs_xs, hs_ys, Fl_new
         hs_xs = (plasma['x'] + plasma_2['x']) / 2

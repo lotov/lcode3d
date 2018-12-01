@@ -195,7 +195,6 @@ cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
                         unsigned int n_dim, double h, double h3,
                         unsigned int npq,
                         double[:] zz,
-                        bint variant_A,
                         int num_threads,
                         ):
     cdef int i, j
@@ -213,11 +212,6 @@ cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
     #Posson_reduct_12(zz, zz, tls.rhs, out_Ex, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Ex)
 
-    if variant_A:
-        for i in range(n_dim):
-            for j in range(n_dim):
-                out_Ex[i, j] = 2 * out_Ex[i, j] - in_Ex[i, j]
-
 
 cpdef void calculate_Ey(double[:, :] in_Ey, double[:, :] out_Ey_T,
                         double[:, :] ro,
@@ -227,7 +221,6 @@ cpdef void calculate_Ey(double[:, :] in_Ey, double[:, :] out_Ey_T,
                         unsigned int n_dim, double h, double h3,
                         unsigned int npq,
                         double[:] zz,
-                        bint variant_A,
                         int num_threads,
                         ):
     cdef int i, j
@@ -245,11 +238,6 @@ cpdef void calculate_Ey(double[:, :] in_Ey, double[:, :] out_Ey_T,
     #Posson_reduct_12(zz, zz, tls.rhs, out_Ey_T, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Ey_T)
 
-    if variant_A:
-        for i in range(n_dim):
-            for j in range(n_dim):
-                out_Ey_T[j, i] = 2 * out_Ey_T[j, i] - in_Ey[i, j]
-
 
 cpdef void calculate_Bx(double[:, :] in_Bx, double[:, :] out_Bx_T,
                         double[:, :] jz,
@@ -259,7 +247,6 @@ cpdef void calculate_Bx(double[:, :] in_Bx, double[:, :] out_Bx_T,
                         unsigned int n_dim, double h, double h3,
                         unsigned int npq,
                         double[:] zz,
-                        bint variant_A,
                         int num_threads,
                         ):
     cdef int i, j
@@ -277,11 +264,6 @@ cpdef void calculate_Bx(double[:, :] in_Bx, double[:, :] out_Bx_T,
     #Posson_reduct_12(zz, zz, tls.rhs, out_Bx_T, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_Bx_T)
 
-    if variant_A:
-        for i in range(n_dim):
-            for j in range(n_dim):
-                out_Bx_T[j, i] = 2 * out_Bx_T[j, i] - in_Bx[i, j]
-
 
 cpdef void calculate_By(double[:, :] in_By, double[:, :] out_By,
                         double[:, :] jz,
@@ -291,7 +273,6 @@ cpdef void calculate_By(double[:, :] in_By, double[:, :] out_By,
                         unsigned int n_dim, double h, double h3,
                         unsigned int npq,
                         double[:] zz,
-                        bint variant_A,
                         int num_threads,
                         ):
     cdef int i, j
@@ -309,18 +290,12 @@ cpdef void calculate_By(double[:, :] in_By, double[:, :] out_By,
     #Posson_reduct_12(zz, zz, tls.rhs, out_By, tls, n_dim, h, npq)
     mxs.solve(tls.rhs, zz, zz, out_By)
 
-    if variant_A:
-        for i in range(n_dim):
-            for j in range(n_dim):
-                out_By[i, j] = 2 * out_By[i, j] - in_By[i, j]
-
 
 cpdef void calculate_Bz(double[:, :] in_Bz, double[:, :] out_Bz,
                         double[:, :] jx, double[:, :] jy,
                         ThreadLocalStorage tls,
                         unsigned int n_dim, double h, unsigned int npq,
                         double x_max, double B_0, double[:] zz,
-                        bint variant_A,
                         int num_threads,
                         ) nogil:
     cdef int i, j
@@ -334,11 +309,6 @@ cpdef void calculate_Bz(double[:, :] in_Bz, double[:, :] out_Bz,
 
     # TODO!
     out_Bz[...] = 0
-
-    if variant_A:
-        for i in range(n_dim):
-            for j in range(n_dim):
-                out_Bz[i, j] = 2 * out_Bz[i, j] - in_Bz[i, j]
 
 
 cdef class DirichletSolver:
@@ -400,7 +370,6 @@ cpdef calculate_Ez(double[:, :] in_Ez,
                         unsigned int n_dim,
                         double h,
                         unsigned int npq,
-                        bint variant_A,
                         int num_threads,
                         ):
     cdef int i, j
@@ -414,11 +383,6 @@ cpdef calculate_Ez(double[:, :] in_Ez,
 
     #reduction_Dirichlet1(tls.rhs, out_Ez, tls, n_dim, h, npq)
     ds.solve(tls.rhs, out_Ez)
-
-    if variant_A:
-        for i in range(n_dim):
-            for j in range(n_dim):
-                out_Ez[i, j] = 2 * out_Ez[i, j] - in_Ez[i, j]
 
 
 cdef class FieldSolver:
@@ -447,7 +411,7 @@ cdef class FieldSolver:
 
 
     cpdef calculate_fields(FieldSolver self,
-                           np.ndarray[RoJ_t, ndim=2] roj_cur,
+                           np.ndarray[RoJ_t, ndim=2] roj,
                            np.ndarray[RoJ_t, ndim=2] roj_prev,
                            double[:, :] in_Ex,
                            double[:, :] in_Ey,
@@ -466,17 +430,9 @@ cdef class FieldSolver:
                            double[:, :] out_Ez,
                            double[:, :] out_Bx,
                            double[:, :] out_By,
-                           double[:, :] out_Bz,
-                           bint variant_A):
+                           double[:, :] out_Bz):
         cdef int n_dim = self.n_dim
         cdef int i
-
-        if variant_A:
-            roj = np.zeros_like(roj_cur)
-            for comp in 'ro', 'jx', 'jy', 'jz':
-                roj[comp] = (roj_cur[comp] + roj_prev[comp]) / 2
-        else:
-            roj = roj_cur
 
         cdef double[:, :] ro = roj['ro'] + beam_ro
         cdef double[:, :] jx = roj['jx']
@@ -489,17 +445,17 @@ cdef class FieldSolver:
         cdef double[:, :] out_Bx_T = out_Bx.T
 
         calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, self.tls_0, self.mxs_Ex,
-                     n_dim, h, h3, npq, self.zz, variant_A, self.num_threads)
+                     n_dim, h, h3, npq, self.zz, self.num_threads)
         calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, self.tls_1, self.mxs_Ey,
-                     n_dim, h, h3, npq, self.zz, variant_A, self.num_threads)
+                     n_dim, h, h3, npq, self.zz, self.num_threads)
         calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, self.tls_2, self.mxs_Bx,
-                     n_dim, h, h3, npq, self.zz, variant_A, self.num_threads)
+                     n_dim, h, h3, npq, self.zz, self.num_threads)
         calculate_By(in_By, out_By, jz, jx, jx_prev, self.tls_3, self.mxs_By,
-                     n_dim, h, h3, npq, self.zz, variant_A, self.num_threads)
+                     n_dim, h, h3, npq, self.zz, self.num_threads)
         #calculate_Bz(in_Bz, out_Bz, jx, jy, self.tls_4,
-        #             n_dim, h, npq, x_max, B_0, zz, variant_A)
+        #             n_dim, h, npq, x_max, B_0, zz)
         out_Bz[...] = 0
         calculate_Ez(in_Ez, out_Ez, jx, jy, self.tls_5, self.ds_Ez,
-                     n_dim, h, npq, variant_A, self.num_threads)
+                     n_dim, h, npq, self.num_threads)
         #calculate_Ez(in_Ez, out_Ez, jx, jy, self.tls_5, self.ds_Ez,
         #             n_dim, h, npq, False, self.num_threads)

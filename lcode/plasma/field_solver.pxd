@@ -113,5 +113,4 @@ cdef class FieldSolver:
                            double[:, :] out_Ez,
                            double[:, :] out_Bx,
                            double[:, :] out_By,
-                           double[:, :] out_Bz,
-                           bint variant_A)
+                           double[:, :] out_Bz)

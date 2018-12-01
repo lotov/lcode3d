@@ -50,9 +50,7 @@ xi_steps = int(3 // xi_step_size)
 
 plasma_solver = 'v2_monolithic'
 field_solver_subtraction_trick = 1
-#plasma_padding = 3  # !!!
 plasma_padding = 3
-#variant_A_predictor = variant_A_corrector = True
 #print_every_xi_steps = int(1 / xi_step_size)
 print_every_xi_steps = int(.1 / xi_step_size)
 #print_every_xi_steps = 1

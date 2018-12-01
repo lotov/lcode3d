@@ -57,13 +57,6 @@ field_solver_subtraction_trick = 1
 plasma_padding = 3
 variant_A_predictor = variant_A_corrector = False
 
-noise_reductor_enable = False
-noise_reductor_equalization = 0.02
-noise_reductor_friction = 0.02
-noise_reductor_friction_pz = 0.02
-noise_reductor_reach = 1
-noise_reductor_final_only = False
-
 def virtualize(a):
     return a
 

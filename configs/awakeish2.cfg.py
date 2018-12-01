@@ -95,16 +95,6 @@ plasma, virtualize = lcode.plasma.virtual.fast.make(
 )
 openmp_limit_threads = 4
 
-#density_noise_reductor = .2
-#noise_reductor_enable = True
-#noise_reductor_equalization = .1
-#noise_reductor_friction = .0003
-#noise_reductor_friction_pz = .0003
-#noise_reductor_reach = 1
-#noise_reductor_final_only = False
-# close_range_compensation = -.04     # !!! disabled for now for virtplasmas !!!
-
-
 def transverse_peek_enabled(xi, xi_i):
     #return True
     return xi_i % int(.5 / xi_step_size) == 0

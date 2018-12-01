@@ -95,12 +95,6 @@ cdef class PlasmaSolverConfig:
     cdef public double x_max, h, h3, B_0, particle_boundary#, eps,
     cdef public object virtualize
     cdef public bint variant_A_predictor, variant_A_corrector
-    cdef public bint noise_reductor_enable
-    cdef public double noise_reductor_equalization
-    cdef public double noise_reductor_friction
-    cdef public double noise_reductor_friction_pz
-    cdef public double noise_reductor_reach
-    cdef public double noise_reductor_final_only
     cdef public unsigned int threads
 
     def __init__(self, global_config):
@@ -121,13 +115,6 @@ cdef class PlasmaSolverConfig:
         self.virtualize = global_config.virtualize
         self.variant_A_predictor = global_config.variant_A_predictor
         self.variant_A_corrector = global_config.variant_A_corrector
-
-        self.noise_reductor_enable = global_config.noise_reductor_enable
-        self.noise_reductor_equalization = global_config.noise_reductor_equalization
-        self.noise_reductor_friction = global_config.noise_reductor_friction
-        self.noise_reductor_friction_pz = global_config.noise_reductor_friction_pz
-        self.noise_reductor_reach = global_config.noise_reductor_reach
-        self.noise_reductor_final_only = global_config.noise_reductor_final_only
 
         self.threads = global_config.openmp_limit_threads
 
@@ -657,165 +644,10 @@ cpdef void move_smart_fast_(PlasmaSolverConfig config,
         out_plasma[k] = p
 
 
-def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, initial_plasma, window, noise_reductor_enable=False):
+def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, initial_plasma):
     out_plasma = np.empty_like(plasma)
-    #if noise_reductor_enable:
-    #    plasma = noise_reductor(config, plasma)
     move_smart_fast_(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs, out_plasma)
-    # TODO: call noisereductor only on final movement or on all movements?
-    if noise_reductor_enable:
-        out_plasma = noise_reductor(config, initial_plasma, window, out_plasma)
     return out_plasma
-
-
-### Noise reductor draft
-
-def blur(arr, window):
-    #assert arr.shape[0] == arr.shape[1]
-    #return np.abs(np.fft.ifft2(np.fft.fft2(arr) * window))
-    return np.fft.ifft2(np.fft.fft2(arr) * window).real
-    #import scipy.ndimage
-    #blurred = scipy.ndimage.gaussian_filter(arr, sigma=1.5, mode='nearest')
-    #return arr * (1 - mix) + blurred * mix
-
-def noise_reductor(config, initial_plasma, window, in_plasma):
-    #T = in_plasma.shape[0]
-    #N = int(sqrt(T))
-    #assert N**2 == T
-    #plasma = in_plasma.copy().reshape(N, N)
-
-    ##sigma = 0.25 * config.h * config.noise_reductor_reach
-    #offt_x = plasma['x'] - initial_plasma['x']
-    #offt_y = plasma['y'] - initial_plasma['y']
-    #plasma['x'] = blur(offt_x, window) + initial_plasma['x']
-    #plasma['y'] = blur(offt_y, window) + initial_plasma['y']
-
-    #plasma['p'][:, :, 0] = blur(plasma['p'][:, :, 0], window)
-    #plasma['p'][:, :, 1] = blur(plasma['p'][:, :, 1], window)
-    #plasma['p'][:, :, 2] = blur(plasma['p'][:, :, 2], window)
-
-    #return plasma.reshape(T)
-
-    #return noise_reductor_(config, in_plasma)
-    return noise_reductor_3x3(config, in_plasma)
-
-
-#@cython.boundscheck(False)
-@cython.cdivision(True)
-cpdef np.ndarray[plasma_particle.t] noise_reductor_3x3(PlasmaSolverConfig config,
-                                                    np.ndarray[plasma_particle.t] in_plasma,
-                                                    # np.ndarray[double, ndim=2] ro
-                                                    ):
-    cdef Py_ssize_t T = in_plasma.shape[0]
-    cdef Py_ssize_t N = <int> sqrt(T)
-    assert N**2 == T
-    if N % 3:
-        print('N', N)
-    assert N % 3 == 0
-    cdef np.ndarray[plasma_particle.t, ndim=2] plasma1 = in_plasma.reshape(N, N)
-    # TODO: skip copying most of the stuff?
-    cdef np.ndarray[plasma_particle.t, ndim=2] plasma2 = plasma1.copy()
-    cdef np.ndarray[double, ndim=2] pxs_avg = np.zeros((N, N))
-    cdef np.ndarray[double, ndim=2] pys_avg = np.zeros((N, N))
-    cdef np.ndarray[double, ndim=2] pzs_avg = np.zeros((N, N))
-    cdef double dp_friction, dp_friction_pz
-    # TODO: allow noise reductor parameters to be specified as 2d arrays!
-    cdef double friction_c = config.noise_reductor_friction / config.h  # empiric for now
-    cdef double friction_c_pz = config.noise_reductor_friction_pz / config.h  # empiric for now
-    cdef Py_ssize_t i, j
-    cdef int ii, jj
-
-    for i in prange(1, N - 1, 3, nogil=True, num_threads=config.threads):
-        for j in range(1, N - 1, 3):
-            for ii in range(-1, 1 + 1):
-                for jj in range(-1, 1 + 1):
-                    pxs_avg[i, j] += plasma1[i + ii, j + jj].p[1] / 9
-                    pys_avg[i, j] += plasma1[i + ii, j + jj].p[2] / 9
-                    pzs_avg[i, j] += plasma1[i + ii, j + jj].p[0] / 9
-    for i in prange(1, N - 1, 3, nogil=True, num_threads=config.threads):
-        for j in range(1, N - 1, 3):
-            for ii in range(-1, 1 + 1):
-                for jj in range(-1, 1 + 1):
-                    plasma2[i + ii, j + jj].p[1] = plasma1[i + ii, j + jj].p[1] * (1 - friction_c) + pxs_avg[i, j] * friction_c
-                    plasma2[i + ii, j + jj].p[2] = plasma1[i + ii, j + jj].p[2] * (1 - friction_c) + pys_avg[i, j] * friction_c
-                    plasma2[i + ii, j + jj].p[0] = plasma1[i + ii, j + jj].p[0] * (1 - friction_c_pz) + pzs_avg[i, j] * friction_c_pz
-
-    return plasma2.reshape(T)
-
-@cython.boundscheck(False)
-@cython.cdivision(True)
-cpdef np.ndarray[plasma_particle.t] noise_reductor_(PlasmaSolverConfig config,
-                                                    np.ndarray[plasma_particle.t] in_plasma,
-                                                    # np.ndarray[double, ndim=2] ro
-                                                    ):
-    cdef Py_ssize_t T = in_plasma.shape[0]
-    cdef Py_ssize_t N = <int> sqrt(T)
-    assert N**2 == T
-    cdef np.ndarray[plasma_particle.t, ndim=2] plasma1 = in_plasma.reshape(N, N)
-    # TODO: skip copying most of the stuff?
-    cdef np.ndarray[plasma_particle.t, ndim=2] plasma2 = plasma1.copy()
-    cdef np.ndarray[plasma_particle.t, ndim=2] plasma3
-    cdef double coord_deviation, p_m_deviation
-    cdef double dp_friction, dp_friction_pz, dp_equalization
-    # TODO: allow noise reductor parameters to be specified as 2d arrays!
-    cdef double friction_c = config.noise_reductor_friction / config.h  # empiric for now
-    cdef double friction_c_pz = config.noise_reductor_friction_pz / config.h  # empiric for now
-    cdef double equalization_c = config.noise_reductor_equalization * config.h  # empiric for now
-    cdef double reach = config.noise_reductor_reach * config.h  # empiric for now
-    cdef Py_ssize_t i, j
-
-    # pass in x direction, equalization
-    for i in prange(1, N - 1, nogil=True, num_threads=config.threads):
-        for j in range(N):
-            coord_deviation = plasma1[i, j].x - (plasma1[i - 1, j].x + plasma1[i + 1, j].x) / 2
-            if fabs(coord_deviation) < reach:
-                dp_equalization = equalization_c * sin(pi * coord_deviation / reach)
-                plasma2[i, j].p[1] -= config.h3 * dp_equalization
-
-    # pass in y direction, equalization
-    for i in cython.parallel.prange(N, nogil=True, num_threads=config.threads):
-        for j in range(1, N - 1):
-            coord_deviation = plasma1[i, j].y - (plasma1[i, j - 1].y + plasma1[i, j + 1].y) / 2
-            if fabs(coord_deviation) < reach:
-                dp_equalization = equalization_c * sin(pi * coord_deviation / reach)
-                plasma2[i, j].p[2] -= config.h3 * dp_equalization
-
-    plasma3 = plasma2.copy()
-
-    # pass in x direction, friction
-    for i in prange(1, N - 1, nogil=True, num_threads=config.threads):
-        for j in range(N):
-            coord_deviation = plasma2[i, j].x - (plasma2[i - 1, j].x + plasma2[i + 1, j].x) / 2
-            if fabs(coord_deviation) < reach:
-                p_m_deviation = (plasma2[i, j].p[1] / plasma2[i, j].m -
-                                 (plasma2[i - 1, j].p[1] / plasma2[i - 1, j].m +
-                                  plasma2[i + 1, j].p[1] / plasma2[i + 1, j].m) / 2)
-                dp_friction = friction_c * plasma2[i, j].m * p_m_deviation
-                plasma3[i, j].p[1] -= config.h3 * dp_friction
-
-    # pass in y direction, friction
-    for i in cython.parallel.prange(N, nogil=True, num_threads=config.threads):
-        for j in range(1, N - 1):
-            coord_deviation = plasma2[i, j].y - (plasma2[i, j - 1].y + plasma2[i, j + 1].y) / 2
-            if fabs(coord_deviation) < reach:
-                p_m_deviation = (plasma2[i, j].p[2] / plasma2[i, j].m -
-                                 (plasma2[i, j - 1].p[2] / plasma2[i, j - 1].m +
-                                  plasma2[i, j + 1].p[2] / plasma2[i, j + 1].m) / 2)
-                dp_friction = friction_c * plasma2[i, j].m * p_m_deviation
-                plasma3[i, j].p[2] -= config.h3 * dp_friction
-
-    # pass in x and y, friction in pz
-    for i in prange(1, N - 1, nogil=True, num_threads=config.threads):
-        for j in range(1, N - 1):
-            p_m_deviation = (plasma2[i, j].p[0] / plasma2[i, j].m -
-                             (plasma2[i - 1, j].p[0] / plasma2[i - 1, j].m +
-                              plasma2[i + 1, j].p[0] / plasma2[i + 1, j].m +
-                              plasma2[i, j - 1].p[0] / plasma2[i, j - 1].m +
-                              plasma2[i, j + 1].p[0] / plasma2[i, j + 1].m) / 4)
-            dp_friction_pz = friction_c_pz * plasma2[i, j].m * p_m_deviation
-            plasma3[i, j].p[0] -= config.h3 * dp_friction_pz
-
-    return plasma3.reshape(T)
 
 
 ### The main plot, written by K. V. Lotov
@@ -849,8 +681,6 @@ cdef class PlasmaSolver:
                    out_plasma, out_plasma_cor, out_roj
                    ):
         plasma = in_plasma.copy()
-        #config.noise_reductor_enable = (xi_i % 5 == 0)
-        noise_reductor_predictions = config.noise_reductor_enable and not config.noise_reductor_final_only
 
         Fl = mut_Ex.copy(), mut_Ey.copy(), mut_Ez.copy(), mut_Bx.copy(), mut_By.copy(), mut_Bz.copy()
 
@@ -861,23 +691,13 @@ cdef class PlasmaSolver:
             assert N**2 == T
             self.initial_plasma = plasma.copy().reshape(N, N)
 
-            #self.window = scipy.signal.windows.tukey(N, .75)
-            #PAD = int(N * .05) // 2
-            PAD = int(N * .05) // 2
-            #self.window = scipy.signal.windows.tukey(N - 2 * PAD, .75)
-            self.window = scipy.signal.windows.tukey(N - 2 * PAD, .75)
-            self.window = np.hstack([np.zeros(PAD), self.window, np.zeros(PAD)])
-            self.window = np.fft.ifftshift(self.window[:, None] * self.window[None, :])
-
-
         # ===  1  ===
         plasma_predicted_half1 = move_simple_fast(config, plasma, config.h3 / 2)
         hs_xs, hs_ys = plasma_predicted_half1['x'], plasma_predicted_half1['y']
         #Exs, Eys, Ezs, Bxs, Bys, Bzs = interpolate_fields(config, hs_xs, hs_ys, *Fl)
         #plasma_1 = move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs)
         Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl)
-        plasma_1 = move_smart_fast(config, plasma, *Fls, self.initial_plasma, self.window,
-                                   noise_reductor_enable=noise_reductor_predictions)
+        plasma_1 = move_smart_fast(config, plasma, *Fls, self.initial_plasma)
         roj_1 = gpu_functions.deposit(config, plasma_1, self.ion_initial_ro)
 
         # ===  2  ===  + hs_xs, hs_ys, roj_1
@@ -890,8 +710,7 @@ cdef class PlasmaSolver:
         hs_ys = (plasma['y'] + plasma_1['y']) / 2
         Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
         #Fls_avg_1 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_pred)
-        plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1, self.initial_plasma, self.window,
-                                   noise_reductor_enable=noise_reductor_predictions)
+        plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1, self.initial_plasma)
         roj_2 = gpu_functions.deposit(config, plasma_2, self.ion_initial_ro)
 
         # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
@@ -902,8 +721,7 @@ cdef class PlasmaSolver:
         hs_xs = (plasma['x'] + plasma_2['x']) / 2
         hs_ys = (plasma['y'] + plasma_2['y']) / 2
         Fls_avg_2 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_new)
-        plasma_new = move_smart_fast(config, plasma, *Fls_avg_2, self.initial_plasma, self.window,
-                                     noise_reductor_enable=config.noise_reductor_enable)
+        plasma_new = move_smart_fast(config, plasma, *Fls_avg_2, self.initial_plasma)
         roj_new = gpu_functions.deposit(config, plasma_new, self.ion_initial_ro)
 
         out_plasma[...] = plasma_new

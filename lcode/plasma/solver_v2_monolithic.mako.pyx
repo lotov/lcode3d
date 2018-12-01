@@ -880,27 +880,27 @@ cdef class PlasmaSolver:
                                    noise_reductor_enable=noise_reductor_predictions)
         roj_1 = gpu_functions.deposit(config, plasma_1, self.ion_initial_ro)
 
-        hs_xs = (plasma['x'] + plasma_1['x']) / 2
-        hs_ys = (plasma['y'] + plasma_1['y']) / 2
         # ===  2  ===  + hs_xs, hs_ys, roj_1
         Fl_pred = calculate_fields(config, self.field_solver, roj_1, roj_prev,
                                    *Fl, beam_ro, config.variant_A_predictor)
 
         # ===  3  ===  + hs_xs, hs_ys, Fl_pred
         Fl_avg_1 = average_fields(Fl, Fl_pred)
+        hs_xs = (plasma['x'] + plasma_1['x']) / 2
+        hs_ys = (plasma['y'] + plasma_1['y']) / 2
         Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
         #Fls_avg_1 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_pred)
         plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1, self.initial_plasma, self.window,
                                    noise_reductor_enable=noise_reductor_predictions)
         roj_2 = gpu_functions.deposit(config, plasma_2, self.ion_initial_ro)
 
-        hs_xs = (plasma['x'] + plasma_2['x']) / 2
-        hs_ys = (plasma['y'] + plasma_2['y']) / 2
         # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
         Fl_new = calculate_fields(config, self.field_solver, roj_2, roj_prev,
                                   *Fl_avg_1, beam_ro, config.variant_A_corrector)
 
         # ===  5  ===  + hs_xs, hs_ys, Fl_new
+        hs_xs = (plasma['x'] + plasma_2['x']) / 2
+        hs_ys = (plasma['y'] + plasma_2['y']) / 2
         Fls_avg_2 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_new)
         plasma_new = move_smart_fast(config, plasma, *Fls_avg_2, self.initial_plasma, self.window,
                                      noise_reductor_enable=config.noise_reductor_enable)

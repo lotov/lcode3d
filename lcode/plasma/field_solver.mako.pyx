@@ -189,25 +189,13 @@ cpdef void calculate_Ex(double[:, :] in_Ex, double[:, :] out_Ex,
                         double[:, :] jx, double[:, :] jx_prev,
                         ThreadLocalStorage tls,
                         MixedSolver mxs,
+                        double[:, :] Ex_rhs,
                         unsigned int n_dim, double h, double h3,
                         unsigned int npq,
                         double[:] zz,
                         int num_threads,
                         ):
-    cdef int i, j
-    cdef double[:, :] dro_dx = tls.grad1
-    cdef double[:, :] djx_dxi = tls.grad2
-    pader_x(ro, dro_dx, h, n_dim, num_threads)
-    pader_xi(jx_prev, jx, djx_dxi, h3, n_dim, num_threads)
-    for i in prange(n_dim, num_threads=num_threads, nogil=True):
-        for j in range(n_dim):
-            out_Ex[i, j] = in_Ex[i, j]  # start from an approximation
-            tls.rhs[i, j] = -(dro_dx[i, j] - djx_dxi[i, j])
-            if mxs.subtraction_trick:
-                tls.rhs[i, j] += in_Ex[i, j] * mxs.subtraction_trick
-            #tls.rhs[i, j] = - (dro_dx[i, j] - djx_dxi[i, j])
-    #Posson_reduct_12(zz, zz, tls.rhs, out_Ex, tls, n_dim, h, npq)
-    mxs.solve(tls.rhs, zz, zz, out_Ex)
+    mxs.solve(Ex_rhs, zz, zz, out_Ex)
 
 
 cpdef void calculate_Ey(double[:, :] in_Ey, double[:, :] out_Ey_T,
@@ -417,6 +405,7 @@ cdef class FieldSolver:
                            double[:, :] in_By,
                            double[:, :] in_Bz,
                            double[:, :] beam_ro,
+                           double[:, :] Ex_rhs,
                            double h,
                            unsigned int npq,
                            double x_max,
@@ -442,6 +431,7 @@ cdef class FieldSolver:
         cdef double[:, :] out_Bx_T = out_Bx.T
 
         calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, self.tls_0, self.mxs_Ex,
+                     Ex_rhs,
                      n_dim, h, h3, npq, self.zz, self.num_threads)
         calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, self.tls_1, self.mxs_Ey,
                      n_dim, h, h3, npq, self.zz, self.num_threads)

@@ -148,24 +148,46 @@ def deposit_kernel(n_dim, h,
         numba.cuda.atomic.add(out_jz, (i + 1, j - 1), djz * (fx2_sq * (fy3_sq / 4)))
     #numba.cuda.syncthreads()
 
+@numba.cuda.jit
+def calculate_RHS_kernel(Ex_sub, beam_ro, ro, jx, jx_prev,
+                         grid_step_size, xi_step_size, subtraction_trick,
+                         Ex_rhs):
+    N = Ex_rhs.shape[0]
+    index = numba.cuda.grid(1)
+    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+    for k in range(index, Ex_rhs.size, stride):
+        i, j = k // N, k % N
+
+        dro_dx = (((+ro[i + 1, j] + beam_ro[i + 1, j]
+                    -ro[i - 1, j] - beam_ro[i - 1, j])
+                  ) / (2 * grid_step_size)  # - ?
+                  if 0 < i < N - 1 else 0)
+        djx_dxi = (jx_prev[i, j] - jx[i, j]) / xi_step_size               # - ?
+
+        Ex_rhs[i, j] = -((dro_dx - djx_dxi) - Ex_sub[i, j] * subtraction_trick)
+
 
 class GPUMonolith:
     cfg = (19, 192)  # empirical guess for a GTX 1070 Ti
 
     def __init__(self, config):
-        P = config.plasma.size
-        Q = int(sqrt(P))
-        assert Q**2 == P
-        N = config.grid_steps
-        self.Q = Q
+        self._Nc = Nc = int(sqrt(config.plasma.size))
+        assert Nc**2 == config.plasma.size
 
-        self._m = numba.cuda.device_array((Q, Q))
-        self._q = numba.cuda.device_array((Q, Q))
-        self._x = numba.cuda.device_array((Q, Q))
-        self._y = numba.cuda.device_array((Q, Q))
-        self._px = numba.cuda.device_array((Q, Q))
-        self._py = numba.cuda.device_array((Q, Q))
-        self._pz = numba.cuda.device_array((Q, Q))
+        self.grid_steps = N = config.grid_steps
+        self.xi_step_size = config.xi_step_size
+        self.grid_step_size = config.window_width / config.grid_steps
+        self.subtraction_trick = config.field_solver_subtraction_trick
+
+        self.virtplasma_smallness_factor = 1 / config.virtualize.ratio
+
+        self._m = numba.cuda.device_array((Nc, Nc))
+        self._q = numba.cuda.device_array((Nc, Nc))
+        self._x = numba.cuda.device_array((Nc, Nc))
+        self._y = numba.cuda.device_array((Nc, Nc))
+        self._px = numba.cuda.device_array((Nc, Nc))
+        self._py = numba.cuda.device_array((Nc, Nc))
+        self._pz = numba.cuda.device_array((Nc, Nc))
 
         self._A_weights = numba.cuda.to_device(config.virtualize.A_weights)
         self._B_weights = numba.cuda.to_device(config.virtualize.B_weights)
@@ -180,44 +202,65 @@ class GPUMonolith:
         self._jy = numba.cuda.device_array((N, N))
         self._jz = numba.cuda.device_array((N, N))
 
-    def initial_deposition(self, config, plasma_initial):
-        self.load(plasma_initial)
-        zerofill_kernel[self.cfg](self._ro.ravel())
-        deposit_kernel[self.cfg](config.n_dim, config.h,
-                                 self._x, self._y, self._m, self._q,
-                                 self._px, self._py, self._pz,
-                                 self._A_weights, self._B_weights,
-                                 self._C_weights, self._D_weights,
-                                 self._indices_prev, self._indices_next,
-                                 1 / config.virtualize.ratio,
-                                 self._ro, self._jx, self._jy, self._jz)
-        self._ro_initial[:, :] = -self._ro.copy_to_host()  # ion background
+        self._beam_ro = numba.cuda.device_array((N, N))
+        self._Ex_prev = numba.cuda.device_array((N, N))
+        self._jx_prev = numba.cuda.device_array((N, N))
 
+        self._Ex_rhs = numba.cuda.device_array((N, N))
 
-    def load(self, plasma):
-        Q = self.Q
-        self._m[:, :] = np.ascontiguousarray(plasma['m'].reshape(Q, Q))
-        self._q[:, :] = np.ascontiguousarray(plasma['q'].reshape(Q, Q))
-        self._x[:, :] = np.ascontiguousarray(plasma['x'].reshape(Q, Q))
-        self._y[:, :] = np.ascontiguousarray(plasma['y'].reshape(Q, Q))
-        self._px[:, :] = np.ascontiguousarray(plasma['p'][:, 1].reshape(Q, Q))
-        self._py[:, :] = np.ascontiguousarray(plasma['p'][:, 2].reshape(Q, Q))
-        self._pz[:, :] = np.ascontiguousarray(plasma['p'][:, 0].reshape(Q, Q))
+    def load(self, plasma, beam_ro, Ex_prev, jx_prev):
+        Nc = self._Nc
+        self._m[:, :] = np.ascontiguousarray(plasma['m'].reshape(Nc, Nc))
+        self._q[:, :] = np.ascontiguousarray(plasma['q'].reshape(Nc, Nc))
+        self._x[:, :] = np.ascontiguousarray(plasma['x'].reshape(Nc, Nc))
+        self._y[:, :] = np.ascontiguousarray(plasma['y'].reshape(Nc, Nc))
+        self._px[:, :] = np.ascontiguousarray(plasma['p'][:, 1].reshape(Nc, Nc))
+        self._py[:, :] = np.ascontiguousarray(plasma['p'][:, 2].reshape(Nc, Nc))
+        self._pz[:, :] = np.ascontiguousarray(plasma['p'][:, 0].reshape(Nc, Nc))
 
         roj_init_kernel[self.cfg](self._ro.ravel(), self._jx.ravel(),
                                   self._jy.ravel(), self._jz.ravel(),
                                   self._ro_initial.ravel())
+        numba.cuda.synchronize()
 
-    def step(self, config, plasma):
-        self.load(plasma)
-        deposit_kernel[self.cfg](config.n_dim, config.h,
+        self._beam_ro[:, :] = np.ascontiguousarray(beam_ro)
+        self._Ex_prev[:, :] = np.ascontiguousarray(Ex_prev)
+        self._jx_prev[:, :] = np.ascontiguousarray(jx_prev)
+
+    def deposit(self):
+        deposit_kernel[self.cfg](self.grid_steps, self.grid_step_size,
                                  self._x, self._y, self._m, self._q,
                                  self._px, self._py, self._pz,
                                  self._A_weights, self._B_weights,
                                  self._C_weights, self._D_weights,
                                  self._indices_prev, self._indices_next,
-                                 1 / config.virtualize.ratio,
+                                 self.virtplasma_smallness_factor,
                                  self._ro, self._jx, self._jy, self._jz)
+        numba.cuda.synchronize()
+
+    def initial_deposition(self, config, plasma_initial):
+        self.load(plasma_initial, 0, 0, 0)
+        zerofill_kernel[self.cfg](self._ro.ravel())
+        numba.cuda.synchronize()
+        self.deposit()
+        self._ro_initial[:, :] = -np.array(self._ro.copy_to_host())
+
+    def calculate_RHS(self):
+        calculate_RHS_kernel[self.cfg](self._Ex_prev,
+                                       self._beam_ro,
+                                       self._ro, self._jx,
+                                       self._jx_prev,
+                                       self.grid_step_size, self.xi_step_size,
+                                       self.subtraction_trick,
+                                       self._Ex_rhs)
+        numba.cuda.synchronize()
+
+    def step(self, config, plasma, beam_ro, Ex_prev, jx_prev):
+        self.load(plasma, beam_ro, Ex_prev, jx_prev)
+
+        self.deposit()
+        self.calculate_RHS()
+
         return self.unload(config)
 
     def unload(self, config):
@@ -226,4 +269,9 @@ class GPUMonolith:
         roj['jx'] = self._jx.copy_to_host()
         roj['jy'] = self._jy.copy_to_host()
         roj['jz'] = self._jz.copy_to_host()
-        return roj
+
+        Ex_rhs = self._Ex_rhs.copy_to_host()
+
+        numba.cuda.synchronize()
+
+        return roj, Ex_rhs

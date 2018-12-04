@@ -153,7 +153,7 @@ def deposit_kernel(n_dim, h,
 @numba.cuda.jit
 def calculate_RHS_kernel(Ex_sub, beam_ro, ro, jx, jx_prev,
                          grid_step_size, xi_step_size, subtraction_trick,
-                         Ex_rhs):
+                         Ex_rhs, Ex_dct1_in):
     N = Ex_rhs.shape[0]
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
@@ -166,7 +166,13 @@ def calculate_RHS_kernel(Ex_sub, beam_ro, ro, jx, jx_prev,
                   if 0 < i < N - 1 else 0)
         djx_dxi = (jx_prev[i, j] - jx[i, j]) / xi_step_size               # - ?
 
+        # TODO: get rid of that array and go straight for dct_in?
         Ex_rhs[i, j] = -((dro_dx - djx_dxi) - Ex_sub[i, j] * subtraction_trick)
+        Ex_dct1_in[j, i] = Ex_rhs[i, j]
+        # symmetrically pad dct1_in to apply DCT-via-FFT later
+        ii = max(i, 1)  # avoid writing to dct_in[:, 2 * N - 2], w/o branching
+        Ex_dct1_in[j, 2 * N - 2 - ii] = Ex_dct1_in[j, ii]
+
         # applying non-zero boundary conditions to the RHS would be:
         # for i in range(self.N):
             # rhs_fixed[i, 0] += top[i] * (2 / self.grid_step_size)
@@ -176,19 +182,8 @@ def calculate_RHS_kernel(Ex_sub, beam_ro, ro, jx, jx_prev,
 
 
 @numba.cuda.jit
-def prepare_Ex_dct1(Ex_rhs, dct1_in):
-    N = Ex_rhs.shape[0]
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, Ex_rhs.size, stride):
-        i, j = k // N, k % N
-        dct1_in[i, j] = Ex_rhs[j, i]
-        if j:  # TODO: optimize by padding the array with an extra column?
-            dct1_in[i, 2 * N - 2 - j] = dct1_in[i, j]
-
-@numba.cuda.jit
-def mid_dct_transform_Ex(dct1_out, dct2_in, alf, bet, mul):
-    N = dct1_out.shape[0]
+def mid_dct_transform_Ex(Ex_dct1_out, Ex_dct2_in, alf, bet, mul):
+    N = Ex_dct1_out.shape[0]
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
 
@@ -200,25 +195,25 @@ def mid_dct_transform_Ex(dct1_out, dct2_in, alf, bet, mul):
         bet[i, 0] = 0
         for j in range(1, N - 1):
             # Note the transposition for dct1_out!
-            bet[i, j + 1] = (mul * dct1_out[j, i].real + bet[i, j]) * alf[i, j + 1]
+            bet[i, j + 1] = (mul * Ex_dct1_out[j, i].real + bet[i, j]) * alf[i, j + 1]
         # Note the transposition for dct2_in!
-        dct2_in[N - 1, i] = 0  # Note the forced zero
+        Ex_dct2_in[N - 1, i] = 0  # Note the forced zero
         for j in range(N - 2, 0 - 1, -1):
-            dct2_in[j, i] = alf[i, j + 1] * dct2_in[j + 1, i] + bet[i, j + 1]
+            Ex_dct2_in[j, i] = alf[i, j + 1] * Ex_dct2_in[j + 1, i] + bet[i, j + 1]
             # also symmetrical-fill the array in preparation for a second DCT
-            if j:  # TODO: optimize by padding the array with an extra column?
-                dct2_in[j, 2 * N - 2 - i] = dct2_in[j, i]
-        # dct2_in[0, :] == 0  # happens by itself
+            ii = max(i, 1)  # avoid writing to dct_in[:, 2 * N - 2], w/o branching
+            Ex_dct2_in[j, 2 * N - 2 - ii] = Ex_dct2_in[j, ii]
+        # dct2_in[:, 0] == 0  # happens by itself
 
 
 @numba.cuda.jit
-def unpack_resulting_Ex(dct2_out, Ex):
+def unpack_resulting_Ex(Ex_dct2_out, Ex):
     N = Ex.shape[0]
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
     for k in range(index, Ex.size, stride):
         i, j = k // N, k % N
-        Ex[i, j] = dct2_out[j, i].real
+        Ex[i, j] = Ex_dct2_out[j, i].real
 
 
 class GPUMonolith:
@@ -268,10 +263,10 @@ class GPUMonolith:
                                             otype=np.complex128,
                                             batch=N)
         # (2 * N - 2) // 2 + 1 == (N - 1) + 1 == N
-        self._dct1_in = numba.cuda.device_array((N, 2 * N - 2))
-        self._dct1_out = numba.cuda.device_array((N, N), dtype=np.complex128)
-        self._dct2_in = numba.cuda.device_array((N, 2 * N - 2))
-        self._dct2_out = numba.cuda.device_array((N, N), dtype=np.complex128)
+        self._Ex_dct1_in = numba.cuda.device_array((N, 2 * N - 2))
+        self._Ex_dct1_out = numba.cuda.device_array((N, N), dtype=np.complex128)
+        self._Ex_dct2_in = numba.cuda.device_array((N, 2 * N - 2))
+        self._Ex_dct2_out = numba.cuda.device_array((N, N), dtype=np.complex128)
         self._Ex = numba.cuda.device_array((N, N))
 
         # total multiplier to compensate for the iDCT+DCT transforms
@@ -334,47 +329,41 @@ class GPUMonolith:
                                        self._jx_prev,
                                        self.grid_step_size, self.xi_step_size,
                                        self.subtraction_trick,
-                                       self._Ex_rhs)
+                                       self._Ex_rhs, self._Ex_dct1_in)
         numba.cuda.synchronize()
 
     def calculate_Ex(self):
         # The grand plan: mul * iDCT(SPECTRAL_MAGIC(DCT(in.T).T)).T).T
         # where iDCT is DCT;
         # and DCT is jury-rigged from symmetrically-padded DFT
-        self.calculate_Ex_0()
         self.calculate_Ex_1()
         self.calculate_Ex_2()
         self.calculate_Ex_3()
         self.calculate_Ex_4()
 
-    def calculate_Ex_0(self):
-        # 0. Transpose RHS and symmetrical-fill it (TODO: fuse this step into RHS?)
-        prepare_Ex_dct1[self.cfg](self._Ex_rhs, self._dct1_in)
-        numba.cuda.synchronize()
-
     def calculate_Ex_1(self):
         # 1. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
         # iDCT-1 is just DCT-1 in cuFFT
-        self.dct_plan.forward(self._dct1_in.ravel(), self._dct1_out.ravel())
+        self.dct_plan.forward(self._Ex_dct1_in.ravel(), self._Ex_dct1_out.ravel())
         numba.cuda.synchronize()
         # This implementation of DCT is real-to-complex, so scrapping the i, j
         # element of the transposed answer would be dct1_out[j, i].real
 
     def calculate_Ex_2(self):
         # 2. Solve tridiagonal matrix equation for each spectral column with Thomas method:
-        mid_dct_transform_Ex[self.cfg](self._dct1_out, self._dct2_in,
+        mid_dct_transform_Ex[self.cfg](self._Ex_dct1_out, self._Ex_dct2_in,
                                        self._mix_alf, self._mix_bet,
                                        self.mix_mul)
         numba.cuda.synchronize()
 
     def calculate_Ex_3(self):
         # 3. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
-        self.dct_plan.forward(self._dct2_in.ravel(), self._dct2_out.ravel())
+        self.dct_plan.forward(self._Ex_dct2_in.ravel(), self._Ex_dct2_out.ravel())
         numba.cuda.synchronize()
 
     def calculate_Ex_4(self):
         # 4. Transpose the resulting Ex (TODO: fuse this step into later steps?)
-        unpack_resulting_Ex[self.cfg](self._dct2_out, self._Ex)
+        unpack_resulting_Ex[self.cfg](self._Ex_dct2_out, self._Ex)
         numba.cuda.synchronize()
 
 

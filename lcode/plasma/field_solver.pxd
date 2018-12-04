@@ -103,7 +103,6 @@ cdef class FieldSolver:
                            double[:, :] in_By,
                            double[:, :] in_Bz,
                            double[:, :] beam_ro,
-                           double[:, :] Ex_rhs,
                            double h,
                            unsigned int npq,
                            double x_max,

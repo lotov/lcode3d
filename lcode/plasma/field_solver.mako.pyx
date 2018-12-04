@@ -405,7 +405,6 @@ cdef class FieldSolver:
                            double[:, :] in_By,
                            double[:, :] in_Bz,
                            double[:, :] beam_ro,
-                           double[:, :] Ex_rhs,
                            double h,
                            unsigned int npq,
                            double x_max,
@@ -430,19 +429,17 @@ cdef class FieldSolver:
         cdef double[:, :] out_Ey_T = out_Ey.T
         cdef double[:, :] out_Bx_T = out_Bx.T
 
-        calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, self.tls_0, self.mxs_Ex,
-                     Ex_rhs,
-                     n_dim, h, h3, npq, self.zz, self.num_threads)
+        #calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, self.tls_0, self.mxs_Ex,
+        #             Ex_rhs,
+        #             n_dim, h, h3, npq, self.zz, self.num_threads)
         calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, self.tls_1, self.mxs_Ey,
                      n_dim, h, h3, npq, self.zz, self.num_threads)
         calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, self.tls_2, self.mxs_Bx,
                      n_dim, h, h3, npq, self.zz, self.num_threads)
-        calculate_By(in_By, out_By, jz, jx, jx_prev, self.tls_3, self.mxs_By,
-                     n_dim, h, h3, npq, self.zz, self.num_threads)
+        #calculate_By(in_By, out_By, jz, jx, jx_prev, self.tls_3, self.mxs_By,
+        #             n_dim, h, h3, npq, self.zz, self.num_threads)
         #calculate_Bz(in_Bz, out_Bz, jx, jy, self.tls_4,
         #             n_dim, h, npq, x_max, B_0, zz)
         out_Bz[...] = 0
         calculate_Ez(in_Ez, out_Ez, jx, jy, self.tls_5, self.ds_Ez,
                      n_dim, h, npq, self.num_threads)
-        #calculate_Ez(in_Ez, out_Ez, jx, jy, self.tls_5, self.ds_Ez,
-        #             n_dim, h, npq, False, self.num_threads)

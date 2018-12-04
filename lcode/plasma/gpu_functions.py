@@ -274,17 +274,21 @@ class GPUMonolith:
         self.dct_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
                                             itype=np.float64,
                                             otype=np.complex128,
-                                            batch=N)
+                                            batch=(2 * N))
         # (2 * N - 2) // 2 + 1 == (N - 1) + 1 == N
-        self._Ex_dct1_in = numba.cuda.device_array((N, 2 * N - 2))
-        self._Ex_dct1_out = numba.cuda.device_array((N, N), dtype=np.complex128)
-        self._Ex_dct2_in = numba.cuda.device_array((N, 2 * N - 2))
-        self._Ex_dct2_out = numba.cuda.device_array((N, N), dtype=np.complex128)
+        self._combined_dct1_in = numba.cuda.device_array((2 * N, 2 * N - 2))
+        self._combined_dct1_out = numba.cuda.device_array((2 * N, N), dtype=np.complex128)
+        self._combined_dct2_in = numba.cuda.device_array((2 * N, 2 * N - 2))
+        self._combined_dct2_out = numba.cuda.device_array((2 * N, N), dtype=np.complex128)
+        self._Ex_dct1_in = self._combined_dct1_in[:N, :]
+        self._Ex_dct1_out = self._combined_dct1_out[:N, :]
+        self._Ex_dct2_in = self._combined_dct2_in[:N, :]
+        self._Ex_dct2_out = self._combined_dct2_out[:N, :]
+        self._By_dct1_in = self._combined_dct1_in[N:, :]
+        self._By_dct1_out = self._combined_dct1_out[N:, :]
+        self._By_dct2_in = self._combined_dct2_in[N:, :]
+        self._By_dct2_out = self._combined_dct2_out[N:, :]
         self._Ex = numba.cuda.device_array((N, N))
-        self._By_dct1_in = numba.cuda.device_array((N, 2 * N - 2))
-        self._By_dct1_out = numba.cuda.device_array((N, N), dtype=np.complex128)
-        self._By_dct2_in = numba.cuda.device_array((N, 2 * N - 2))
-        self._By_dct2_out = numba.cuda.device_array((N, N), dtype=np.complex128)
         self._By = numba.cuda.device_array((N, N))
 
         # total multiplier to compensate for the iDCT+DCT transforms
@@ -366,8 +370,8 @@ class GPUMonolith:
     def calculate_Ex_By_1(self):
         # 1. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
         # iDCT-1 is just DCT-1 in cuFFT
-        self.dct_plan.forward(self._Ex_dct1_in.ravel(), self._Ex_dct1_out.ravel())
-        self.dct_plan.forward(self._By_dct1_in.ravel(), self._By_dct1_out.ravel())
+        self.dct_plan.forward(self._combined_dct1_in.ravel(),
+                              self._combined_dct1_out.ravel())
         numba.cuda.synchronize()
         # This implementation of DCT is real-to-complex, so scrapping the i, j
         # element of the transposed answer would be dct1_out[j, i].real
@@ -382,8 +386,8 @@ class GPUMonolith:
 
     def calculate_Ex_By_3(self):
         # 3. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
-        self.dct_plan.forward(self._Ex_dct2_in.ravel(), self._Ex_dct2_out.ravel())
-        self.dct_plan.forward(self._By_dct2_in.ravel(), self._By_dct2_out.ravel())
+        self.dct_plan.forward(self._combined_dct2_in.ravel(),
+                              self._combined_dct2_out.ravel())
         numba.cuda.synchronize()
 
     def calculate_Ex_By_4(self):

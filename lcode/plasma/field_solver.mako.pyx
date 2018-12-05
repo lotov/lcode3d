@@ -432,8 +432,8 @@ cdef class FieldSolver:
         #calculate_Ex(in_Ex, out_Ex, ro, jx, jx_prev, self.tls_0, self.mxs_Ex,
         #             Ex_rhs,
         #             n_dim, h, h3, npq, self.zz, self.num_threads)
-        calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, self.tls_1, self.mxs_Ey,
-                     n_dim, h, h3, npq, self.zz, self.num_threads)
+        #calculate_Ey(in_Ey, out_Ey_T, ro, jy, jy_prev, self.tls_1, self.mxs_Ey,
+        #             n_dim, h, h3, npq, self.zz, self.num_threads)
         calculate_Bx(in_Bx, out_Bx_T, jz, jy, jy_prev, self.tls_2, self.mxs_Bx,
                      n_dim, h, h3, npq, self.zz, self.num_threads)
         #calculate_By(in_By, out_By, jz, jx, jx_prev, self.tls_3, self.mxs_By,

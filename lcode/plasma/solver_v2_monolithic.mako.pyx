@@ -672,12 +672,12 @@ cdef class PlasmaSolver:
         hs_xs, hs_ys = plasma_predicted_half1['x'], plasma_predicted_half1['y']
         Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl)
         plasma_1 = move_smart_fast(config, plasma, *Fls)
-        roj_1, Ex, By = self.gpu.step(
-            config, plasma_1, beam_ro, Fl[0], Fl[4], roj_prev['jx']
+        roj_1, Ex, Ey, By = self.gpu.step(
+            config, plasma_1, beam_ro, Fl[0], Fl[1], Fl[4], roj_prev['jx'], roj_prev['jy']
         )
 
         # ===  2  ===  + hs_xs, hs_ys, roj_1
-        _, Ey, Ez, Bx, _, Bz = calculate_fields(
+        _, _, Ez, Bx, _, Bz = calculate_fields(
             config, self.field_solver, roj_1, roj_prev, *Fl, beam_ro
         )
         Fl_pred = (Ex, Ey, Ez, Bx, By, Bz)
@@ -689,12 +689,13 @@ cdef class PlasmaSolver:
         Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
         #Fls_avg_1 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_pred)
         plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1)
-        roj_2, Ex, By = self.gpu.step(
-            config, plasma_2, beam_ro, Fl_avg_1[0], Fl_avg_1[4], roj_prev['jx']
+        roj_2, Ex, Ey, By = self.gpu.step(
+            config, plasma_2, beam_ro,
+            Fl_avg_1[0], Fl_avg_1[1], Fl_avg_1[4], roj_prev['jx'], roj_prev['jy']
         )
 
         # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
-        _, Ey, Ez, Bx, _, Bz = calculate_fields(
+        _, _, Ez, Bx, _, Bz = calculate_fields(
             config, self.field_solver, roj_2, roj_prev, *Fl_avg_1, beam_ro
         )
 
@@ -706,8 +707,9 @@ cdef class PlasmaSolver:
         Fls_avg_2 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_new)
         plasma_new = move_smart_fast(config, plasma, *Fls_avg_2)
         # rhs calculations are fed wrong values, but we don't need them
-        roj_new, _, _ = self.gpu.step(
-            config, plasma_new, beam_ro, Fl_new[0], Fl_new[4], roj_prev['jx']
+        roj_new, _, _, _ = self.gpu.step(
+            config, plasma_new, beam_ro,
+            Fl_new[0], Fl_new[1], Fl_new[4], roj_prev['jx'], roj_prev['jy']
         )
 
         out_plasma[...] = plasma_new
@@ -715,6 +717,3 @@ cdef class PlasmaSolver:
         out_roj[...] = roj_new
         mut_Ex[...], mut_Ey[...], mut_Ez[...], mut_Bx[...], mut_By[...], mut_Bz[...] = Fl_new
 
-
-# TODO: merge interpolate-move-deposit into a single routine?
-# TODO: -||-, rewrite it in Cython and tune it up

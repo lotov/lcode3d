@@ -150,11 +150,14 @@ def deposit_kernel(n_dim, h,
         numba.cuda.atomic.add(out_jz, (i + 1, j - 1), djz * (fx2_sq * (fy3_sq / 4)))
     #numba.cuda.syncthreads()
 
+
 @numba.cuda.jit
-def calculate_RHS_kernel(Ex_sub, Ey_sub, Bx_sub, By_sub,
-                         beam_ro, ro, jx, jx_prev, jy, jy_prev, jz,
-                         grid_step_size, xi_step_size, subtraction_trick,
-                         Ex_dct1_in, Ey_dct1_in, Bx_dct1_in, By_dct1_in):
+def calculate_RHS_Ex_Ey_Bx_By_kernel(Ex_sub, Ey_sub, Bx_sub, By_sub,
+                                     beam_ro, ro, jx, jx_prev, jy, jy_prev, jz,
+                                     grid_step_size, xi_step_size,
+                                     subtraction_trick,
+                                     Ex_dct1_in, Ey_dct1_in,
+                                     Bx_dct1_in, By_dct1_in):
     N = ro.shape[0]
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
@@ -228,6 +231,7 @@ def mid_dct_transform(Ex_dct1_out, Ex_dct2_in,
             Bx_bet[i, j + 1] = (mul * Bx_dct1_out[j, i].real + Bx_bet[i, j]) * alf[i, j + 1]
             By_bet[i, j + 1] = (mul * By_dct1_out[j, i].real + By_bet[i, j]) * alf[i, j + 1]
         # Note the transposition for dct2_in!
+        # TODO: it can be set once only? Maybe we can comment that out then?
         Ex_dct2_in[N - 1, i] = Ey_dct2_in[N - 1, i] = 0  # Note the forced zero
         Bx_dct2_in[N - 1, i] = By_dct2_in[N - 1, i] = 0
         for j in range(N - 2, 0 - 1, -1):
@@ -245,9 +249,9 @@ def mid_dct_transform(Ex_dct1_out, Ex_dct2_in,
 
 
 @numba.cuda.jit
-def unpack_transverse_fields(Ex_dct2_out, Ey_dct2_out,
-                             Bx_dct2_out, By_dct2_out,
-                             Ex, Ey, Bx, By):
+def unpack_Ex_Ey_Bx_By_fields_kernel(Ex_dct2_out, Ey_dct2_out,
+                                     Bx_dct2_out, By_dct2_out,
+                                     Ex, Ey, Bx, By):
     N = Ex.shape[0]
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
@@ -258,6 +262,60 @@ def unpack_transverse_fields(Ex_dct2_out, Ey_dct2_out,
         Bx[i, j] = Bx_dct2_out[i, j].real
         By[i, j] = By_dct2_out[j, i].real
 
+
+@numba.cuda.jit
+def calculate_RHS_Ez_kernel(jx, jy, grid_step_size, Ez_dst1_in):
+    N = jx.shape[0]
+    Ns = N - 2
+    index = numba.cuda.grid(1)
+    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+    for k in range(index, Ns**2, stride):
+        i0, j0 = k // Ns, k % Ns
+        i, j = i0 + 1, j0 + 1
+
+        djx_dx = (jx[i + 1, j] - jx[i - 1, j]) / (2 * grid_step_size)  # - ?
+        djy_dy = (jy[i, j + 1] - jy[i, j - 1]) / (2 * grid_step_size)  # - ?
+
+        Ez_rhs = -(djx_dx + djy_dy)
+        Ez_dst1_in[i0, j0 + 1] = Ez_rhs
+        # anti-symmetrically pad dct1_in to apply DCT-via-FFT later
+        Ez_dst1_in[i0, 2 * Ns + 1 - j0] = -Ez_rhs
+
+@numba.cuda.jit
+def mid_dst_transform(Ez_dst1_out, Ez_dst2_in,
+                      Ez_bet, Ez_alf, mul):
+    Ns = Ez_dst1_out.shape[0]  # == N - 2
+    index = numba.cuda.grid(1)
+    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+
+    # Solve tridiagonal matrix equation for each spectral column with Thomas method:
+    # A @ tmp_2[k, :] = tmp_1[k, :]
+    # A has -1 on superdiagonal, -1 on subdiagonal and aa[i] at the main diagonal
+    for i in range(index, Ns, stride):
+        Ez_bet[i, 0] = 0
+        for j in range(Ns):
+            # Note the transposition for dst1_out!
+            Ez_bet[i, j + 1] = (mul * -Ez_dst1_out[j, i + 1].imag + Ez_bet[i, j]) * Ez_alf[i, j + 1]
+        # Note the transposition for dct2_in!
+        Ez_dst2_in[Ns - 1, i + 1] = 0 + Ez_bet[i, Ns]  # 0 = Ez_dst2_in[i, Ns] (fake)
+        Ez_dst2_in[Ns - 1, 2 * Ns + 1 - i] = -Ez_dst2_in[Ns - 1, i + 1]
+        for j in range(Ns - 2, 0 - 1, -1):
+            Ez_dst2_in[j, i + 1] = Ez_alf[i, j + 1] * Ez_dst2_in[j + 1, i + 1] + Ez_bet[i, j + 1]
+            # anti-symmetrically pad dct1_in to apply DCT-via-FFT later
+            Ez_dst2_in[j, 2 * Ns + 1 - i] = -Ez_dst2_in[j, i + 1]
+
+
+@numba.cuda.jit
+def unpack_Ez_kernel(Ez_dst2_out, Ez,
+                     Ez_dst1_in, Ez_dst1_out, Ez_dst2_in):
+    N = Ez.shape[0]
+    Ns = N - 2
+    index = numba.cuda.grid(1)
+    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+    for k in range(index, Ns**2, stride):
+        i0, j0 = k // Ns, k % Ns
+        i, j = i0 + 1, j0 + 1
+        Ez[i, j] = -Ez_dst2_out[i0, j0 + 1].imag
 
 class GPUMonolith:
     cfg = (19, 192)  # empirical guess for a GTX 1070 Ti
@@ -288,7 +346,7 @@ class GPUMonolith:
         self._indices_prev = numba.cuda.to_device(config.virtualize.indices_prev)
         self._indices_next = numba.cuda.to_device(config.virtualize.indices_next)
 
-        # Constant array for mixed boundary conditions solver
+        # Arrays for mixed boundary conditions solver
         # * diagonal matrix elements (used in the next one)
         aa = 2 + 4 * np.sin(np.arange(0, N) * np.pi / (2 * (N - 1)))**2
         if self.subtraction_trick:
@@ -303,6 +361,20 @@ class GPUMonolith:
         self._Ey_bet = numba.cuda.device_array((N, N))
         self._Bx_bet = numba.cuda.device_array((N, N))
         self._By_bet = numba.cuda.device_array((N, N))
+
+        # Arrays for Dirichlet boundary conditions solver
+        # * diagonal matrix elements (used in the next one)
+        Ez_a = 2 + 4 * np.sin(np.arange(1, N - 1) * np.pi / (2 * (N - 1)))**2
+        #  +  h**2  # only used with xi derivatives
+        # * precalculated internal coefficients for tridiagonal solving
+        Ez_alf = np.zeros((N - 2, N - 1))
+        Ez_alf[:, 0] = 0
+        for k in range(N - 2):
+            for i in range(N - 2):
+                Ez_alf[k, i + 1] = 1 / (Ez_a[k] - Ez_alf[k, i])
+        self._Ez_alf = numba.cuda.to_device(Ez_alf)
+        # * scratchpad arrays for Dirichlet boundary conditions solver
+        self._Ez_bet = numba.cuda.device_array((N, N))
 
         self.dct_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
                                             itype=np.float64,
@@ -334,6 +406,24 @@ class GPUMonolith:
         self._Bx = numba.cuda.device_array((N, N))
         self._By = numba.cuda.device_array((N, N))
 
+        self.dst_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
+                                            itype=np.float64,
+                                            otype=np.complex128,
+                                            batch=(N - 2))
+        self._Ez_dst1_in = numba.cuda.device_array((N - 2, 2 * N - 2))
+        self._Ez_dst1_out = numba.cuda.device_array((N - 2, N), dtype=np.complex128)
+        self._Ez_dst2_in = numba.cuda.device_array((N - 2, 2 * N - 2))
+        self._Ez_dst2_out = numba.cuda.device_array((N - 2, N), dtype=np.complex128)
+        self._Ez = numba.cuda.device_array((N, N))
+
+        self._Ez_dst1_in[:, :] = 0
+        self._Ez_dst2_in[:, :] = 0
+        self._Ez[:, :] = 0
+
+        # total multiplier to compensate for the iDST+DST transforms
+        self.Ez_mul = self.grid_step_size**2
+        self.Ez_mul /= 2 * N - 2  # don't ask
+
         # total multiplier to compensate for the iDCT+DCT transforms
         self.mix_mul = self.grid_step_size**2
         self.mix_mul /= 2 * N - 2  # don't ask
@@ -351,6 +441,7 @@ class GPUMonolith:
         self._By_prev = numba.cuda.device_array((N, N))
         self._jx_prev = numba.cuda.device_array((N, N))
         self._jy_prev = numba.cuda.device_array((N, N))
+
 
     def load(self, plasma, beam_ro, Ex_prev, Ey_prev, Bx_prev, By_prev,
              jx_prev, jy_prev):
@@ -376,6 +467,7 @@ class GPUMonolith:
         self._jx_prev[:, :] = np.ascontiguousarray(jx_prev)
         self._jy_prev[:, :] = np.ascontiguousarray(jy_prev)
 
+
     def deposit(self):
         deposit_kernel[self.cfg](self.grid_steps, self.grid_step_size,
                                  self._x, self._y, self._m, self._q,
@@ -394,34 +486,37 @@ class GPUMonolith:
         self.deposit()
         self._ro_initial[:, :] = -np.array(self._ro.copy_to_host())
 
-    def calculate_RHS(self):
-        calculate_RHS_kernel[self.cfg](self._Ex_prev,
-                                       self._Ey_prev,
-                                       self._Bx_prev,
-                                       self._By_prev,
-                                       self._beam_ro,
-                                       self._ro,
-                                       self._jx,
-                                       self._jx_prev,
-                                       self._jy,
-                                       self._jy_prev,
-                                       self._jz,
-                                       self.grid_step_size, self.xi_step_size,
-                                       self.subtraction_trick,
-                                       self._Ex_dct1_in,
-                                       self._Ey_dct1_in,
-                                       self._Bx_dct1_in,
-                                       self._By_dct1_in)
-        numba.cuda.synchronize()
 
     def calculate_Ex_Ey_Bx_By(self):
-        # The grand plan: mul * iDCT(SPECTRAL_MAGIC(DCT(in.T).T)).T).T
+        # The grand plan: mul * iDCT(SPECTRAL_MAGIC(DCT(in.T).T)).T).T for Ex/By
+        # and mul * iDCT(SPECTRAL_MAGIC(DCT(in).T)).T) for Ey/Bx
         # where iDCT is DCT;
         # and DCT is jury-rigged from symmetrically-padded DFT
+        self.calculate_RHS_Ex_Ey_Bx_By()
         self.calculate_Ex_Ey_Bx_By_1()
         self.calculate_Ex_Ey_Bx_By_2()
         self.calculate_Ex_Ey_Bx_By_3()
         self.calculate_Ex_Ey_Bx_By_4()
+
+    def calculate_RHS_Ex_Ey_Bx_By(self):
+        calculate_RHS_Ex_Ey_Bx_By_kernel[self.cfg](self._Ex_prev,
+                                                   self._Ey_prev,
+                                                   self._Bx_prev,
+                                                   self._By_prev,
+                                                   self._beam_ro,
+                                                   self._ro,
+                                                   self._jx,
+                                                   self._jx_prev,
+                                                   self._jy,
+                                                   self._jy_prev,
+                                                   self._jz,
+                                                   self.grid_step_size, self.xi_step_size,
+                                                   self.subtraction_trick,
+                                                   self._Ex_dct1_in,
+                                                   self._Ey_dct1_in,
+                                                   self._Bx_dct1_in,
+                                                   self._By_dct1_in)
+        numba.cuda.synchronize()
 
     def calculate_Ex_Ey_Bx_By_1(self):
         # 1. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
@@ -451,26 +546,77 @@ class GPUMonolith:
 
     def calculate_Ex_Ey_Bx_By_4(self):
         # 4. Transpose the resulting Ex (TODO: fuse this step into later steps?)
-        unpack_transverse_fields[self.cfg](self._Ex_dct2_out,
-                                           self._Ey_dct2_out,
-                                           self._Bx_dct2_out,
-                                           self._By_dct2_out,
-                                           self._Ex, self._Ey,
-                                           self._Bx, self._By)
+        unpack_Ex_Ey_Bx_By_fields_kernel[self.cfg](self._Ex_dct2_out,
+                                                   self._Ey_dct2_out,
+                                                   self._Bx_dct2_out,
+                                                   self._By_dct2_out,
+                                                   self._Ex, self._Ey,
+                                                   self._Bx, self._By)
         numba.cuda.synchronize()
 
 
-    def step(self, config, plasma, beam_ro, Ex_prev, Ey_prev, Bx_prev, By_prev,
+    def calculate_Ez(self):
+        # The grand plan: mul * iDST(SPECTRAL_MAGIC(DST(in).T)).T)
+        # where iDST is DST;
+        # and DST is jury-rigged from symmetrically-padded DFT
+        self.calculate_RHS_Ez()
+        self.calculate_Ez_1()
+        self.calculate_Ez_2()
+        self.calculate_Ez_3()
+        self.calculate_Ez_4()
+
+    def calculate_RHS_Ez(self):
+        calculate_RHS_Ez_kernel[self.cfg](self._jx, self._jy,
+                                          self.grid_step_size,
+                                          self._Ez_dst1_in)
+        numba.cuda.synchronize()
+
+    def calculate_Ez_1(self):
+        # 1. Apply iDST-1 (Discrete Sine Transform Type 1) to the RHS
+        # iDST-1 is just DST-1 in cuFFT
+        self.dst_plan.forward(self._Ez_dst1_in.ravel(),
+                              self._Ez_dst1_out.ravel())
+        numba.cuda.synchronize()
+        # This implementation of DST is real-to-complex, so scrapping the i, j
+        # element of the transposed answer would be -dst1_out[j, i + 1].imag
+
+    def calculate_Ez_2(self):
+        # 2. Solve tridiagonal matrix equation for each spectral column with Thomas method:
+        mid_dst_transform[self.cfg](self._Ez_dst1_out, self._Ez_dst2_in,
+                                    self._Ez_bet, self._Ez_alf, self.Ez_mul)
+        numba.cuda.synchronize()
+
+    def calculate_Ez_3(self):
+        # 3. Apply DST-1 (Discrete Sine Transform Type 1) to the transformed spectra
+        self.dst_plan.forward(self._Ez_dst2_in.ravel(),
+                              self._Ez_dst2_out.ravel())
+        numba.cuda.synchronize()
+
+    def calculate_Ez_4(self):
+        # 4. Transpose the resulting Ex (TODO: fuse this step into later steps?)
+        unpack_Ez_kernel[self.cfg](self._Ez_dst2_out, self._Ez,
+                                   self._Ez_dst1_in, self._Ez_dst1_out, self._Ez_dst2_in)
+        numba.cuda.synchronize()
+
+
+    def step(self, config, plasma, beam_ro,
+             Ex_prev, Ey_prev, Bx_prev, By_prev,
              jx_prev, jy_prev):
         self.load(plasma, beam_ro, Ex_prev, Ey_prev, Bx_prev, By_prev,
                   jx_prev, jy_prev)
 
         self.deposit()
-        self.calculate_RHS()
 
         self.calculate_Ex_Ey_Bx_By()
 
+        self._Ez[:, :] = 0
+        self._Ez_dst1_in[:, :] = 0
+        self._Ez_dst2_in[:, :] = 0
+
+        self.calculate_Ez()
+
         return self.unload(config)
+
 
     def unload(self, config):
         roj = np.zeros((config.n_dim, config.n_dim), dtype=RoJ_dtype)
@@ -481,9 +627,10 @@ class GPUMonolith:
 
         Ex = self._Ex.copy_to_host()
         Ey = self._Ey.copy_to_host()
+        Ez = self._Ez.copy_to_host()
         Bx = self._Bx.copy_to_host()
         By = self._By.copy_to_host()
 
         numba.cuda.synchronize()
 
-        return roj, Ex, Ey, Bx, By
+        return roj, Ex, Ey, Ez, Bx, By

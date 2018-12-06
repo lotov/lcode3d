@@ -83,10 +83,6 @@ def make_plasma(window_width, steps, per_r_step=1):
 from .. cimport plasma_particle
 from .. import plasma_particle
 
-from .field_solver cimport FieldSolver
-from .field_solver import FieldSolver
-
-
 # Config
 cdef class PlasmaSolverConfig:
     """Wraps relevant config values in a classy C struct for faster access."""
@@ -384,21 +380,6 @@ def deposit(config, plasma, ion_initial_ro):
     roj['ro'] += ion_initial_ro  # background ions
     return roj
 
-def calculate_fields(config, field_solver,
-                     roj_cur, roj_prev,
-                     Ex, Ey, Ez, Bx, By, Bz,
-                     beam_ro):
-    out_Ex, out_Ey = np.empty_like(Ex), np.empty_like(Ey)
-    out_Ez, out_Bz = np.empty_like(Ez), np.empty_like(Bz)
-    out_Bx, out_By = np.empty_like(Bx), np.empty_like(By)
-    field_solver.calculate_fields(
-        roj_cur, roj_prev, Ex, Ey, Ez, Bx, By, Bz, beam_ro,
-        config.h, config.npq, config.x_max, config.h3, config.B_0,
-        out_Ex, out_Ey, out_Ez, out_Bx, out_By, out_Bz
-    )
-    return out_Ex, out_Ey, out_Ez, out_Bx, out_By, out_Bz
-
-
 ### More convenience functions
 
 
@@ -634,7 +615,6 @@ def move_smart_fast(config, plasma, Exs, Eys, Ezs, Bxs, Bys, Bzs):
 
 
 cdef class PlasmaSolver:
-    cdef public FieldSolver field_solver
     cdef public object RoJ_dtype
     cdef public object window
 
@@ -643,10 +623,6 @@ cdef class PlasmaSolver:
 
     def __init__(self, config):
         # TODO: incapsulate PlasmaSolverConfig creation here?
-        self.field_solver = FieldSolver(config.grid_steps,
-                                        config.window_width / config.grid_steps,
-                                        config.field_solver_subtraction_trick,
-                                        config.openmp_limit_threads)
         self.RoJ_dtype = RoJ_dtype
         self.gpu = gpu_functions.GPUMonolith(config)
 
@@ -661,6 +637,8 @@ cdef class PlasmaSolver:
                  ):
         plasma = in_plasma.copy()
 
+        mut_Bz[...] = 0
+        Bz = mut_Bz
         Fl = mut_Ex.copy(), mut_Ey.copy(), mut_Ez.copy(), mut_Bx.copy(), mut_By.copy(), mut_Bz.copy()
 
         if xi_i == 0:
@@ -672,15 +650,13 @@ cdef class PlasmaSolver:
         hs_xs, hs_ys = plasma_predicted_half1['x'], plasma_predicted_half1['y']
         Fls = interpolate_fields(config, hs_xs, hs_ys, *Fl)
         plasma_1 = move_smart_fast(config, plasma, *Fls)
-        roj_1, Ex, Ey, Bx, By = self.gpu.step(
+        roj_1, Ex, Ey, Ez, Bx, By = self.gpu.step(
             config, plasma_1, beam_ro, Fl[0], Fl[1], Fl[3], Fl[4],
             roj_prev['jx'], roj_prev['jy']
         )
 
         # ===  2  ===  + hs_xs, hs_ys, roj_1
-        _, _, Ez, _, _, Bz = calculate_fields(
-            config, self.field_solver, roj_1, roj_prev, *Fl, beam_ro
-        )
+        # (ex- calculate fields)
         Fl_pred = (Ex, Ey, Ez, Bx, By, Bz)
 
         # ===  3  ===  + hs_xs, hs_ys, Fl_pred
@@ -690,17 +666,14 @@ cdef class PlasmaSolver:
         Fls_avg_1 = interpolate_fields(config, hs_xs, hs_ys, *Fl_avg_1)
         #Fls_avg_1 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_pred)
         plasma_2 = move_smart_fast(config, plasma, *Fls_avg_1)
-        roj_2, Ex, Ey, Bx, By = self.gpu.step(
+        roj_2, Ex, Ey, Ez, Bx, By = self.gpu.step(
             config, plasma_2, beam_ro,
             Fl_avg_1[0], Fl_avg_1[1], Fl_avg_1[3], Fl_avg_1[4],
             roj_prev['jx'], roj_prev['jy']
         )
 
         # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
-        _, _, Ez, _, _, Bz = calculate_fields(
-            config, self.field_solver, roj_2, roj_prev, *Fl_avg_1, beam_ro
-        )
-
+        # (ex- calculate fields)
         Fl_new = (Ex, Ey, Ez, Bx, By, Bz)
 
         # ===  5  ===  + hs_xs, hs_ys, Fl_new
@@ -709,7 +682,7 @@ cdef class PlasmaSolver:
         Fls_avg_2 = interpolate_averaged_fields(config, hs_xs, hs_ys, *Fl, *Fl_new)
         plasma_new = move_smart_fast(config, plasma, *Fls_avg_2)
         # rhs calculations are fed wrong values, but we don't need them
-        roj_new, _, _, _, _ = self.gpu.step(
+        roj_new, _, _, _, _, _ = self.gpu.step(
             config, plasma_new, beam_ro,
             Fl_new[0], Fl_new[1], Fl_new[3], Fl_new[4],
             roj_prev['jx'], roj_prev['jy']

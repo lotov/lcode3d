@@ -630,3 +630,6 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
         return roj, Ex, Ey, Ez, Bx, By
+
+
+# TODO: try local arrays for bet?

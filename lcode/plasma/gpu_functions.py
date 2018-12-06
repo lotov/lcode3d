@@ -609,10 +609,6 @@ class GPUMonolith:
 
         self.calculate_Ex_Ey_Bx_By()
 
-        self._Ez[:, :] = 0
-        self._Ez_dst1_in[:, :] = 0
-        self._Ez_dst2_in[:, :] = 0
-
         self.calculate_Ez()
 
         return self.unload(config)

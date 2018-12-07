@@ -667,8 +667,16 @@ class GPUMonolith:
         self._Bz_avg = numba.cuda.device_array((N, N))
 
 
-    def preload(self, plasma_prev, Ex_prev, Ey_prev, Ez_prev, Bx_prev, By_prev, Bz_prev,
-                jx_prev, jy_prev):
+    def load(self, beam_ro, plasma_prev,
+             Ex_prev, Ey_prev, Ez_prev, Bx_prev, By_prev, Bz_prev,
+             jx_prev, jy_prev):
+        self._beam_ro[:, :] = np.ascontiguousarray(beam_ro)
+
+        self._Ex_sub[:, :] = np.ascontiguousarray(Ex_prev)
+        self._Ey_sub[:, :] = np.ascontiguousarray(Ey_prev)
+        self._Bx_sub[:, :] = np.ascontiguousarray(Bx_prev)
+        self._By_sub[:, :] = np.ascontiguousarray(By_prev)
+
         Nc = self.Nc
 
         self._m[:, :] = np.ascontiguousarray(plasma_prev['m'].reshape(Nc, Nc))
@@ -703,15 +711,6 @@ class GPUMonolith:
         self._Bz_avg[:, :] = self._Bz
 
         self.___plasma = plasma_prev.copy()
-
-        numba.cuda.synchronize()
-
-    def load(self, beam_ro, Ex_sub, Ey_sub, Bx_sub, By_sub):
-        self._beam_ro[:, :] = np.ascontiguousarray(beam_ro)
-        self._Ex_sub[:, :] = np.ascontiguousarray(Ex_sub)
-        self._Ey_sub[:, :] = np.ascontiguousarray(Ey_sub)
-        self._Bx_sub[:, :] = np.ascontiguousarray(Bx_sub)
-        self._By_sub[:, :] = np.ascontiguousarray(By_sub)
 
         numba.cuda.synchronize()
 
@@ -931,9 +930,7 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
 
-    def step(self, beam_ro, Ex_sub, Ey_sub, Bx_sub, By_sub):
-        self.load(beam_ro, Ex_sub, Ey_sub, Bx_sub, By_sub)
-
+    def step(self):
         self.move_predict_halfstep()  # ... -> v1 [xy]_halfstep
         self.interpolate()            # ... -> v1 [EB][xyz]s  # fake-avg
         self.move_smart()             # ... -> v1 [xy]_new, p[xyz]_new
@@ -958,8 +955,6 @@ class GPUMonolith:
         self.deposit()                # ... -> v3 ro, j[xyz]
 
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
-
-        return self.unload()
 
 
     def unload(self):
@@ -988,6 +983,40 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
         return roj, plasma, Ex, Ey, Ez, Bx, By, Bz
+
+
+    def reload(self, beam_ro):
+        self._beam_ro[:, :] = np.ascontiguousarray(beam_ro)
+
+        # Intact: self._m, self._q
+        self._x_prev[:, :] = self._x_new
+        self._y_prev[:, :] = self._y_new
+        self._px_prev[:, :] = self._px_new
+        self._py_prev[:, :] = self._py_new
+        self._pz_prev[:, :] = self._pz_new
+
+        self._Ex_prev[:, :] = self._Ex
+        self._Ey_prev[:, :] = self._Ey
+        self._Ez_prev[:, :] = self._Ez
+        self._Bx_prev[:, :] = self._Bx
+        self._By_prev[:, :] = self._By
+        self._Bz_prev[:, :] = self._Bz
+        self._jx_prev[:, :] = self._jx
+        self._jy_prev[:, :] = self._jy
+
+        self._Ex_avg[:, :] = self._Ex
+        self._Ey_avg[:, :] = self._Ey
+        self._Ez_avg[:, :] = self._Ez
+        self._Bx_avg[:, :] = self._Bx
+        self._By_avg[:, :] = self._By
+        self._Bz_avg[:, :] = self._Bz
+
+        self._Ex_sub[:, :] = self._Ex
+        self._Ey_sub[:, :] = self._Ey
+        self._Bx_sub[:, :] = self._Bx
+        self._By_sub[:, :] = self._By
+
+        numba.cuda.synchronize()
 
 
 # TODO: try local arrays for bet (on larger grid sizes)?

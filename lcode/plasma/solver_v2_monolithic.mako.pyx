@@ -633,7 +633,8 @@ cdef class PlasmaSolver:
                  config, xi_i, in_plasma, in_plasma_cor,
                  beam_ro, roj_pprv, roj_prev,
                  mut_Ex, mut_Ey, mut_Ez, mut_Bx, mut_By, mut_Bz,
-                 out_plasma, out_plasma_cor, out_roj
+                 out_plasma, out_plasma_cor, out_roj,
+                 full_step_each=20,
                  ):
         plasma_prev = in_plasma.copy()
 
@@ -645,15 +646,19 @@ cdef class PlasmaSolver:
              # store matching ion background density
              self.gpu.initial_deposition(config, plasma_prev)
 
-        self.gpu.preload(plasma_prev, *Fl, roj_prev['jx'], roj_prev['jy'])
+        if xi_i % full_step_each == 0:
+            self.gpu.load(beam_ro, plasma_prev, *Fl,
+                          roj_prev['jx'], roj_prev['jy'])
+        else:
+            self.gpu.reload(beam_ro)
 
-        roj_new, plasma_new, *Fl_new = self.gpu.step(
-            beam_ro,
-            Fl[0], Fl[1], Fl[3], Fl[4],
-        )
+        self.gpu.step()
 
-        out_plasma[...] = plasma_new
-        out_plasma_cor[...] = plasma_new
-        out_roj[...] = roj_new
-        mut_Ex[...], mut_Ey[...], mut_Ez[...], mut_Bx[...], mut_By[...], mut_Bz[...] = Fl_new
+        if ((xi_i + 1) % full_step_each == 0 or
+            (xi_i) % full_step_each == 0):  # my diagnostic output is at strange xis =(
+            roj_new, plasma_new, *Fl_new = self.gpu.unload()
 
+            out_plasma[...] = plasma_new
+            out_plasma_cor[...] = plasma_new
+            out_roj[...] = roj_new
+            mut_Ex[...], mut_Ey[...], mut_Ez[...], mut_Bx[...], mut_By[...], mut_Bz[...] = Fl_new

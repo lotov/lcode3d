@@ -504,7 +504,7 @@ def move_smart_kernel(xi_step_size, particle_boundary,
 
 
 class GPUMonolith:
-    cfg = (19, 192)  # empirical guess for a GTX 1070 Ti
+    cfg = (19, 384)  # empirical guess for a GTX 1070 Ti
 
     def __init__(self, config):
         self.Nc = Nc = int(sqrt(config.plasma.size))

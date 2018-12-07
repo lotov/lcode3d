@@ -38,6 +38,104 @@ def zerofill_kernel(arr1d):
         arr1d[k] = 0
 
 
+# TODO: write a version fused with averaging
+# TODO: fuse with moving?
+@numba.cuda.jit
+def interpolate_kernel(xs, ys, Ex, Ey, Ez, Bx, By, Bz,
+                       grid_step_size, grid_steps,
+                       Exs, Eys, Ezs, Bxs, Bys, Bzs):
+    index = numba.cuda.grid(1)
+    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+    for k in range(index, xs.size, stride):
+        x_h = xs[k] / grid_step_size + .5
+        y_h = ys[k] / grid_step_size + .5
+        i = int(floor(x_h) + grid_steps // 2)
+        j = int(floor(y_h) + grid_steps // 2)
+        x_loc = x_h - floor(x_h) - .5  # centered to -.5 to 5, not 0 to 1 because
+        y_loc = y_h - floor(y_h) - .5  # the latter formulas use offset from cell center
+
+        fx1 = .75 - x_loc**2
+        fy1 = .75 - y_loc**2
+        fx2 = .5 + x_loc
+        fy2 = .5 + y_loc
+        fx3 = .5 - x_loc
+        fy3 = .5 - y_loc
+
+        # TODO: use the same names in deposition?
+        w00 = fx1 * fy1
+        wP0 = fx2**2 * (fy1 / 2)
+        w0P = fy2**2 * (fx1 / 2)
+        wPP = fx2**2 * (fy2**2 / 4)
+        wM0 = fx3**2 * (fy1 / 2)
+        w0M = fy3**2 * (fx1 / 2)
+        wMM = fx3**2 * (fy3**2 / 4)
+        wMP = fx3**2 * (fy2**2 / 4)
+        wPM = fx2**2 * (fy3**2 / 4)
+
+        Exs[k] = (
+            Ex[i + 0, j + 0] * w00 +
+            Ex[i + 1, j + 0] * wP0 +
+            Ex[i + 0, j + 1] * w0P +
+            Ex[i + 1, j + 1] * wPP +
+            Ex[i - 1, j + 0] * wM0 +
+            Ex[i + 0, j - 1] * w0M +
+            Ex[i - 1, j - 1] * wMM +
+            Ex[i - 1, j + 1] * wMP +
+            Ex[i + 1, j - 1] * wPM
+        )
+
+        Eys[k] = (
+            Ey[i + 0, j + 0] * w00 +
+            Ey[i + 1, j + 0] * wP0 +
+            Ey[i + 0, j + 1] * w0P +
+            Ey[i + 1, j + 1] * wPP +
+            Ey[i - 1, j + 0] * wM0 +
+            Ey[i + 0, j - 1] * w0M +
+            Ey[i - 1, j - 1] * wMM +
+            Ey[i - 1, j + 1] * wMP +
+            Ey[i + 1, j - 1] * wPM
+        )
+
+        Ezs[k] = (
+            Ez[i + 0, j + 0] * w00 +
+            Ez[i + 1, j + 0] * wP0 +
+            Ez[i + 0, j + 1] * w0P +
+            Ez[i + 1, j + 1] * wPP +
+            Ez[i - 1, j + 0] * wM0 +
+            Ez[i + 0, j - 1] * w0M +
+            Ez[i - 1, j - 1] * wMM +
+            Ez[i - 1, j + 1] * wMP +
+            Ez[i + 1, j - 1] * wPM
+        )
+
+        Bxs[k] = (
+            Bx[i + 0, j + 0] * w00 +
+            Bx[i + 1, j + 0] * wP0 +
+            Bx[i + 0, j + 1] * w0P +
+            Bx[i + 1, j + 1] * wPP +
+            Bx[i - 1, j + 0] * wM0 +
+            Bx[i + 0, j - 1] * w0M +
+            Bx[i - 1, j - 1] * wMM +
+            Bx[i - 1, j + 1] * wMP +
+            Bx[i + 1, j - 1] * wPM
+        )
+
+        Bys[k] = (
+            By[i + 0, j + 0] * w00 +
+            By[i + 1, j + 0] * wP0 +
+            By[i + 0, j + 1] * w0P +
+            By[i + 1, j + 1] * wPP +
+            By[i - 1, j + 0] * wM0 +
+            By[i + 0, j - 1] * w0M +
+            By[i - 1, j - 1] * wMM +
+            By[i - 1, j + 1] * wMP +
+            By[i + 1, j - 1] * wPM
+        )
+
+        Bzs[k] = 0  # Bz = 0 for now
+
+
+# TODO: add ro_initial the last, as it is comparatively large (float tricks)?
 @numba.cuda.jit
 def roj_init_kernel(ro, jx, jy, jz, ro_initial):
     index = numba.cuda.grid(1)
@@ -328,112 +426,6 @@ def average_arrays_kernel(arr1, arr2, out):
         out[k] = (arr1[k] + arr2[k]) / 2
 
 
-# TODO: write a version fused with averaging
-# TODO: fuse with moving?
-@numba.cuda.jit
-def interpolate_kernel(xs, ys, Ex, Ey, Ez, Bx, By, Bz,
-                       grid_step_size, grid_steps,
-                       Exs, Eys, Ezs, Bxs, Bys, Bzs):
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, xs.size()**2, stride):
-        x_h = xs[k] / grid_step_size + .5
-        y_h = ys[k] / grid_step_size + .5
-        i = int(floor(x_h) + grid_steps // 2)
-        j = int(floor(y_h) + grid_steps // 2)
-        x_loc = x_h - floor(x_h) - .5  # centered to -.5 to 5, not 0 to 1 because
-        y_loc = y_h - floor(y_h) - .5  # the latter formulas use offset from cell center
-
-        fx1 = .75 - x_loc**2
-        fy1 = .75 - y_loc**2
-        fx2 = .5 + x_loc
-        fy2 = .5 + y_loc
-        fx3 = .5 - x_loc
-        fy3 = .5 - y_loc
-
-        w00 = fx1 * fy1
-        wP0 = fx2**2 * (fy1 / 2)
-        w0P = fy2**2 * (fx1 / 2)
-        wPP = fx2**2 * (fy2**2 / 4)
-        wM0 = fx3**2 * (fy1 / 2)
-        w0M = fy3**2 * (fx1 / 2)
-        wMM = fx3**2 * (fy3**2 / 4)
-        wMP = fx3**2 * (fy2**2 / 4)
-        wPM = fx2**2 * (fy3**2 / 4)
-
-        Exs[k] = (
-            Ex[i + 0, j + 0] * w00 +
-            Ex[i + 1, j + 0] * wP0 +
-            Ex[i + 0, j + 1] * w0P +
-            Ex[i + 1, j + 1] * wPP +
-            Ex[i - 1, j + 0] * wM0 +
-            Ex[i + 0, j - 1] * w0M +
-            Ex[i - 1, j - 1] * wMM +
-            Ex[i - 1, j + 1] * wMP +
-            Ex[i + 1, j - 1] * wPM
-        )
-
-        Eys[k] = (
-            Ey[i + 0, j + 0] * w00 +
-            Ey[i + 1, j + 0] * wP0 +
-            Ey[i + 0, j + 1] * w0P +
-            Ey[i + 1, j + 1] * wPP +
-            Ey[i - 1, j + 0] * wM0 +
-            Ey[i + 0, j - 1] * w0M +
-            Ey[i - 1, j - 1] * wMM +
-            Ey[i - 1, j + 1] * wMP +
-            Ey[i + 1, j - 1] * wPM
-        )
-
-        Ezs[k] = (
-            Ez[i + 0, j + 0] * w00 +
-            Ez[i + 1, j + 0] * wP0 +
-            Ez[i + 0, j + 1] * w0P +
-            Ez[i + 1, j + 1] * wPP +
-            Ez[i - 1, j + 0] * wM0 +
-            Ez[i + 0, j - 1] * w0M +
-            Ez[i - 1, j - 1] * wMM +
-            Ez[i - 1, j + 1] * wMP +
-            Ez[i + 1, j - 1] * wPM
-        )
-
-        Bxs[k] = (
-            Bx[i + 0, j + 0] * w00 +
-            Bx[i + 1, j + 0] * wP0 +
-            Bx[i + 0, j + 1] * w0P +
-            Bx[i + 1, j + 1] * wPP +
-            Bx[i - 1, j + 0] * wM0 +
-            Bx[i + 0, j - 1] * w0M +
-            Bx[i - 1, j - 1] * wMM +
-            Bx[i - 1, j + 1] * wMP +
-            Bx[i + 1, j - 1] * wPM
-        )
-
-        Bys[k] = (
-            By[i + 0, j + 0] * w00 +
-            By[i + 1, j + 0] * wP0 +
-            By[i + 0, j + 1] * w0P +
-            By[i + 1, j + 1] * wPP +
-            By[i - 1, j + 0] * wM0 +
-            By[i + 0, j - 1] * w0M +
-            By[i - 1, j - 1] * wMM +
-            By[i - 1, j + 1] * wMP +
-            By[i + 1, j - 1] * wPM
-        )
-
-        Bzs[k] = (
-            Bz[i + 0, j + 0] * w00 +
-            Bz[i + 1, j + 0] * wP0 +
-            Bz[i + 0, j + 1] * w0P +
-            Bz[i + 1, j + 1] * wPP +
-            Bz[i - 1, j + 0] * wM0 +
-            Bz[i + 0, j - 1] * w0M +
-            Bz[i - 1, j - 1] * wMM +
-            Bz[i - 1, j + 1] * wMP +
-            Bz[i + 1, j - 1] * wPM
-        )
-
-
 #cpdef void move_simple_fast_(PlasmaSolverConfig config,
 #                             np.ndarray[plasma_particle.t] plasma_particles,
 #                             double dxiP,
@@ -468,75 +460,55 @@ def interpolate_kernel(xs, ys, Ex, Ey, Ez, Bx, By, Bz,
 #        out_plasma[k] = p
 
 
-#cpdef void move_smart_fast_(PlasmaSolverConfig config,
-#                            np.ndarray[plasma_particle.t] plasma_particles,
-#                            double[:] Exs,  # same as plasma_particles
-#                            double[:] Eys,  # -||-
-#                            double[:] Ezs,  # -||-
-#                            double[:] Bxs,  # -||-
-#                            double[:] Bys,  # -||-
-#                            double[:] Bzs,  # -||-
-#                            np.ndarray[plasma_particle.t] out_plasma,
-#                            ):
-#    cdef long k
-#    cdef double gamma_m, dpx, dpy, dpz, px, py, pz, vx, vy, vz, factor_1
-#    cdef plasma_particle.t p
-#
-#    # for p in plasma_particles: indexed for performance
-#    for k in cython.parallel.prange(plasma_particles.shape[0],
-#                                    nogil=True, num_threads=config.threads):
-#        p = plasma_particles[k]
-#
-#        px = p.p[1]
-#        py = p.p[2]
-#        pz = p.p[0]
-#        gamma_m = sqrt(p.m**2 + pz**2 + px**2 + py**2)
-#        vx = px / gamma_m
-#        vy = py / gamma_m
-#        vz = pz / gamma_m
-#        factor_1 = p.q * config.h3 / (1 - pz / gamma_m)
-#        dpx = factor_1 * (Exs[k] + vy * Bzs[k] - vz * Bys[k])
-#        dpy = factor_1 * (Eys[k] - vx * Bzs[k] + vz * Bxs[k])
-#        dpz = factor_1 * (Ezs[k] + vx * Bys[k] - vy * Bxs[k])
-#
-#        px = p.p[1] + dpx / 2
-#        py = p.p[2] + dpy / 2
-#        pz = p.p[0] + dpz / 2
-#        gamma_m = sqrt(p.m**2 + pz**2 + px**2 + py**2)
-#        vx = px / gamma_m
-#        vy = py / gamma_m
-#        vz = pz / gamma_m
-#        factor_1 = p.q * config.h3 / (1 - pz / gamma_m)
-#        dpx = factor_1 * (Exs[k] + vy * Bzs[k] - vz * Bys[k])
-#        dpy = factor_1 * (Eys[k] - vx * Bzs[k] + vz * Bxs[k])
-#        dpz = factor_1 * (Ezs[k] + vx * Bys[k] - vy * Bxs[k])
-#
-#        px = p.p[1] + dpx / 2
-#        py = p.p[2] + dpy / 2
-#        pz = p.p[0] + dpz / 2
-#        gamma_m = sqrt(p.m**2 + pz**2 + px**2 + py**2)
-#
-#        p.x += px / (gamma_m - pz) * config.h3
-#        p.y += py / (gamma_m - pz) * config.h3
-#
-#        p.p[1] += dpx
-#        p.p[2] += dpy
-#        p.p[0] += dpz
-#
-#        if p.x > config.particle_boundary:
-#            p.x = +2 * config.particle_boundary - p.x
-#            p.p[1] *= -1
-#        if p.x < -config.particle_boundary:
-#            p.x = -2 * config.particle_boundary - p.x
-#            p.p[1] *= -1
-#        if p.y > config.particle_boundary:
-#            p.y = +2 * config.particle_boundary - p.y
-#            p.p[2] *= -1
-#        if p.y < -config.particle_boundary:
-#            p.y = -2 * config.particle_boundary - p.y
-#            p.p[2] *= -1
-#
-#        out_plasma[k] = p
+@numba.cuda.jit
+def move_smart_kernel(xi_step_size, particle_boundary,
+                      ms, qs, old_x, old_y, old_px, old_py, old_pz,
+                      Exs, Eys, Ezs, Bxs, Bys, Bzs,
+                      new_x, new_y, new_px, new_py, new_pz):
+    index = numba.cuda.grid(1)
+    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+    for k in range(index, ms.size, stride):
+        m, q = ms[k], qs[k]
+        x, y, px, py, pz = old_x[k], old_y[k], old_px[k], old_py[k], old_pz[k]
+
+        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+        vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
+        factor_1 = q * xi_step_size / (1 - pz / gamma_m)
+        dpx = factor_1 * (Exs[k] + vy * Bzs[k] - vz * Bys[k])
+        dpy = factor_1 * (Eys[k] - vx * Bzs[k] + vz * Bxs[k])
+        dpz = factor_1 * (Ezs[k] + vx * Bys[k] - vy * Bxs[k])
+        px, py, pz = old_px[k] + dpx / 2, old_py[k] + dpy / 2, old_pz[k] + dpz / 2
+
+        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+        vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
+        factor_1 = q * xi_step_size / (1 - pz / gamma_m)
+        dpx = factor_1 * (Exs[k] + vy * Bzs[k] - vz * Bys[k])
+        dpy = factor_1 * (Eys[k] - vx * Bzs[k] + vz * Bxs[k])
+        dpz = factor_1 * (Ezs[k] + vx * Bys[k] - vy * Bxs[k])
+        px, py, pz = old_px[k] + dpx / 2, old_py[k] + dpy / 2, old_pz[k] + dpz / 2
+
+        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+
+        x += px / (gamma_m - pz) * xi_step_size
+        y += py / (gamma_m - pz) * xi_step_size
+
+        px, py, pz = old_px[k] + dpx, old_py[k] + dpy, old_pz[k] + dpz
+
+        # TODO: avoid branching?
+        if x > +particle_boundary:
+            x = +2 * particle_boundary - x
+            px = -px
+        if x < -particle_boundary:
+            x = -2 * particle_boundary - x
+            px = -px
+        if y > +particle_boundary:
+            y = +2 * particle_boundary - y
+            py = -py
+        if y < -particle_boundary:
+            y = -2 * particle_boundary - y
+            py = -py
+
+        new_x[k], new_y[k], new_px[k], new_py[k], new_pz[k] = x, y, px, py, pz
 
 
 class GPUMonolith:
@@ -550,6 +522,10 @@ class GPUMonolith:
         self.xi_step_size = config.xi_step_size
         self.grid_step_size = config.window_width / config.grid_steps
         self.subtraction_trick = config.field_solver_subtraction_trick
+        self.particle_boundary = (
+            +config.window_width / 2
+            -config.plasma_padding * self.grid_step_size
+        )
 
         self.virtplasma_smallness_factor = 1 / config.virtualize.ratio
 
@@ -560,6 +536,22 @@ class GPUMonolith:
         self._px = numba.cuda.device_array((Nc, Nc))
         self._py = numba.cuda.device_array((Nc, Nc))
         self._pz = numba.cuda.device_array((Nc, Nc))
+
+        self._new_x = numba.cuda.device_array((Nc, Nc))
+        self._new_y = numba.cuda.device_array((Nc, Nc))
+        self._new_px = numba.cuda.device_array((Nc, Nc))
+        self._new_py = numba.cuda.device_array((Nc, Nc))
+        self._new_pz = numba.cuda.device_array((Nc, Nc))
+
+        self._halfstep_x = numba.cuda.device_array((Nc, Nc))
+        self._halfstep_y = numba.cuda.device_array((Nc, Nc))
+
+        self._Exs = numba.cuda.device_array((Nc, Nc))
+        self._Eys = numba.cuda.device_array((Nc, Nc))
+        self._Ezs = numba.cuda.device_array((Nc, Nc))
+        self._Bxs = numba.cuda.device_array((Nc, Nc))
+        self._Bys = numba.cuda.device_array((Nc, Nc))
+        self._Bzs = numba.cuda.device_array((Nc, Nc))
 
         self._A_weights = numba.cuda.to_device(config.virtualize.A_weights)
         self._B_weights = numba.cuda.to_device(config.virtualize.B_weights)
@@ -694,8 +686,21 @@ class GPUMonolith:
         self._jx_prev[:, :] = np.ascontiguousarray(jx_prev)
         self._jy_prev[:, :] = np.ascontiguousarray(jy_prev)
 
+        self._Ex[:, :] = self._Ex_prev
+        self._Ey[:, :] = self._Ey_prev
+        self._Ez[:, :] = self._Ez_prev
+        self._Bx[:, :] = self._Bx_prev
+        self._By[:, :] = self._By_prev
+        self._Bz[:, :] = self._Bz_prev
 
-    def load(self, plasma, beam_ro, Ex_sub, Ey_sub, Bx_sub, By_sub):
+        self._Ex_avg[:, :] = self._Ex
+        self._Ey_avg[:, :] = self._Ey
+        self._Ez_avg[:, :] = self._Ez
+        self._Bx_avg[:, :] = self._Bx
+        self._By_avg[:, :] = self._By
+        self._Bz_avg[:, :] = self._Bz
+
+    def load(self, plasma, beam_ro, hs_xs, hs_ys, Ex_sub, Ey_sub, Bx_sub, By_sub):
         Nc = self._Nc
         self._m[:, :] = np.ascontiguousarray(plasma['m'].reshape(Nc, Nc))
         self._q[:, :] = np.ascontiguousarray(plasma['q'].reshape(Nc, Nc))
@@ -704,6 +709,11 @@ class GPUMonolith:
         self._px[:, :] = np.ascontiguousarray(plasma['p'][:, 1].reshape(Nc, Nc))
         self._py[:, :] = np.ascontiguousarray(plasma['p'][:, 2].reshape(Nc, Nc))
         self._pz[:, :] = np.ascontiguousarray(plasma['p'][:, 0].reshape(Nc, Nc))
+
+        if hs_xs is not 0:
+            self._halfstep_x[:, :] = np.ascontiguousarray(hs_xs.reshape(Nc, Nc))
+        if hs_ys is not 0:
+            self._halfstep_y[:, :] = np.ascontiguousarray(hs_ys.reshape(Nc, Nc))
 
         roj_init_kernel[self.cfg](self._ro.ravel(), self._jx.ravel(),
                                   self._jy.ravel(), self._jz.ravel(),
@@ -716,11 +726,41 @@ class GPUMonolith:
         self._Bx_sub[:, :] = np.ascontiguousarray(Bx_sub)
         self._By_sub[:, :] = np.ascontiguousarray(By_sub)
 
+        self.___plasma = plasma.copy()
+
+
+    def interpolate(self):
+        interpolate_kernel[self.cfg](self._halfstep_x.ravel(),
+                                     self._halfstep_y.ravel(),
+                                     self._Ex_avg, self._Ey_avg, self._Ez_avg,
+                                     self._Bx_avg, self._By_avg, self._Bz_avg,
+                                     self.grid_step_size, self.grid_steps,
+                                     self._Exs.ravel(), self._Eys.ravel(),
+                                     self._Ezs.ravel(), self._Bxs.ravel(),
+                                     self._Bys.ravel(), self._Bzs.ravel())
+        numba.cuda.synchronize()
+
+
+    def move_smart(self):
+        move_smart_kernel[self.cfg](self.xi_step_size,
+                                    self.particle_boundary,
+                                    self._m.ravel(), self._q.ravel(),
+                                    self._x.ravel(), self._y.ravel(),
+                                    self._px.ravel(), self._py.ravel(),
+                                    self._pz.ravel(),
+                                    self._Exs.ravel(), self._Eys.ravel(),
+                                    self._Ezs.ravel(), self._Bxs.ravel(),
+                                    self._Bys.ravel(), self._Bzs.ravel(),
+                                    self._new_x.ravel(), self._new_y.ravel(),
+                                    self._new_px.ravel(), self._new_py.ravel(),
+                                    self._new_pz.ravel())
+        numba.cuda.synchronize()
+
 
     def deposit(self):
         deposit_kernel[self.cfg](self.grid_steps, self.grid_step_size,
-                                 self._x, self._y, self._m, self._q,
-                                 self._px, self._py, self._pz,
+                                 self._new_x, self._new_y, self._m, self._q,
+                                 self._new_px, self._new_py, self._new_pz,
                                  self._A_weights, self._B_weights,
                                  self._C_weights, self._D_weights,
                                  self._indices_prev, self._indices_next,
@@ -729,11 +769,25 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
     def initial_deposition(self, config, plasma_initial):
-        self.load(plasma_initial, 0, 0, 0, 0, 0)
-        zerofill_kernel[self.cfg](self._ro.ravel())
-        numba.cuda.synchronize()
+        self._ro_initial[:, :] = 0
+        self._ro[:, :] = 0
+        self._jx[:, :] = 0
+        self._jy[:, :] = 0
+        self._jz[:, :] = 0
+
+        Nc = self._Nc
+        self._m[:, :] = np.ascontiguousarray(plasma_initial['m'].reshape(Nc, Nc))
+        self._q[:, :] = np.ascontiguousarray(plasma_initial['q'].reshape(Nc, Nc))
+        self._new_x[:, :] = np.ascontiguousarray(plasma_initial['x'].reshape(Nc, Nc))
+        self._new_y[:, :] = np.ascontiguousarray(plasma_initial['y'].reshape(Nc, Nc))
+        self._new_px[:, :] = np.ascontiguousarray(plasma_initial['p'][:, 1].reshape(Nc, Nc))
+        self._new_py[:, :] = np.ascontiguousarray(plasma_initial['p'][:, 2].reshape(Nc, Nc))
+        self._new_pz[:, :] = np.ascontiguousarray(plasma_initial['p'][:, 0].reshape(Nc, Nc))
+
         self.deposit()
+
         self._ro_initial[:, :] = -np.array(self._ro.copy_to_host())
+        numba.cuda.synchronize()
 
 
     def calculate_Ex_Ey_Bx_By(self):
@@ -858,16 +912,17 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
 
-    def step(self, config, plasma, beam_ro,
+    def step(self, config, plasma_old, beam_ro,
+             hs_x, hs_y,
              Ex_sub, Ey_sub, Bx_sub, By_sub):
-        self.load(plasma, beam_ro, Ex_sub, Ey_sub, Bx_sub, By_sub)
+
+        self.load(plasma_old, beam_ro, hs_x, hs_y, Ex_sub, Ey_sub, Bx_sub, By_sub)
+        self.interpolate()
+        self.move_smart()
 
         self.deposit()
-
         self.calculate_Ex_Ey_Bx_By()
-
         self.calculate_Ez()
-
         self.average_fields()
 
         return self.unload(config)
@@ -894,9 +949,18 @@ class GPUMonolith:
         By_avg = self._By_avg.copy_to_host()
         Bz_avg = self._Bz_avg.copy_to_host()
 
+        plasma = self.___plasma
+        plasma['m'] = self._m.reshape(plasma.shape)
+        plasma['q'] = self._q.reshape(plasma.shape)
+        plasma['x'] = self._new_x.reshape(plasma.shape)
+        plasma['y'] = self._new_y.reshape(plasma.shape)
+        plasma['p'][:, 1] = self._new_px.reshape(plasma.shape)
+        plasma['p'][:, 2] = self._new_py.reshape(plasma.shape)
+        plasma['p'][:, 0] = self._new_pz.reshape(plasma.shape)
+
         numba.cuda.synchronize()
 
-        return roj, Ex, Ey, Ez, Bx, By, Bz, Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg
+        return roj, plasma, Ex, Ey, Ez, Bx, By, Bz, Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg
 
 
 # TODO: try local arrays for bet?

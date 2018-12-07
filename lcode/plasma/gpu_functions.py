@@ -54,14 +54,10 @@ def move_predict_halfstep_kernel(xi_step_size, particle_boundary,
         y += py / (gamma_m - pz) * (xi_step_size / 2)
 
         # TODO: avoid branching?
-        if x > +particle_boundary:
-            x = +2 * particle_boundary - x
-        if x < -particle_boundary:
-            x = -2 * particle_boundary - x
-        if y > +particle_boundary:
-            y = +2 * particle_boundary - y
-        if y < -particle_boundary:
-            y = -2 * particle_boundary - y
+        x = x if x <= +particle_boundary else +2 * particle_boundary - x
+        x = x if x >= -particle_boundary else -2 * particle_boundary - x
+        y = y if y <= +particle_boundary else +2 * particle_boundary - y
+        y = y if y >= -particle_boundary else -2 * particle_boundary - y
 
         halfstep_x[k], halfstep_y[k] = x, y
 
@@ -994,4 +990,5 @@ class GPUMonolith:
         return roj, plasma, Ex, Ey, Ez, Bx, By, Bz
 
 
-# TODO: try local arrays for bet?
+# TODO: try local arrays for bet (on larger grid sizes)?
+# TODO: specialize for specific grid sizes?

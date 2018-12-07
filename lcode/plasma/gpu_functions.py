@@ -38,13 +38,15 @@ def zerofill_kernel(arr1d):
         arr1d[k] = 0
 
 
-def move_predict_halfstep(xi_step_size, ms, old_x, old_y, px, py, pz,
-                               halfstep_x, halfstep_y):
+@numba.cuda.jit
+def move_predict_halfstep_kernel(xi_step_size, particle_boundary,
+                                 ms, old_x, old_y, pxs, pys, pzs,
+                                 halfstep_x, halfstep_y):
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
     for k in range(index, ms.size, stride):
         m = ms[k]
-        x, y, px, py, pz = old_x[k], old_y[k], px[k], py[k], pz[k]
+        x, y, px, py, pz = old_x[k], old_y[k], pxs[k], pys[k], pzs[k]
 
         gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
 
@@ -509,7 +511,7 @@ class GPUMonolith:
     cfg = (19, 192)  # empirical guess for a GTX 1070 Ti
 
     def __init__(self, config):
-        self._Nc = Nc = int(sqrt(config.plasma.size))
+        self.Nc = Nc = int(sqrt(config.plasma.size))
         assert Nc**2 == config.plasma.size
 
         self.grid_steps = N = config.grid_steps
@@ -669,8 +671,18 @@ class GPUMonolith:
         self._Bz_avg = numba.cuda.device_array((N, N))
 
 
-    def preload(self, Ex_prev, Ey_prev, Ez_prev, Bx_prev, By_prev, Bz_prev,
+    def preload(self, plasma_prev, Ex_prev, Ey_prev, Ez_prev, Bx_prev, By_prev, Bz_prev,
                 jx_prev, jy_prev):
+        Nc = self.Nc
+
+        self._m[:, :] = np.ascontiguousarray(plasma_prev['m'].reshape(Nc, Nc))
+        self._q[:, :] = np.ascontiguousarray(plasma_prev['q'].reshape(Nc, Nc))
+        self._x_prev[:, :] = np.ascontiguousarray(plasma_prev['x'].reshape(Nc, Nc))
+        self._y_prev[:, :] = np.ascontiguousarray(plasma_prev['y'].reshape(Nc, Nc))
+        self._px_prev[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 1].reshape(Nc, Nc))
+        self._py_prev[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 2].reshape(Nc, Nc))
+        self._pz_prev[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 0].reshape(Nc, Nc))
+
         self._Ex_prev[:, :] = np.ascontiguousarray(Ex_prev)
         self._Ey_prev[:, :] = np.ascontiguousarray(Ey_prev)
         self._Ez_prev[:, :] = np.ascontiguousarray(Ez_prev)
@@ -680,12 +692,12 @@ class GPUMonolith:
         self._jx_prev[:, :] = np.ascontiguousarray(jx_prev)
         self._jy_prev[:, :] = np.ascontiguousarray(jy_prev)
 
-        self._Ex[:, :] = self._Ex_prev
-        self._Ey[:, :] = self._Ey_prev
-        self._Ez[:, :] = self._Ez_prev
-        self._Bx[:, :] = self._Bx_prev
-        self._By[:, :] = self._By_prev
-        self._Bz[:, :] = self._Bz_prev
+        #self._Ex[:, :] = self._Ex_prev
+        #self._Ey[:, :] = self._Ey_prev
+        #self._Ez[:, :] = self._Ez_prev
+        #self._Bx[:, :] = self._Bx_prev
+        #self._By[:, :] = self._By_prev
+        #self._Bz[:, :] = self._Bz_prev
 
         self._Ex_avg[:, :] = self._Ex
         self._Ey_avg[:, :] = self._Ey
@@ -694,33 +706,32 @@ class GPUMonolith:
         self._By_avg[:, :] = self._By
         self._Bz_avg[:, :] = self._Bz
 
-    def load(self, plasma, beam_ro, hs_xs, hs_ys, Ex_sub, Ey_sub, Bx_sub, By_sub):
-        Nc = self._Nc
-        self._m[:, :] = np.ascontiguousarray(plasma['m'].reshape(Nc, Nc))
-        self._q[:, :] = np.ascontiguousarray(plasma['q'].reshape(Nc, Nc))
-        self._x_prev[:, :] = np.ascontiguousarray(plasma['x'].reshape(Nc, Nc))
-        self._y_prev[:, :] = np.ascontiguousarray(plasma['y'].reshape(Nc, Nc))
-        self._px_prev[:, :] = np.ascontiguousarray(plasma['p'][:, 1].reshape(Nc, Nc))
-        self._py_prev[:, :] = np.ascontiguousarray(plasma['p'][:, 2].reshape(Nc, Nc))
-        self._pz_prev[:, :] = np.ascontiguousarray(plasma['p'][:, 0].reshape(Nc, Nc))
+        self.___plasma = plasma_prev.copy()
 
-        if hs_xs is not 0:
-            self._halfstep_x[:, :] = np.ascontiguousarray(hs_xs.reshape(Nc, Nc))
-        if hs_ys is not 0:
-            self._halfstep_y[:, :] = np.ascontiguousarray(hs_ys.reshape(Nc, Nc))
-
-        roj_init_kernel[self.cfg](self._ro.ravel(), self._jx.ravel(),
-                                  self._jy.ravel(), self._jz.ravel(),
-                                  self._ro_initial.ravel())
         numba.cuda.synchronize()
 
+    def load(self, beam_ro, Ex_sub, Ey_sub, Bx_sub, By_sub):
         self._beam_ro[:, :] = np.ascontiguousarray(beam_ro)
         self._Ex_sub[:, :] = np.ascontiguousarray(Ex_sub)
         self._Ey_sub[:, :] = np.ascontiguousarray(Ey_sub)
         self._Bx_sub[:, :] = np.ascontiguousarray(Bx_sub)
         self._By_sub[:, :] = np.ascontiguousarray(By_sub)
 
-        self.___plasma = plasma.copy()
+        numba.cuda.synchronize()
+
+
+    def move_predict_halfstep(self):
+        move_predict_halfstep_kernel[self.cfg](self.xi_step_size,
+                                               self.particle_boundary,
+                                               self._m.ravel(),
+                                               self._x_prev.ravel(),
+                                               self._y_prev.ravel(),
+                                               self._px_prev.ravel(),
+                                               self._py_prev.ravel(),
+                                               self._pz_prev.ravel(),
+                                               self._halfstep_x.ravel(),
+                                               self._halfstep_y.ravel())
+        numba.cuda.synchronize()
 
 
     def interpolate(self):
@@ -753,6 +764,11 @@ class GPUMonolith:
 
 
     def deposit(self):
+        roj_init_kernel[self.cfg](self._ro.ravel(), self._jx.ravel(),
+                                  self._jy.ravel(), self._jz.ravel(),
+                                  self._ro_initial.ravel())
+        numba.cuda.synchronize()
+
         deposit_kernel[self.cfg](self.grid_steps, self.grid_step_size,
                                  self._x_new, self._y_new, self._m, self._q,
                                  self._px_new, self._py_new, self._pz_new,
@@ -770,7 +786,7 @@ class GPUMonolith:
         self._jy[:, :] = 0
         self._jz[:, :] = 0
 
-        Nc = self._Nc
+        Nc = self.Nc
         self._m[:, :] = np.ascontiguousarray(plasma_prev['m'].reshape(Nc, Nc))
         self._q[:, :] = np.ascontiguousarray(plasma_prev['q'].reshape(Nc, Nc))
         self._x_new[:, :] = np.ascontiguousarray(plasma_prev['x'].reshape(Nc, Nc))
@@ -903,28 +919,55 @@ class GPUMonolith:
         average_arrays_kernel[self.cfg](self._Ez_prev.ravel(), self._Ez.ravel(), self._Ez_avg.ravel())
         average_arrays_kernel[self.cfg](self._Bx_prev.ravel(), self._Bx.ravel(), self._Bx_avg.ravel())
         average_arrays_kernel[self.cfg](self._By_prev.ravel(), self._By.ravel(), self._By_avg.ravel())
+        self._Ex_sub[:, :] = self._Ex_avg
+        self._Ey_sub[:, :] = self._Ey_avg
+        self._Bx_sub[:, :] = self._Bx_avg
+        self._By_sub[:, :] = self._By_avg
         # average_arrays_kernel[self.cfg](self._Bz_prev.ravel(), self._Bz.ravel(), self._Bz_avg.ravel())  # 0 for now
         numba.cuda.synchronize()
 
 
-    def step(self, config, plasma_old, beam_ro,
-             hs_x, hs_y,
-             Ex_sub, Ey_sub, Bx_sub, By_sub):
-
-        self.load(plasma_old, beam_ro, hs_x, hs_y, Ex_sub, Ey_sub, Bx_sub, By_sub)
-        self.interpolate()
-        self.move_smart()
-
-        self.deposit()
-        self.calculate_Ex_Ey_Bx_By()
-        self.calculate_Ez()
-        self.average_fields()
-
-        return self.unload(config)
+    def average_halfstep(self):
+        average_arrays_kernel[self.cfg](self._x_prev.ravel(), self._x_new.ravel(),
+                                        self._halfstep_x.ravel())
+        average_arrays_kernel[self.cfg](self._y_prev.ravel(), self._y_new.ravel(),
+                                        self._halfstep_y.ravel())
+        numba.cuda.synchronize()
 
 
-    def unload(self, config):
-        roj = np.zeros((config.n_dim, config.n_dim), dtype=RoJ_dtype)
+    def step(self, beam_ro, Ex_sub, Ey_sub, Bx_sub, By_sub):
+        self.load(beam_ro, Ex_sub, Ey_sub, Bx_sub, By_sub)
+
+        self.move_predict_halfstep()  # ... -> v1 [xy]_halfstep
+        self.interpolate()            # ... -> v1 [EB][xyz]s  # fake-avg
+        self.move_smart()             # ... -> v1 [xy]_new, p[xyz]_new
+        self.deposit()                # ... -> v1 ro, j[xyz
+        self.calculate_Ex_Ey_Bx_By()  # ... -> v2 [EB][xy]
+        self.calculate_Ez()           # ... -> v2 Ez
+        # Bz = 0 for now
+        self.average_fields()         # ... -> v2 [EB][xyz]_avg -> [EB][xy]_sub  # TODO: are avg/sub both needed?
+
+        self.average_halfstep()       # ... -> v2 [xy]_halfstep
+        self.interpolate()            # ... -> v2 [EB][xyz]s
+        self.move_smart()             # ... -> v2 [xy]_new, p[xyz]_new
+        self.deposit()                # ... -> v2 ro, j[xyz]
+        self.calculate_Ex_Ey_Bx_By()  # ... -> v3 [EB][xy]
+        self.calculate_Ez()           # ... -> v3 Ez
+        # Bz = 0 for now
+        self.average_fields()         # ... -> v3 [EB][xyz]_avg -> [EB][xy]_sub  # TODO: are avg/sub both needed?
+
+        self.average_halfstep()       # ... -> v3 [xy]_halfstep
+        self.interpolate()            # ... -> v3 [EB][xyz]s
+        self.move_smart()             # ... -> v3 [xy]_new, p[xyz]_new
+        self.deposit()                # ... -> v3 ro, j[xyz]
+
+        # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
+
+        return self.unload()
+
+
+    def unload(self):
+        roj = np.zeros((self.grid_steps, self.grid_steps), dtype=RoJ_dtype)
         roj['ro'] = self._ro.copy_to_host()
         roj['jx'] = self._jx.copy_to_host()
         roj['jy'] = self._jy.copy_to_host()
@@ -937,13 +980,6 @@ class GPUMonolith:
         By = self._By.copy_to_host()
         Bz = self._Bz.copy_to_host()
 
-        Ex_avg = self._Ex_avg.copy_to_host()
-        Ey_avg = self._Ey_avg.copy_to_host()
-        Ez_avg = self._Ez_avg.copy_to_host()
-        Bx_avg = self._Bx_avg.copy_to_host()
-        By_avg = self._By_avg.copy_to_host()
-        Bz_avg = self._Bz_avg.copy_to_host()
-
         plasma = self.___plasma
         plasma['m'] = self._m.reshape(plasma.shape)
         plasma['q'] = self._q.reshape(plasma.shape)
@@ -955,7 +991,7 @@ class GPUMonolith:
 
         numba.cuda.synchronize()
 
-        return roj, plasma, Ex, Ey, Ez, Bx, By, Bz, Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg
+        return roj, plasma, Ex, Ey, Ez, Bx, By, Bz
 
 
 # TODO: try local arrays for bet?

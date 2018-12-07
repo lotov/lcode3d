@@ -645,41 +645,12 @@ cdef class PlasmaSolver:
              # store matching ion background density
              self.gpu.initial_deposition(config, plasma_prev)
 
-        self.gpu.preload(*Fl, roj_prev['jx'], roj_prev['jy'])
+        self.gpu.preload(plasma_prev, *Fl, roj_prev['jx'], roj_prev['jy'])
 
-        # ===  1  ===
-        plasma_predicted_half1 = move_simple_fast(config, plasma_prev, config.h3 / 2)
-        hs_xs, hs_ys = plasma_predicted_half1['x'], plasma_predicted_half1['y']
-        roj_1, plasma_1, Ex, Ey, Ez, Bx, By, Bz, *Fl_avg_1 = self.gpu.step(
-            config, plasma_prev, beam_ro, hs_xs, hs_ys, Fl[0], Fl[1], Fl[3], Fl[4],
+        roj_new, plasma_new, *Fl_new = self.gpu.step(
+            beam_ro,
+            Fl[0], Fl[1], Fl[3], Fl[4],
         )
-
-        # ===  2  ===  + hs_xs, hs_ys, roj_1
-        # (ex- calculate fields)
-
-        # ===  3  ===  + hs_xs, hs_ys, Fl_pred
-        hs_xs = (plasma_prev['x'] + plasma_1['x']) / 2
-        hs_ys = (plasma_prev['y'] + plasma_1['y']) / 2
-        roj_2, plasma_2, Ex, Ey, Ez, Bx, By, Bz, *Fl_avg_2 = self.gpu.step(
-            config, plasma_prev, beam_ro,
-            hs_xs, hs_ys,
-            Fl_avg_1[0], Fl_avg_1[1], Fl_avg_1[3], Fl_avg_1[4],
-        )
-
-        # ===  4  ===  + hs_xs, hs_ys, roj_2, Fl_avg_1
-        # (ex- calculate fields)
-        Fl_new = (Ex, Ey, Ez, Bx, By, Bz)
-
-        # ===  5  ===  + hs_xs, hs_ys, Fl_new
-        hs_xs = (plasma_prev['x'] + plasma_2['x']) / 2
-        hs_ys = (plasma_prev['y'] + plasma_2['y']) / 2
-        # rhs calculations are fed wrong values, but we don't need them
-        roj_new, plasma_new, _, _, _, _, *_unused_Fl_avg = self.gpu.step(
-            config, plasma_prev, beam_ro,
-            hs_xs, hs_ys,
-            Fl_new[0], Fl_new[1], Fl_new[3], Fl_new[4],
-        )
-        # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
         out_plasma[...] = plasma_new
         out_plasma_cor[...] = plasma_new

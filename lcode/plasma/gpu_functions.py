@@ -525,17 +525,17 @@ class GPUMonolith:
 
         self._m = numba.cuda.device_array((Nc, Nc))
         self._q = numba.cuda.device_array((Nc, Nc))
-        self._x = numba.cuda.device_array((Nc, Nc))
-        self._y = numba.cuda.device_array((Nc, Nc))
-        self._px = numba.cuda.device_array((Nc, Nc))
-        self._py = numba.cuda.device_array((Nc, Nc))
-        self._pz = numba.cuda.device_array((Nc, Nc))
+        self._x_prev = numba.cuda.device_array((Nc, Nc))
+        self._y_prev = numba.cuda.device_array((Nc, Nc))
+        self._px_prev = numba.cuda.device_array((Nc, Nc))
+        self._py_prev = numba.cuda.device_array((Nc, Nc))
+        self._pz_prev = numba.cuda.device_array((Nc, Nc))
 
-        self._new_x = numba.cuda.device_array((Nc, Nc))
-        self._new_y = numba.cuda.device_array((Nc, Nc))
-        self._new_px = numba.cuda.device_array((Nc, Nc))
-        self._new_py = numba.cuda.device_array((Nc, Nc))
-        self._new_pz = numba.cuda.device_array((Nc, Nc))
+        self._x_new = numba.cuda.device_array((Nc, Nc))
+        self._y_new = numba.cuda.device_array((Nc, Nc))
+        self._px_new = numba.cuda.device_array((Nc, Nc))
+        self._py_new = numba.cuda.device_array((Nc, Nc))
+        self._pz_new = numba.cuda.device_array((Nc, Nc))
 
         self._halfstep_x = numba.cuda.device_array((Nc, Nc))
         self._halfstep_y = numba.cuda.device_array((Nc, Nc))
@@ -698,11 +698,11 @@ class GPUMonolith:
         Nc = self._Nc
         self._m[:, :] = np.ascontiguousarray(plasma['m'].reshape(Nc, Nc))
         self._q[:, :] = np.ascontiguousarray(plasma['q'].reshape(Nc, Nc))
-        self._x[:, :] = np.ascontiguousarray(plasma['x'].reshape(Nc, Nc))
-        self._y[:, :] = np.ascontiguousarray(plasma['y'].reshape(Nc, Nc))
-        self._px[:, :] = np.ascontiguousarray(plasma['p'][:, 1].reshape(Nc, Nc))
-        self._py[:, :] = np.ascontiguousarray(plasma['p'][:, 2].reshape(Nc, Nc))
-        self._pz[:, :] = np.ascontiguousarray(plasma['p'][:, 0].reshape(Nc, Nc))
+        self._x_prev[:, :] = np.ascontiguousarray(plasma['x'].reshape(Nc, Nc))
+        self._y_prev[:, :] = np.ascontiguousarray(plasma['y'].reshape(Nc, Nc))
+        self._px_prev[:, :] = np.ascontiguousarray(plasma['p'][:, 1].reshape(Nc, Nc))
+        self._py_prev[:, :] = np.ascontiguousarray(plasma['p'][:, 2].reshape(Nc, Nc))
+        self._pz_prev[:, :] = np.ascontiguousarray(plasma['p'][:, 0].reshape(Nc, Nc))
 
         if hs_xs is not 0:
             self._halfstep_x[:, :] = np.ascontiguousarray(hs_xs.reshape(Nc, Nc))
@@ -739,22 +739,23 @@ class GPUMonolith:
         move_smart_kernel[self.cfg](self.xi_step_size,
                                     self.particle_boundary,
                                     self._m.ravel(), self._q.ravel(),
-                                    self._x.ravel(), self._y.ravel(),
-                                    self._px.ravel(), self._py.ravel(),
-                                    self._pz.ravel(),
+                                    self._x_prev.ravel(), self._y_prev.ravel(),
+                                    self._px_prev.ravel(),
+                                    self._py_prev.ravel(),
+                                    self._pz_prev.ravel(),
                                     self._Exs.ravel(), self._Eys.ravel(),
                                     self._Ezs.ravel(), self._Bxs.ravel(),
                                     self._Bys.ravel(), self._Bzs.ravel(),
-                                    self._new_x.ravel(), self._new_y.ravel(),
-                                    self._new_px.ravel(), self._new_py.ravel(),
-                                    self._new_pz.ravel())
+                                    self._x_new.ravel(), self._y_new.ravel(),
+                                    self._px_new.ravel(), self._py_new.ravel(),
+                                    self._pz_new.ravel())
         numba.cuda.synchronize()
 
 
     def deposit(self):
         deposit_kernel[self.cfg](self.grid_steps, self.grid_step_size,
-                                 self._new_x, self._new_y, self._m, self._q,
-                                 self._new_px, self._new_py, self._new_pz,
+                                 self._x_new, self._y_new, self._m, self._q,
+                                 self._px_new, self._py_new, self._pz_new,
                                  self._A_weights, self._B_weights,
                                  self._C_weights, self._D_weights,
                                  self._indices_prev, self._indices_next,
@@ -762,7 +763,7 @@ class GPUMonolith:
                                  self._ro, self._jx, self._jy, self._jz)
         numba.cuda.synchronize()
 
-    def initial_deposition(self, config, plasma_initial):
+    def initial_deposition(self, config, plasma_prev):
         self._ro_initial[:, :] = 0
         self._ro[:, :] = 0
         self._jx[:, :] = 0
@@ -770,13 +771,13 @@ class GPUMonolith:
         self._jz[:, :] = 0
 
         Nc = self._Nc
-        self._m[:, :] = np.ascontiguousarray(plasma_initial['m'].reshape(Nc, Nc))
-        self._q[:, :] = np.ascontiguousarray(plasma_initial['q'].reshape(Nc, Nc))
-        self._new_x[:, :] = np.ascontiguousarray(plasma_initial['x'].reshape(Nc, Nc))
-        self._new_y[:, :] = np.ascontiguousarray(plasma_initial['y'].reshape(Nc, Nc))
-        self._new_px[:, :] = np.ascontiguousarray(plasma_initial['p'][:, 1].reshape(Nc, Nc))
-        self._new_py[:, :] = np.ascontiguousarray(plasma_initial['p'][:, 2].reshape(Nc, Nc))
-        self._new_pz[:, :] = np.ascontiguousarray(plasma_initial['p'][:, 0].reshape(Nc, Nc))
+        self._m[:, :] = np.ascontiguousarray(plasma_prev['m'].reshape(Nc, Nc))
+        self._q[:, :] = np.ascontiguousarray(plasma_prev['q'].reshape(Nc, Nc))
+        self._x_new[:, :] = np.ascontiguousarray(plasma_prev['x'].reshape(Nc, Nc))
+        self._y_new[:, :] = np.ascontiguousarray(plasma_prev['y'].reshape(Nc, Nc))
+        self._px_new[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 1].reshape(Nc, Nc))
+        self._py_new[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 2].reshape(Nc, Nc))
+        self._pz_new[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 0].reshape(Nc, Nc))
 
         self.deposit()
 
@@ -946,11 +947,11 @@ class GPUMonolith:
         plasma = self.___plasma
         plasma['m'] = self._m.reshape(plasma.shape)
         plasma['q'] = self._q.reshape(plasma.shape)
-        plasma['x'] = self._new_x.reshape(plasma.shape)
-        plasma['y'] = self._new_y.reshape(plasma.shape)
-        plasma['p'][:, 1] = self._new_px.reshape(plasma.shape)
-        plasma['p'][:, 2] = self._new_py.reshape(plasma.shape)
-        plasma['p'][:, 0] = self._new_pz.reshape(plasma.shape)
+        plasma['x'] = self._x_new.reshape(plasma.shape)
+        plasma['y'] = self._y_new.reshape(plasma.shape)
+        plasma['p'][:, 1] = self._px_new.reshape(plasma.shape)
+        plasma['p'][:, 2] = self._py_new.reshape(plasma.shape)
+        plasma['p'][:, 0] = self._pz_new.reshape(plasma.shape)
 
         numba.cuda.synchronize()
 

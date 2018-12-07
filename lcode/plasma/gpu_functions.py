@@ -38,6 +38,32 @@ def zerofill_kernel(arr1d):
         arr1d[k] = 0
 
 
+def move_predict_halfstep(xi_step_size, ms, old_x, old_y, px, py, pz,
+                               halfstep_x, halfstep_y):
+    index = numba.cuda.grid(1)
+    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+    for k in range(index, ms.size, stride):
+        m = ms[k]
+        x, y, px, py, pz = old_x[k], old_y[k], px[k], py[k], pz[k]
+
+        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+
+        x += px / (gamma_m - pz) * (xi_step_size / 2)
+        y += py / (gamma_m - pz) * (xi_step_size / 2)
+
+        # TODO: avoid branching?
+        if x > +particle_boundary:
+            x = +2 * particle_boundary - x
+        if x < -particle_boundary:
+            x = -2 * particle_boundary - x
+        if y > +particle_boundary:
+            y = +2 * particle_boundary - y
+        if y < -particle_boundary:
+            y = -2 * particle_boundary - y
+
+        halfstep_x[k], halfstep_y[k] = x, y
+
+
 # TODO: write a version fused with averaging
 # TODO: fuse with moving?
 @numba.cuda.jit
@@ -424,40 +450,6 @@ def average_arrays_kernel(arr1, arr2, out):
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
     for k in range(index, out.size, stride):
         out[k] = (arr1[k] + arr2[k]) / 2
-
-
-#cpdef void move_simple_fast_(PlasmaSolverConfig config,
-#                             np.ndarray[plasma_particle.t] plasma_particles,
-#                             double dxiP,
-#                             np.ndarray[plasma_particle.t] out_plasma,
-#                             ):
-#    cdef long k
-#    cdef double gamma_m
-#    cdef plasma_particle.t p
-#
-#    # for p in plasma_particles: indexed for performance
-#    for k in cython.parallel.prange(plasma_particles.shape[0],
-#                                    nogil=True, num_threads=config.threads):
-#        p = plasma_particles[k]
-#
-#        gamma_m = sqrt(p.m**2 + p.p[0]**2 + p.p[1]**2 + p.p[2]**2)
-#        p.x += p.p[1] / (gamma_m - p.p[0]) * dxiP
-#        p.y += p.p[2] / (gamma_m - p.p[0]) * dxiP
-#
-#        if p.x > config.particle_boundary:
-#            p.x = +2 * config.particle_boundary - p.x
-#            p.p[1] *= -1
-#        if p.x < -config.particle_boundary:
-#            p.x = -2 * config.particle_boundary - p.x
-#            p.p[1] *= -1
-#        if p.y > config.particle_boundary:
-#            p.y = +2 * config.particle_boundary - p.y
-#            p.p[2] *= -1
-#        if p.y < -config.particle_boundary:
-#            p.y = -2 * config.particle_boundary - p.y
-#            p.p[2] *= -1
-#
-#        out_plasma[k] = p
 
 
 @numba.cuda.jit

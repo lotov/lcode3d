@@ -469,30 +469,32 @@ def move_smart_kernel(xi_step_size, particle_boundary,
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
     for k in range(index, ms.size, stride):
         m, q = ms[k], qs[k]
-        x, y, px, py, pz = old_x[k], old_y[k], old_px[k], old_py[k], old_pz[k]
+        opx, opy, opz = old_px[k], old_py[k], old_pz[k]
+        x, y, px, py, pz = old_x[k], old_y[k], opx, opy, opz
+        Ex, Ey, Ez, Bx, By, Bz = Exs[k], Eys[k], Ezs[k], Bxs[k], Bys[k], Bzs[k]
 
         gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
         vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
         factor_1 = q * xi_step_size / (1 - pz / gamma_m)
-        dpx = factor_1 * (Exs[k] + vy * Bzs[k] - vz * Bys[k])
-        dpy = factor_1 * (Eys[k] - vx * Bzs[k] + vz * Bxs[k])
-        dpz = factor_1 * (Ezs[k] + vx * Bys[k] - vy * Bxs[k])
-        px, py, pz = old_px[k] + dpx / 2, old_py[k] + dpy / 2, old_pz[k] + dpz / 2
+        dpx = factor_1 * (Ex + vy * Bz - vz * By)
+        dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
+        dpz = factor_1 * (Ez + vx * By - vy * Bx)
+        px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
 
         gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
         vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
         factor_1 = q * xi_step_size / (1 - pz / gamma_m)
-        dpx = factor_1 * (Exs[k] + vy * Bzs[k] - vz * Bys[k])
-        dpy = factor_1 * (Eys[k] - vx * Bzs[k] + vz * Bxs[k])
-        dpz = factor_1 * (Ezs[k] + vx * Bys[k] - vy * Bxs[k])
-        px, py, pz = old_px[k] + dpx / 2, old_py[k] + dpy / 2, old_pz[k] + dpz / 2
+        dpx = factor_1 * (Ex + vy * Bz - vz * By)
+        dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
+        dpz = factor_1 * (Ez + vx * By - vy * Bx)
+        px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
 
         gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
 
         x += px / (gamma_m - pz) * xi_step_size
         y += py / (gamma_m - pz) * xi_step_size
 
-        px, py, pz = old_px[k] + dpx, old_py[k] + dpy, old_pz[k] + dpz
+        px, py, pz = opx + dpx, opy + dpy, opz + dpz
 
         # TODO: avoid branching?
         if x > +particle_boundary:

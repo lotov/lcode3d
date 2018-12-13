@@ -119,7 +119,8 @@ def simulation_time_step(config=None, t_i=0):
                                    mut_Bx=Bx, mut_By=By, mut_Bz=Bz,
                                    out_plasma=plasma,
                                    out_plasma_cor=plasma_cor,
-                                   out_roj=roj)
+                                   out_roj=roj,
+                                   full_step_each=config.print_every_xi_steps)
 
             moved, fell, lost, total_substeps = beam_move(
                 config, beam_layer, t, xi, Ex, Ey, Ez, Bx, By, Bz

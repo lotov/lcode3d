@@ -14,6 +14,7 @@
 # along with LCODE.  If not, see <http://www.gnu.org/licenses/>.
 
 from math import sqrt, floor
+import sys
 
 import numpy as np
 
@@ -22,11 +23,30 @@ import numba.cuda
 
 import pyculib.fft
 
+
+USUAL_ELECTRON_CHARGE = -1
+USUAL_ELECTRON_MASS = 1
+USUAL_ION_CHARGE = 1
+USUAL_ION_MASS = 1836.152674 * 85.4678
+
+
 RoJ_dtype = np.dtype([
     ('ro', np.double),
     ('jz', np.double),
     ('jx', np.double),
     ('jy', np.double),
+], align=False)
+
+
+# TODO: macrosity
+plasma_particle_dtype = np.dtype([
+    ('v', np.double, (3,)),
+    ('p', np.double, (3,)),  # TODO: internal to move_particles, do not store
+    ('N', np.long),
+    ('x', np.double),
+    ('y', np.double),
+    ('q', np.double),
+    ('m', np.double),
 ], align=False)
 
 
@@ -506,9 +526,11 @@ def move_smart_kernel(xi_step_size, particle_boundary,
 class GPUMonolith:
     cfg = (19, 384)  # empirical guess for a GTX 1070 Ti
 
-    def __init__(self, config):
-        self.Nc = Nc = int(sqrt(config.plasma.size))
-        assert Nc**2 == config.plasma.size
+    def __init__(self, config, plasma,
+                 A_weights, B_weights, C_weights, D_weights,
+                 indices_prev, indices_next):
+        self.Nc = Nc = int(sqrt(plasma.size))
+        assert Nc**2 == plasma.size
 
         self.grid_steps = N = config.grid_steps
         self.xi_step_size = config.xi_step_size
@@ -516,10 +538,11 @@ class GPUMonolith:
         self.subtraction_trick = config.field_solver_subtraction_trick
         self.particle_boundary = (
             +config.window_width / 2
-            -config.plasma_padding * self.grid_step_size
+            -config.padding_steps * self.grid_step_size
         )
 
-        self.virtplasma_smallness_factor = 1 / config.virtualize.ratio
+        self.virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
+                                                config.plasma_fineness)**2
 
         self._m = numba.cuda.device_array((Nc, Nc))
         self._q = numba.cuda.device_array((Nc, Nc))
@@ -545,12 +568,12 @@ class GPUMonolith:
         self._Bys = numba.cuda.device_array((Nc, Nc))
         self._Bzs = numba.cuda.device_array((Nc, Nc))
 
-        self._A_weights = numba.cuda.to_device(config.virtualize.A_weights)
-        self._B_weights = numba.cuda.to_device(config.virtualize.B_weights)
-        self._C_weights = numba.cuda.to_device(config.virtualize.C_weights)
-        self._D_weights = numba.cuda.to_device(config.virtualize.D_weights)
-        self._indices_prev = numba.cuda.to_device(config.virtualize.indices_prev)
-        self._indices_next = numba.cuda.to_device(config.virtualize.indices_next)
+        self._A_weights = numba.cuda.to_device(A_weights)
+        self._B_weights = numba.cuda.to_device(B_weights)
+        self._C_weights = numba.cuda.to_device(C_weights)
+        self._D_weights = numba.cuda.to_device(D_weights)
+        self._indices_prev = numba.cuda.to_device(indices_prev)
+        self._indices_next = numba.cuda.to_device(indices_next)
 
         # Arrays for mixed boundary conditions solver
         # * diagonal matrix elements (used in the next one)
@@ -774,7 +797,7 @@ class GPUMonolith:
                                  self._ro, self._jx, self._jy, self._jz)
         numba.cuda.synchronize()
 
-    def initial_deposition(self, config, plasma_prev):
+    def initial_deposition(self, plasma_prev):
         self._ro_initial[:, :] = 0
         self._ro[:, :] = 0
         self._jx[:, :] = 0
@@ -988,6 +1011,8 @@ class GPUMonolith:
     def reload(self, beam_ro):
         self._beam_ro[:, :] = np.ascontiguousarray(beam_ro)
 
+        # TODO: array relabeling instead of copying?..
+
         # Intact: self._m, self._q
         self._x_prev[:, :] = self._x_new
         self._y_prev[:, :] = self._y_new
@@ -1021,3 +1046,212 @@ class GPUMonolith:
 
 # TODO: try local arrays for bet (on larger grid sizes)?
 # TODO: specialize for specific grid sizes?
+# TODO: try going syncless
+
+
+def make_coarse_plasma_grid(window_width, steps, coarseness):
+    plasma_step = window_width * coarseness / steps
+    right_half = np.arange(0, window_width / 2, plasma_step)
+    left_half = -right_half[:0:-1]  # invert, reverse, drop zero
+    plasma_grid = np.concatenate([left_half, right_half])
+    assert(np.array_equal(plasma_grid, -plasma_grid[::-1]))
+    return plasma_grid
+
+
+def make_fine_plasma_grid(window_width, steps, fineness):
+    plasma_step = window_width / steps / fineness
+    assert(fineness == int(fineness))
+    if fineness % 2:  # some on zero axes, none on cell corners
+        right_half = np.arange(0, window_width / 2, plasma_step)
+        left_half = -right_half[:0:-1]  # invert, reverse, drop zero
+        plasma_grid = np.concatenate([left_half, right_half])
+    else:  # none on zero axes, none on cell corners
+        right_half = np.arange(plasma_step / 2, window_width / 2, plasma_step)
+        left_half = -right_half[::-1]  # invert, reverse
+        plasma_grid = np.concatenate([left_half, right_half])
+    assert(np.array_equal(plasma_grid, -plasma_grid[::-1]))
+    return plasma_grid
+
+
+def plasma_make(window_width, steps, coarseness=2, fineness=2):
+    cell_size = window_width / steps
+    half_width = window_width / 2
+    coarse_step, fine_step = cell_size * coarseness, cell_size / fineness
+
+    # Make two initial grids of plasma particles, coarse and fine.
+    # Coarse is the one that will evolve and fine is the one to be bilinearly
+    # interpolated from the coarse one based on the initial positions.
+
+    coarse_grid = make_coarse_plasma_grid(window_width, steps, coarseness)
+    coarse_grid_xs, coarse_grid_ys = coarse_grid[:, None], coarse_grid[None, :]
+
+    fine_grid = make_fine_plasma_grid(window_width, steps, fineness)
+    fine_grid_xs, fine_grid_ys = fine_grid[:, None], fine_grid[None, :]
+
+    Nc, Nf = len(coarse_grid), len(fine_grid)
+
+    # Create plasma particles on that grids
+
+    coarse_plasma = np.zeros(Nc**2, plasma_particle_dtype)
+    coarse_plasma['N'] = np.arange(coarse_plasma.size)
+    coarse_plasma['N'] = np.arange(coarse_plasma.size)
+    coarse_electrons = coarse_plasma.reshape(Nc, Nc)
+    coarse_electrons['x'] = coarse_grid_xs
+    coarse_electrons['y'] = coarse_grid_ys
+    coarse_electrons['m'] = USUAL_ELECTRON_MASS * coarseness**2
+    coarse_electrons['q'] = USUAL_ELECTRON_CHARGE * coarseness**2
+    # v, p == 0
+
+    fine_plasma = np.zeros(Nf**2, plasma_particle_dtype)
+    fine_plasma['N'] = np.arange(fine_plasma.size)       # not really needed
+    fine_electrons = fine_plasma.reshape(Nf, Nf)
+    fine_electrons['x'] = fine_grid_xs
+    fine_electrons['y'] = fine_grid_ys
+    fine_electrons['m'] = USUAL_ELECTRON_MASS / fineness**2
+    fine_electrons['q'] = USUAL_ELECTRON_CHARGE / fineness**2
+
+    # Calculate indices for coarse -> fine bilinear interpolation
+
+    # 1D, same in both x and y direction
+    # Example: [0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4 5 5 5 5 6 6 6]
+    indices = np.searchsorted(coarse_grid, fine_grid)
+    indices_next = np.clip(indices, 0, Nc - 1)  # [0 0 0 0 0 0 0 0 1 1 ...]
+    indices_prev = np.clip(indices - 1, 0, Nc - 1)  # [... 4 5 5 5 5 5 5 5]
+
+    # 2D
+    i_prev_in_x, i_next_in_x = indices_prev[:, None], indices_next[:, None]
+    i_prev_in_y, i_next_in_y = indices_prev[None, :], indices_next[None, :]
+
+    # Calculate weights for coarse -> fine interpolation from initial positions
+
+    # 1D linear interpolation coefficients in 2 directions
+    # The further the fine particle is from closest right coarse particles,
+    # the more influence the left ones have.
+    influence_prev_x = (coarse_grid[i_next_in_x] - fine_grid_xs) / coarse_step
+    influence_next_x = (fine_grid_xs - coarse_grid[i_prev_in_x]) / coarse_step
+    influence_prev_y = (coarse_grid[i_next_in_y] - fine_grid_ys) / coarse_step
+    influence_next_y = (fine_grid_ys - coarse_grid[i_prev_in_y]) / coarse_step
+
+    # Fix for boundary cases of missing cornering particles
+    influence_prev_x[fine_grid_xs <= coarse_grid[0]] = 0   # nothing on left?
+    influence_next_x[fine_grid_xs <= coarse_grid[0]] = 1   # use right
+    influence_next_x[fine_grid_xs >= coarse_grid[-1]] = 0  # nothing on right?
+    influence_prev_x[fine_grid_xs >= coarse_grid[-1]] = 1  # use left
+    influence_prev_y[fine_grid_ys <= coarse_grid[0]] = 0   # nothing on bottom?
+    influence_next_y[fine_grid_ys <= coarse_grid[0]] = 1   # use top
+    influence_next_y[fine_grid_ys >= coarse_grid[-1]] = 0  # nothing on top?
+    influence_prev_y[fine_grid_ys >= coarse_grid[-1]] = 1  # use bottom
+
+    # Calculate 2D bilinear interpolation coefficients for four initially
+    # cornering coarse plasma particles.
+
+    #  C    D  #  y ^
+    #     .    #    |
+    #          #    +---->
+    #  A    B  #         x
+
+    # A is coarse_plasma[i_prev_in_x, i_prev_in_y], the closest coarse particle
+    # in bottom-left quadrant (for each fine particle)
+    A_weights = influence_prev_x * influence_prev_y
+    # B is coarse_plasma[i_next_in_x, i_prev_in_y], same for lower right
+    B_weights = influence_next_x * influence_prev_y
+    # C is coarse_plasma[i_prev_in_x, i_next_in_y], same for upper left
+    C_weights = influence_prev_x * influence_next_y
+    # D is coarse_plasma[i_next_in_x, i_next_in_y], same for upper right
+    D_weights = influence_next_x * influence_next_y
+
+    ratio = coarseness ** 2 * fineness ** 2
+
+    # TODO: decide on a flat-or-square plasma
+    return (coarse_plasma.ravel(), A_weights, B_weights, C_weights, D_weights,
+            indices_prev, indices_next)
+
+
+max_zn = 0
+def diags_ro_zn(config, ro):
+    import scipy.ndimage
+    global max_zn
+
+    sigma = 0.25 * config.grid_steps / config.window_width
+    blurred = scipy.ndimage.gaussian_filter(ro, sigma=sigma)
+    hf = ro - blurred
+    zn = np.abs(hf).mean() / 4.23045376e-04
+    max_zn = max(max_zn, zn)
+    return zn, max_zn
+
+
+Ez_00_history = []
+def diags_peak_msg(config, Ez_00):
+    import scipy.signal
+    global Ez_00_history
+    Ez_00_history.append(Ez_00)
+    Ez_00_array = np.array(Ez_00_history)
+    peak_indices = scipy.signal.argrelmax(Ez_00_array)[0]
+
+    if peak_indices.size:
+        peak_values = Ez_00_array[peak_indices]
+        rel_deviations_perc = 100 * (peak_values / peak_values[0] - 1)
+        return (f'{peak_values[-1]:0.3e} '
+                f'{rel_deviations_perc[-1]:+0.2f}% '
+                f'±{rel_deviations_perc.ptp() / 2:0.2f}%')
+    else:
+        return '...'
+
+
+def diagnostics(gpu, config, xi_i):
+    xi = -xi_i * config.xi_step_size
+
+    middle = config.grid_steps // 2
+    Ez_00 = gpu._Ez[config.grid_steps // 2, config.grid_steps // 2]
+    peak_report = diags_peak_msg(config, Ez_00)
+
+    ro = gpu._ro.copy_to_host()
+    zn, max_zn = diags_ro_zn(config, ro)
+
+    print(f'xi={xi:+.4f} {Ez_00:+.3e}|{peak_report}|zn={zn:.3f}/{max_zn:.3f}')
+    sys.stdout.flush()
+
+
+def init(config):
+    grid = ((np.arange(config.grid_steps) + .5) *
+            config.window_width / config.grid_steps -
+            config.window_width / 2)
+    xs, ys = grid[:, None], grid[None, :]
+
+    roj = np.zeros((config.grid_steps, config.grid_steps),
+                   dtype=RoJ_dtype)
+    roj_prev, roj_pprv = np.zeros_like(roj), np.zeros_like(roj)
+
+    grid_step_size = config.window_width / config.grid_steps  # TODO: -1 or not?
+    plasma, *virt_params = plasma_make(
+        config.window_width - config.padding_steps * 2 * grid_step_size,
+        config.grid_steps - config.padding_steps * 2,
+        coarseness=config.plasma_coarseness, fineness=config.plasma_fineness
+    )
+
+    gpu = GPUMonolith(config, plasma, *virt_params)
+    gpu.load(0, plasma, 0, 0, 0, 0, 0, 0, 0, 0)
+    gpu.initial_deposition(plasma)
+
+    return gpu, xs, ys, plasma
+
+
+def main():
+    import config
+    gpu, xs, ys, plasma = init(config)
+
+    for xi_i in range(config.xi_steps):
+        beam_ro = config.beam(xi_i, xs, ys)
+
+        gpu.reload(beam_ro)
+        gpu.step()
+
+        time_for_diags = (xi_i) % config.diagnostics_each_N_steps == 0
+        last_step = xi_i == config.xi_steps - 1
+        if time_for_diags or last_step:
+            diagnostics(gpu, config, xi_i)
+
+
+if __name__ == '__main__':
+    main()
+

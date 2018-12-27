@@ -1198,6 +1198,20 @@ def diags_peak_msg(config, Ez_00):
         return '...'
 
 
+import os
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+def diags_ro_slice(config, xi_i, xi, ro):
+    if xi_i % (1 // config.xi_step_size):
+        return
+    if not os.path.isdir('transverse'):
+        os.mkdir('transverse')
+    plt.imsave(os.path.join('transverse', f'ro_{xi:+09.2f}.png'),
+               ro.T, origin='lower',
+               vmin=-0.1, vmax=0.1,
+               cmap=cm.bwr)
+
+
 def diagnostics(gpu, config, xi_i):
     xi = -xi_i * config.xi_step_size
 
@@ -1207,6 +1221,7 @@ def diagnostics(gpu, config, xi_i):
 
     ro = gpu._ro.copy_to_host()
     zn, max_zn = diags_ro_zn(config, ro)
+    diags_ro_slice(config, xi_i, xi, ro)
 
     print(f'xi={xi:+.4f} {Ez_00:+.3e}|{peak_report}|zn={zn:.3f}/{max_zn:.3f}')
     sys.stdout.flush()

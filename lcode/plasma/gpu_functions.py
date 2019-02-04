@@ -59,7 +59,7 @@ def zerofill_kernel(arr1d):
 
 
 @numba.cuda.jit
-def move_predict_halfstep_kernel(xi_step_size, particle_boundary,
+def move_predict_halfstep_kernel(xi_step_size, reflect_boundary,
                                  ms, old_x, old_y, pxs, pys, pzs,
                                  halfstep_x, halfstep_y):
     index = numba.cuda.grid(1)
@@ -74,10 +74,10 @@ def move_predict_halfstep_kernel(xi_step_size, particle_boundary,
         y += py / (gamma_m - pz) * (xi_step_size / 2)
 
         # TODO: avoid branching?
-        x = x if x <= +particle_boundary else +2 * particle_boundary - x
-        x = x if x >= -particle_boundary else -2 * particle_boundary - x
-        y = y if y <= +particle_boundary else +2 * particle_boundary - y
-        y = y if y >= -particle_boundary else -2 * particle_boundary - y
+        x = x if x <= +reflect_boundary else +2 * reflect_boundary - x
+        x = x if x >= -reflect_boundary else -2 * reflect_boundary - x
+        y = y if y <= +reflect_boundary else +2 * reflect_boundary - y
+        y = y if y >= -reflect_boundary else -2 * reflect_boundary - y
 
         halfstep_x[k], halfstep_y[k] = x, y
 
@@ -115,6 +115,10 @@ def interpolate_kernel(xs, ys, Ex, Ey, Ez, Bx, By, Bz,
         wMM = fx3**2 * (fy3**2 / 4)
         wMP = fx3**2 * (fy2**2 / 4)
         wPM = fx2**2 * (fy3**2 / 4)
+
+        # wx0, wy0 = .75 - x_loc**2, .75 - y_loc**2  # fx1, fy1
+        # wxP, wyP = (.5 + x_loc)**2 / 2, (.5 + y_loc)**2 / 2 # fx2**2 / 2, fy2**2 / 2
+        # wxM, wyM = (.5 - x_loc)**2 / 2, (.5 - y_loc)**2 / 2 # fx3**2 / 2, fy3**2 / 2
 
         Exs[k] = (
             Ex[i + 0, j + 0] * w00 +
@@ -471,7 +475,7 @@ def average_arrays_kernel(arr1, arr2, out):
 
 
 @numba.cuda.jit
-def move_smart_kernel(xi_step_size, particle_boundary,
+def move_smart_kernel(xi_step_size, reflect_boundary,
                       ms, qs, old_x, old_y, old_px, old_py, old_pz,
                       Exs, Eys, Ezs, Bxs, Bys, Bzs,
                       new_x, new_y, new_px, new_py, new_pz):
@@ -507,17 +511,17 @@ def move_smart_kernel(xi_step_size, particle_boundary,
         px, py, pz = opx + dpx, opy + dpy, opz + dpz
 
         # TODO: avoid branching?
-        if x > +particle_boundary:
-            x = +2 * particle_boundary - x
+        if x > +reflect_boundary:
+            x = +2 * reflect_boundary - x
             px = -px
-        if x < -particle_boundary:
-            x = -2 * particle_boundary - x
+        if x < -reflect_boundary:
+            x = -2 * reflect_boundary - x
             px = -px
-        if y > +particle_boundary:
-            y = +2 * particle_boundary - y
+        if y > +reflect_boundary:
+            y = +2 * reflect_boundary - y
             py = -py
-        if y < -particle_boundary:
-            y = -2 * particle_boundary - y
+        if y < -reflect_boundary:
+            y = -2 * reflect_boundary - y
             py = -py
 
         new_x[k], new_y[k], new_px[k], new_py[k], new_pz[k] = x, y, px, py, pz
@@ -536,9 +540,9 @@ class GPUMonolith:
         self.xi_step_size = config.xi_step_size
         self.grid_step_size = config.window_width / config.grid_steps
         self.subtraction_trick = config.field_solver_subtraction_trick
-        self.particle_boundary = (
+        self.reflect_boundary = (
             +config.window_width / 2
-            -config.padding_steps * self.grid_step_size
+            -config.reflect_padding_steps * self.grid_step_size
         )
 
         self.virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
@@ -740,7 +744,7 @@ class GPUMonolith:
 
     def move_predict_halfstep(self):
         move_predict_halfstep_kernel[self.cfg](self.xi_step_size,
-                                               self.particle_boundary,
+                                               self.reflect_boundary,
                                                self._m.ravel(),
                                                self._x_prev.ravel(),
                                                self._y_prev.ravel(),
@@ -766,7 +770,7 @@ class GPUMonolith:
 
     def move_smart(self):
         move_smart_kernel[self.cfg](self.xi_step_size,
-                                    self.particle_boundary,
+                                    self.reflect_boundary,
                                     self._m.ravel(), self._q.ravel(),
                                     self._x_prev.ravel(), self._y_prev.ravel(),
                                     self._px_prev.ravel(),
@@ -1239,8 +1243,8 @@ def init(config):
 
     grid_step_size = config.window_width / config.grid_steps  # TODO: -1 or not?
     plasma, *virt_params = plasma_make(
-        config.window_width - config.padding_steps * 2 * grid_step_size,
-        config.grid_steps - config.padding_steps * 2,
+        config.window_width - config.plasma_padding_steps * 2 * grid_step_size,
+        config.grid_steps - config.plasma_padding_steps * 2,
         coarseness=config.plasma_coarseness, fineness=config.plasma_fineness
     )
 

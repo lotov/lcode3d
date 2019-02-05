@@ -17,9 +17,9 @@ diagnostics_each_N_steps = int(1 // xi_step_size)
 
 field_solver_subtraction_trick = 1
 
-reflect_padding_steps = 1
-plasma_padding_steps = 3
 plasma_coarseness, plasma_fineness = 3, 2
+reflect_padding_steps = 10
+plasma_padding_steps = 20
 
 
 from numpy import cos, exp, pi, sqrt

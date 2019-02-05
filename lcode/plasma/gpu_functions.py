@@ -43,8 +43,10 @@ plasma_particle_dtype = np.dtype([
     ('v', np.double, (3,)),
     ('p', np.double, (3,)),  # TODO: internal to move_particles, do not store
     ('N', np.long),
-    ('x', np.double),
-    ('y', np.double),
+    ('x_init', np.double),
+    ('y_init', np.double),
+    ('x_offt', np.double),
+    ('y_offt', np.double),
     ('q', np.double),
     ('m', np.double),
 ], align=False)
@@ -59,14 +61,16 @@ def zerofill_kernel(arr1d):
 
 
 @numba.cuda.jit
-def move_predict_halfstep_kernel(xi_step_size, reflect_boundary,
-                                 ms, old_x, old_y, pxs, pys, pzs,
-                                 halfstep_x, halfstep_y):
+def move_predict_halfstep_kernel(xi_step_size, reflect_boundary, ms,
+                                 x_init, y_init, old_x_offt, old_y_offt,
+                                 pxs, pys, pzs,
+                                 halfstep_x_offt, halfstep_y_offt):
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
     for k in range(index, ms.size, stride):
         m = ms[k]
-        x, y, px, py, pz = old_x[k], old_y[k], pxs[k], pys[k], pzs[k]
+        x, y = x_init[k] + old_x_offt[k], y_init[k] + old_y_offt[k]
+        px, py, pz = pxs[k], pys[k], pzs[k]
 
         gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
 
@@ -79,20 +83,20 @@ def move_predict_halfstep_kernel(xi_step_size, reflect_boundary,
         y = y if y <= +reflect_boundary else +2 * reflect_boundary - y
         y = y if y >= -reflect_boundary else -2 * reflect_boundary - y
 
-        halfstep_x[k], halfstep_y[k] = x, y
+        halfstep_x_offt[k], halfstep_y_offt[k] = x - x_init[k], y - y_init[k]
 
 
 # TODO: write a version fused with averaging
 # TODO: fuse with moving?
 @numba.cuda.jit
-def interpolate_kernel(xs, ys, Ex, Ey, Ez, Bx, By, Bz,
+def interpolate_kernel(x_init, y_init, x_offt, y_offt, Ex, Ey, Ez, Bx, By, Bz,
                        grid_step_size, grid_steps,
                        Exs, Eys, Ezs, Bxs, Bys, Bzs):
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, xs.size, stride):
-        x_h = xs[k] / grid_step_size + .5
-        y_h = ys[k] / grid_step_size + .5
+    for k in range(index, x_init.size, stride):
+        x_h = (x_init[k] + x_offt[k]) / grid_step_size + .5
+        y_h = (y_init[k] + y_offt[k]) / grid_step_size + .5
         i = int(floor(x_h) + grid_steps // 2)
         j = int(floor(y_h) + grid_steps // 2)
         x_loc = x_h - floor(x_h) - .5  # centered to -.5 to 5, not 0 to 1 because
@@ -195,7 +199,9 @@ def roj_init_kernel(ro, jx, jy, jz, ro_initial):
 
 @numba.cuda.jit
 def deposit_kernel(n_dim, h,
-                   c_x, c_y, c_m, c_q, c_p_x, c_p_y, c_p_z,  # coarse
+                   fine_grid,
+                   c_x_init, c_y_init, c_x_offt, c_y_offt,
+                   c_m, c_q, c_p_x, c_p_y, c_p_z,  # coarse
                    A_weights, B_weights, C_weights, D_weights,
                    indices_prev, indices_next, smallness_factor,
                    out_ro, out_jx, out_jy, out_jz):
@@ -212,8 +218,10 @@ def deposit_kernel(n_dim, h,
         C = C_weights[pi, pj]
         D = D_weights[pi, pj]
 
-        x = A * c_x[px, py] + B * c_x[nx, py] + C * c_x[px, ny] + D * c_x[nx, ny]
-        y = A * c_y[px, py] + B * c_y[nx, py] + C * c_y[px, ny] + D * c_y[nx, ny]
+        x_offt = A * c_x_offt[px, py] + B * c_x_offt[nx, py] + C * c_x_offt[px, ny] + D * c_x_offt[nx, ny]
+        y_offt = A * c_y_offt[px, py] + B * c_y_offt[nx, py] + C * c_y_offt[px, ny] + D * c_y_offt[nx, ny]
+        x = fine_grid[pi] + x_offt  # x_fine_init
+        y = fine_grid[pj] + y_offt  # y_fine_init
         m = A * c_m[px, py] + B * c_m[nx, py] + C * c_m[px, ny] + D * c_m[nx, ny]
         q = A * c_q[px, py] + B * c_q[nx, py] + C * c_q[px, ny] + D * c_q[nx, ny]
         p_x = A * c_p_x[px, py] + B * c_p_x[nx, py] + C * c_p_x[px, ny] + D * c_p_x[nx, ny]
@@ -225,11 +233,7 @@ def deposit_kernel(n_dim, h,
         p_y *= smallness_factor
         p_z *= smallness_factor
 
-        m_sq = m**2
-        p_x_sq = p_x**2
-        p_y_sq = p_y**2
-        p_z_sq = p_z**2
-        gamma_m = sqrt(m_sq + p_x_sq + p_y_sq + p_z_sq)
+        gamma_m = sqrt(m**2 + p_x**2 + p_y**2 + p_z**2)
         dro = q / (1 - p_z / gamma_m)
         djx = p_x * (dro / gamma_m)
         djy = p_y * (dro / gamma_m)
@@ -476,15 +480,18 @@ def average_arrays_kernel(arr1, arr2, out):
 
 @numba.cuda.jit
 def move_smart_kernel(xi_step_size, reflect_boundary,
-                      ms, qs, old_x, old_y, old_px, old_py, old_pz,
+                      ms, qs,
+                      x_init, y_init, old_x_offt, old_y_offt,
+                      old_px, old_py, old_pz,
                       Exs, Eys, Ezs, Bxs, Bys, Bzs,
-                      new_x, new_y, new_px, new_py, new_pz):
+                      new_x_offt, new_y_offt, new_px, new_py, new_pz):
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
     for k in range(index, ms.size, stride):
         m, q = ms[k], qs[k]
         opx, opy, opz = old_px[k], old_py[k], old_pz[k]
-        x, y, px, py, pz = old_x[k], old_y[k], opx, opy, opz
+        px, py, pz = opx, opy, opz
+        x_offt, y_offt = old_x_offt[k], old_y_offt[k]
         Ex, Ey, Ez, Bx, By, Bz = Exs[k], Eys[k], Ezs[k], Bxs[k], Bys[k], Bzs[k]
 
         gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
@@ -505,26 +512,33 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
 
         gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
 
-        x += px / (gamma_m - pz) * xi_step_size
-        y += py / (gamma_m - pz) * xi_step_size
+        x_offt += px / (gamma_m - pz) * xi_step_size
+        y_offt += py / (gamma_m - pz) * xi_step_size
 
         px, py, pz = opx + dpx, opy + dpy, opz + dpz
 
         # TODO: avoid branching?
+        x = x_init[k] + x_offt
+        y = y_init[k] + y_offt
         if x > +reflect_boundary:
             x = +2 * reflect_boundary - x
+            x_offt = x - x_init[k]
             px = -px
         if x < -reflect_boundary:
             x = -2 * reflect_boundary - x
+            x_offt = x - x_init[k]
             px = -px
         if y > +reflect_boundary:
             y = +2 * reflect_boundary - y
+            y_offt = y - y_init[k]
             py = -py
         if y < -reflect_boundary:
             y = -2 * reflect_boundary - y
+            y_offt = y - y_init[k]
             py = -py
 
-        new_x[k], new_y[k], new_px[k], new_py[k], new_pz[k] = x, y, px, py, pz
+        new_x_offt[k], new_y_offt[k] = x_offt, y_offt  # TODO: get rid of vars
+        new_px[k], new_py[k], new_pz[k] = px, py, pz
 
 
 class GPUMonolith:
@@ -532,9 +546,14 @@ class GPUMonolith:
 
     def __init__(self, config, plasma,
                  A_weights, B_weights, C_weights, D_weights,
+                 fine_grid_init,
                  indices_prev, indices_next):
         self.Nc = Nc = int(sqrt(plasma.size))
         assert Nc**2 == plasma.size
+
+        # virtual particles should not reach the window pre-boundary cells
+        assert config.reflect_padding_steps > config.plasma_coarseness + 1
+        # the alternative is to reflect after plasma virtualization
 
         self.grid_steps = N = config.grid_steps
         self.xi_step_size = config.xi_step_size
@@ -548,22 +567,28 @@ class GPUMonolith:
         self.virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                                 config.plasma_fineness)**2
 
+        self.x_init = plasma['x_init'].copy()
+        self.y_init = plasma['y_init'].copy()
+        self._x_init = numba.cuda.to_device(self.x_init.reshape((Nc, Nc)))
+        self._y_init = numba.cuda.to_device(self.y_init.reshape((Nc, Nc)))
+        self._fine_grid = numba.cuda.to_device(fine_grid_init)
+
         self._m = numba.cuda.device_array((Nc, Nc))
         self._q = numba.cuda.device_array((Nc, Nc))
-        self._x_prev = numba.cuda.device_array((Nc, Nc))
-        self._y_prev = numba.cuda.device_array((Nc, Nc))
+        self._x_prev_offt = numba.cuda.device_array((Nc, Nc))
+        self._y_prev_offt = numba.cuda.device_array((Nc, Nc))
         self._px_prev = numba.cuda.device_array((Nc, Nc))
         self._py_prev = numba.cuda.device_array((Nc, Nc))
         self._pz_prev = numba.cuda.device_array((Nc, Nc))
 
-        self._x_new = numba.cuda.device_array((Nc, Nc))
-        self._y_new = numba.cuda.device_array((Nc, Nc))
+        self._x_new_offt = numba.cuda.device_array((Nc, Nc))
+        self._y_new_offt = numba.cuda.device_array((Nc, Nc))
         self._px_new = numba.cuda.device_array((Nc, Nc))
         self._py_new = numba.cuda.device_array((Nc, Nc))
         self._pz_new = numba.cuda.device_array((Nc, Nc))
 
-        self._halfstep_x = numba.cuda.device_array((Nc, Nc))
-        self._halfstep_y = numba.cuda.device_array((Nc, Nc))
+        self._halfstep_x_offt = numba.cuda.device_array((Nc, Nc))
+        self._halfstep_y_offt = numba.cuda.device_array((Nc, Nc))
 
         self._Exs = numba.cuda.device_array((Nc, Nc))
         self._Eys = numba.cuda.device_array((Nc, Nc))
@@ -708,8 +733,8 @@ class GPUMonolith:
 
         self._m[:, :] = np.ascontiguousarray(plasma_prev['m'].reshape(Nc, Nc))
         self._q[:, :] = np.ascontiguousarray(plasma_prev['q'].reshape(Nc, Nc))
-        self._x_prev[:, :] = np.ascontiguousarray(plasma_prev['x'].reshape(Nc, Nc))
-        self._y_prev[:, :] = np.ascontiguousarray(plasma_prev['y'].reshape(Nc, Nc))
+        self._x_prev_offt[:, :] = np.ascontiguousarray(plasma_prev['x_offt'].reshape(Nc, Nc))
+        self._y_prev_offt[:, :] = np.ascontiguousarray(plasma_prev['y_offt'].reshape(Nc, Nc))
         self._px_prev[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 1].reshape(Nc, Nc))
         self._py_prev[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 2].reshape(Nc, Nc))
         self._pz_prev[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 0].reshape(Nc, Nc))
@@ -746,19 +771,23 @@ class GPUMonolith:
         move_predict_halfstep_kernel[self.cfg](self.xi_step_size,
                                                self.reflect_boundary,
                                                self._m.ravel(),
-                                               self._x_prev.ravel(),
-                                               self._y_prev.ravel(),
+                                               self._x_init.ravel(),
+                                               self._y_init.ravel(),
+                                               self._x_prev_offt.ravel(),
+                                               self._y_prev_offt.ravel(),
                                                self._px_prev.ravel(),
                                                self._py_prev.ravel(),
                                                self._pz_prev.ravel(),
-                                               self._halfstep_x.ravel(),
-                                               self._halfstep_y.ravel())
+                                               self._halfstep_x_offt.ravel(),
+                                               self._halfstep_y_offt.ravel())
         numba.cuda.synchronize()
 
 
     def interpolate(self):
-        interpolate_kernel[self.cfg](self._halfstep_x.ravel(),
-                                     self._halfstep_y.ravel(),
+        interpolate_kernel[self.cfg](self._x_init.ravel(),
+                                     self._y_init.ravel(),
+                                     self._halfstep_x_offt.ravel(),
+                                     self._halfstep_y_offt.ravel(),
                                      self._Ex_avg, self._Ey_avg, self._Ez_avg,
                                      self._Bx_avg, self._By_avg, self._Bz_avg,
                                      self.grid_step_size, self.grid_steps,
@@ -772,14 +801,15 @@ class GPUMonolith:
         move_smart_kernel[self.cfg](self.xi_step_size,
                                     self.reflect_boundary,
                                     self._m.ravel(), self._q.ravel(),
-                                    self._x_prev.ravel(), self._y_prev.ravel(),
+                                    self._x_init.ravel(), self._y_init.ravel(),
+                                    self._x_prev_offt.ravel(), self._y_prev_offt.ravel(),
                                     self._px_prev.ravel(),
                                     self._py_prev.ravel(),
                                     self._pz_prev.ravel(),
                                     self._Exs.ravel(), self._Eys.ravel(),
                                     self._Ezs.ravel(), self._Bxs.ravel(),
                                     self._Bys.ravel(), self._Bzs.ravel(),
-                                    self._x_new.ravel(), self._y_new.ravel(),
+                                    self._x_new_offt.ravel(), self._y_new_offt.ravel(),
                                     self._px_new.ravel(), self._py_new.ravel(),
                                     self._pz_new.ravel())
         numba.cuda.synchronize()
@@ -792,7 +822,10 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
         deposit_kernel[self.cfg](self.grid_steps, self.grid_step_size,
-                                 self._x_new, self._y_new, self._m, self._q,
+                                 self._fine_grid,
+                                 self._x_init, self._y_init,
+                                 self._x_new_offt, self._y_new_offt,
+                                 self._m, self._q,
                                  self._px_new, self._py_new, self._pz_new,
                                  self._A_weights, self._B_weights,
                                  self._C_weights, self._D_weights,
@@ -811,8 +844,8 @@ class GPUMonolith:
         Nc = self.Nc
         self._m[:, :] = np.ascontiguousarray(plasma_prev['m'].reshape(Nc, Nc))
         self._q[:, :] = np.ascontiguousarray(plasma_prev['q'].reshape(Nc, Nc))
-        self._x_new[:, :] = np.ascontiguousarray(plasma_prev['x'].reshape(Nc, Nc))
-        self._y_new[:, :] = np.ascontiguousarray(plasma_prev['y'].reshape(Nc, Nc))
+        self._x_new_offt[:, :] = np.ascontiguousarray(plasma_prev['x_offt'].reshape(Nc, Nc))
+        self._y_new_offt[:, :] = np.ascontiguousarray(plasma_prev['y_offt'].reshape(Nc, Nc))
         self._px_new[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 1].reshape(Nc, Nc))
         self._py_new[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 2].reshape(Nc, Nc))
         self._pz_new[:, :] = np.ascontiguousarray(plasma_prev['p'][:, 0].reshape(Nc, Nc))
@@ -950,10 +983,10 @@ class GPUMonolith:
 
 
     def average_halfstep(self):
-        average_arrays_kernel[self.cfg](self._x_prev.ravel(), self._x_new.ravel(),
-                                        self._halfstep_x.ravel())
-        average_arrays_kernel[self.cfg](self._y_prev.ravel(), self._y_new.ravel(),
-                                        self._halfstep_y.ravel())
+        average_arrays_kernel[self.cfg](self._x_prev_offt.ravel(), self._x_new_offt.ravel(),
+                                        self._halfstep_x_offt.ravel())
+        average_arrays_kernel[self.cfg](self._y_prev_offt.ravel(), self._y_new_offt.ravel(),
+                                        self._halfstep_y_offt.ravel())
         numba.cuda.synchronize()
 
 
@@ -1001,8 +1034,10 @@ class GPUMonolith:
         plasma = self.___plasma
         plasma['m'] = self._m.reshape(plasma.shape)
         plasma['q'] = self._q.reshape(plasma.shape)
-        plasma['x'] = self._x_new.reshape(plasma.shape)
-        plasma['y'] = self._y_new.reshape(plasma.shape)
+        plasma['x_init'] = self._x_new.reshape(plasma.shape)
+        plasma['y_init'] = self._y_new.reshape(plasma.shape)
+        plasma['x_offt'] = self._x_new.reshape(plasma.shape)
+        plasma['y_offt'] = self._y_new.reshape(plasma.shape)
         plasma['p'][:, 1] = self._px_new.reshape(plasma.shape)
         plasma['p'][:, 2] = self._py_new.reshape(plasma.shape)
         plasma['p'][:, 0] = self._pz_new.reshape(plasma.shape)
@@ -1018,8 +1053,8 @@ class GPUMonolith:
         # TODO: array relabeling instead of copying?..
 
         # Intact: self._m, self._q
-        self._x_prev[:, :] = self._x_new
-        self._y_prev[:, :] = self._y_new
+        self._x_prev_offt[:, :] = self._x_new_offt
+        self._y_prev_offt[:, :] = self._y_new_offt
         self._px_prev[:, :] = self._px_new
         self._py_prev[:, :] = self._py_new
         self._pz_prev[:, :] = self._pz_new
@@ -1098,21 +1133,21 @@ def plasma_make(window_width, steps, coarseness=2, fineness=2):
 
     coarse_plasma = np.zeros(Nc**2, plasma_particle_dtype)
     coarse_plasma['N'] = np.arange(coarse_plasma.size)
-    coarse_plasma['N'] = np.arange(coarse_plasma.size)
     coarse_electrons = coarse_plasma.reshape(Nc, Nc)
-    coarse_electrons['x'] = coarse_grid_xs
-    coarse_electrons['y'] = coarse_grid_ys
+    coarse_electrons['x_init'] = coarse_grid_xs
+    coarse_electrons['y_init'] = coarse_grid_ys
     coarse_electrons['m'] = USUAL_ELECTRON_MASS * coarseness**2
     coarse_electrons['q'] = USUAL_ELECTRON_CHARGE * coarseness**2
-    # v, p == 0
+    # v, p, x_offt, y_offt == 0
 
-    fine_plasma = np.zeros(Nf**2, plasma_particle_dtype)
-    fine_plasma['N'] = np.arange(fine_plasma.size)       # not really needed
-    fine_electrons = fine_plasma.reshape(Nf, Nf)
-    fine_electrons['x'] = fine_grid_xs
-    fine_electrons['y'] = fine_grid_ys
-    fine_electrons['m'] = USUAL_ELECTRON_MASS / fineness**2
-    fine_electrons['q'] = USUAL_ELECTRON_CHARGE / fineness**2
+    # TODO: remove
+    #fine_plasma = np.zeros(Nf**2, plasma_particle_dtype)
+    #fine_plasma['N'] = np.arange(fine_plasma.size)       # not really needed
+    #fine_electrons = fine_plasma.reshape(Nf, Nf)
+    #fine_electrons['x_init'] = fine_grid_xs
+    #fine_electrons['y_init'] = fine_grid_ys
+    #fine_electrons['m'] = USUAL_ELECTRON_MASS / fineness**2
+    #fine_electrons['q'] = USUAL_ELECTRON_CHARGE / fineness**2
 
     # Calculate indices for coarse -> fine bilinear interpolation
 
@@ -1168,7 +1203,7 @@ def plasma_make(window_width, steps, coarseness=2, fineness=2):
 
     # TODO: decide on a flat-or-square plasma
     return (coarse_plasma.ravel(), A_weights, B_weights, C_weights, D_weights,
-            indices_prev, indices_next)
+            fine_grid, indices_prev, indices_next)
 
 
 max_zn = 0

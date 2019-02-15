@@ -13,8 +13,13 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with LCODE.  If not, see <http://www.gnu.org/licenses/>.
 
+
 from math import sqrt, floor
+
 import sys
+import os
+
+import matplotlib.pyplot as plt
 
 import numpy as np
 
@@ -22,6 +27,9 @@ import numba
 import numba.cuda
 
 import pyculib.fft
+
+import scipy.ndimage
+import scipy.signal
 
 
 USUAL_ELECTRON_CHARGE = -1
@@ -1208,7 +1216,6 @@ def plasma_make(window_width, steps, coarseness=2, fineness=2):
 
 max_zn = 0
 def diags_ro_zn(config, ro):
-    import scipy.ndimage
     global max_zn
 
     sigma = 0.25 * config.grid_steps / config.window_width
@@ -1220,10 +1227,12 @@ def diags_ro_zn(config, ro):
 
 
 Ez_00_history = []
-def diags_peak_msg(config, Ez_00):
-    import scipy.signal
+def diags_peak_msg_just_store(Ez_00):
     global Ez_00_history
     Ez_00_history.append(Ez_00)
+
+def diags_peak_msg(config, Ez_00):
+    global Ez_00_history
     Ez_00_array = np.array(Ez_00_history)
     peak_indices = scipy.signal.argrelmax(Ez_00_array)[0]
 
@@ -1237,24 +1246,20 @@ def diags_peak_msg(config, Ez_00):
         return '...'
 
 
-import os
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 def diags_ro_slice(config, xi_i, xi, ro):
-    if xi_i % (1 // config.xi_step_size):
+    if xi_i % int(1 / config.xi_step_size):
         return
     if not os.path.isdir('transverse'):
         os.mkdir('transverse')
-    plt.imsave(os.path.join('transverse', f'ro_{xi:+09.2f}.png'),
-               ro.T, origin='lower',
-               vmin=-0.1, vmax=0.1,
-               cmap=cm.bwr)
+
+    fname = f'ro_{xi:+09.2f}.png' if xi else 'ro_-00000.00.png'
+    plt.imsave(os.path.join('transverse', fname), ro.T,
+               origin='lower', vmin=-0.1, vmax=0.1, cmap='bwr')
 
 
 def diagnostics(gpu, config, xi_i):
     xi = -xi_i * config.xi_step_size
 
-    middle = config.grid_steps // 2
     Ez_00 = gpu._Ez[config.grid_steps // 2, config.grid_steps // 2]
     peak_report = diags_peak_msg(config, Ez_00)
 
@@ -1300,7 +1305,10 @@ def main():
         gpu.reload(beam_ro)
         gpu.step()
 
-        time_for_diags = (xi_i) % config.diagnostics_each_N_steps == 0
+        Ez_00 = gpu._Ez[config.grid_steps // 2, config.grid_steps // 2]
+        diags_peak_msg_just_store(Ez_00)
+
+        time_for_diags = xi_i % config.diagnostics_each_N_steps == 0
         last_step = xi_i == config.xi_steps - 1
         if time_for_diags or last_step:
             diagnostics(gpu, config, xi_i)

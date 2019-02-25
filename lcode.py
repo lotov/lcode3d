@@ -28,7 +28,7 @@ import numpy as np
 import numba
 import numba.cuda
 
-import cupy
+import cupy as cp
 
 import scipy.ndimage
 import scipy.signal
@@ -567,37 +567,33 @@ class GPUMonolith:
         self.virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                                 config.plasma_fineness)**2
 
-        self._x_init = numba.cuda.to_device(np.ascontiguousarray(
-            pl_x_init.reshape((Nc, Nc))
-        ))
-        self._y_init = numba.cuda.to_device(np.ascontiguousarray(
-            pl_y_init.reshape((Nc, Nc))
-        ))
+        self._x_init = cp.array(pl_x_init)
+        self._y_init = cp.array(pl_y_init)
         self._fine_grid = numba.cuda.to_device(fine_grid_init)
 
         self._m = numba.cuda.device_array((Nc, Nc))
         self._q = numba.cuda.device_array((Nc, Nc))
-        self._x_prev_offt = numba.cuda.device_array((Nc, Nc))
-        self._y_prev_offt = numba.cuda.device_array((Nc, Nc))
-        self._px_prev = numba.cuda.device_array((Nc, Nc))
-        self._py_prev = numba.cuda.device_array((Nc, Nc))
-        self._pz_prev = numba.cuda.device_array((Nc, Nc))
+        self._x_prev_offt = cp.zeros((Nc, Nc))
+        self._y_prev_offt = cp.zeros((Nc, Nc))
+        self._px_prev = cp.zeros((Nc, Nc))
+        self._py_prev = cp.zeros((Nc, Nc))
+        self._pz_prev = cp.zeros((Nc, Nc))
 
-        self._x_new_offt = numba.cuda.device_array((Nc, Nc))
-        self._y_new_offt = numba.cuda.device_array((Nc, Nc))
-        self._px_new = numba.cuda.device_array((Nc, Nc))
-        self._py_new = numba.cuda.device_array((Nc, Nc))
-        self._pz_new = numba.cuda.device_array((Nc, Nc))
+        self._x_new_offt = cp.zeros((Nc, Nc))
+        self._y_new_offt = cp.zeros((Nc, Nc))
+        self._px_new = cp.zeros((Nc, Nc))
+        self._py_new = cp.zeros((Nc, Nc))
+        self._pz_new = cp.zeros((Nc, Nc))
 
-        self._halfstep_x_offt = numba.cuda.device_array((Nc, Nc))
-        self._halfstep_y_offt = numba.cuda.device_array((Nc, Nc))
+        self._halfstep_x_offt = cp.zeros((Nc, Nc))
+        self._halfstep_y_offt = cp.zeros((Nc, Nc))
 
-        self._Exs = numba.cuda.device_array((Nc, Nc))
-        self._Eys = numba.cuda.device_array((Nc, Nc))
-        self._Ezs = numba.cuda.device_array((Nc, Nc))
-        self._Bxs = numba.cuda.device_array((Nc, Nc))
-        self._Bys = numba.cuda.device_array((Nc, Nc))
-        self._Bzs = numba.cuda.device_array((Nc, Nc))
+        self._Exs = cp.zeros((Nc, Nc))
+        self._Eys = cp.zeros((Nc, Nc))
+        self._Ezs = cp.zeros((Nc, Nc))
+        self._Bxs = cp.zeros((Nc, Nc))
+        self._Bys = cp.zeros((Nc, Nc))
+        self._Bzs = cp.zeros((Nc, Nc))
 
         self._A_weights = numba.cuda.to_device(A_weights)
         self._B_weights = numba.cuda.to_device(B_weights)
@@ -661,10 +657,10 @@ class GPUMonolith:
         self._By_dct1_out = self._combined_dct1_out[3*N:, :]
         self._By_dct2_in = self._combined_dct2_in[3*N:, :]
         self._By_dct2_out = self._combined_dct2_out[3*N:, :]
-        self._Ex = numba.cuda.device_array((N, N))
-        self._Ey = numba.cuda.device_array((N, N))
-        self._Bx = numba.cuda.device_array((N, N))
-        self._By = numba.cuda.device_array((N, N))
+        self._Ex = cp.zeros((N, N))
+        self._Ey = cp.zeros((N, N))
+        self._Bx = cp.zeros((N, N))
+        self._By = cp.zeros((N, N))
         self._Ex_sub = numba.cuda.device_array((N, N))
         self._Ey_sub = numba.cuda.device_array((N, N))
         self._Bx_sub = numba.cuda.device_array((N, N))
@@ -678,7 +674,7 @@ class GPUMonolith:
         self._Ez_dst1_out = numba.cuda.device_array((N - 2, N), dtype=np.complex128)
         self._Ez_dst2_in = numba.cuda.device_array((N - 2, 2 * N - 2))
         self._Ez_dst2_out = numba.cuda.device_array((N - 2, N), dtype=np.complex128)
-        self._Ez = numba.cuda.device_array((N, N))
+        self._Ez = cp.zeros((N, N))
 
         self._Ez_dst1_in[:, :] = 0
         self._Ez_dst2_in[:, :] = 0
@@ -692,7 +688,7 @@ class GPUMonolith:
         self.mix_mul = self.grid_step_size**2
         self.mix_mul /= 2 * N - 2  # don't ask
 
-        self._Bz = numba.cuda.device_array((N, N))
+        self._Bz = cp.zeros((N, N))
         self._Bz[:, :] = 0  # Bz = 0 for now
 
         self._ro_initial = numba.cuda.device_array((N, N))
@@ -738,6 +734,18 @@ class GPUMonolith:
                             getattr(self, attrname)[:, :] = val
                         setattr(cls, attrname_unpref, property(getter, setter))
                     hook_property(type(self), attrname)
+        # Allow accessing `gpu_monolith.ro`
+        # without typing the whole `gpu_monolith._ro.get()`.
+        # and setting its value with `gpu_monolith.ro = ...`
+                if isinstance(attr, cp.ndarray):
+                    # a separate func for copying attrname into another closure
+                    def hook_property(cls, attrname):
+                        def getter(self):
+                            return getattr(self, attrname).get()
+                        def setter(self, val):
+                            getattr(self, attrname)[:, :] = val
+                        setattr(cls, attrname_unpref, property(getter, setter))
+                    hook_property(type(self), attrname)
 
 
     def load(self, beam_ro,
@@ -755,18 +763,18 @@ class GPUMonolith:
 
         self._m[:, :] = np.ascontiguousarray(pl_m.reshape(Nc, Nc))
         self._q[:, :] = np.ascontiguousarray(pl_q.reshape(Nc, Nc))
-        self._x_prev_offt[:, :] = np.ascontiguousarray(pl_x_offt.reshape(Nc, Nc))
-        self._y_prev_offt[:, :] = np.ascontiguousarray(pl_y_offt.reshape(Nc, Nc))
-        self._px_prev[:, :] = np.ascontiguousarray(pl_px.reshape(Nc, Nc))
-        self._py_prev[:, :] = np.ascontiguousarray(pl_py.reshape(Nc, Nc))
-        self._pz_prev[:, :] = np.ascontiguousarray(pl_pz.reshape(Nc, Nc))
+        self._x_prev_offt[:, :] = cp.array(pl_x_offt.reshape(Nc, Nc))
+        self._y_prev_offt[:, :] = cp.array(pl_y_offt.reshape(Nc, Nc))
+        self._px_prev[:, :] = cp.array(pl_px.reshape(Nc, Nc))
+        self._py_prev[:, :] = cp.array(pl_py.reshape(Nc, Nc))
+        self._pz_prev[:, :] = cp.array(pl_pz.reshape(Nc, Nc))
 
-        self._Ex[:, :] = np.ascontiguousarray(Ex)
-        self._Ey[:, :] = np.ascontiguousarray(Ey)
-        self._Ez[:, :] = np.ascontiguousarray(Ez)
-        self._Bx[:, :] = np.ascontiguousarray(Bx)
-        self._By[:, :] = np.ascontiguousarray(By)
-        self._Bz[:, :] = np.ascontiguousarray(Bz)
+        self._Ex[:, :] = cp.array(Ex)
+        self._Ey[:, :] = cp.array(Ey)
+        self._Ez[:, :] = cp.array(Ez)
+        self._Bx[:, :] = cp.array(Bx)
+        self._By[:, :] = cp.array(By)
+        self._Bz[:, :] = cp.array(Bz)
         self._jx[:, :] = np.ascontiguousarray(jx)
         self._jy[:, :] = np.ascontiguousarray(jy)
 
@@ -873,11 +881,11 @@ class GPUMonolith:
         Nc = self.Nc
         self._m[:, :] = np.ascontiguousarray(pl_m.reshape(Nc, Nc))
         self._q[:, :] = np.ascontiguousarray(pl_q.reshape(Nc, Nc))
-        self._x_new_offt[:, :] = np.ascontiguousarray(pl_x_offt.reshape(Nc, Nc))
-        self._y_new_offt[:, :] = np.ascontiguousarray(pl_y_offt.reshape(Nc, Nc))
-        self._px_new[:, :] = pl_px.reshape((Nc, Nc))
-        self._py_new[:, :] = pl_py.reshape((Nc, Nc))
-        self._pz_new[:, :] = pl_pz.reshape((Nc, Nc))
+        self._x_new_offt[:, :] = cp.array(pl_x_offt.reshape(Nc, Nc))
+        self._y_new_offt[:, :] = cp.array(pl_y_offt.reshape(Nc, Nc))
+        self._px_new[:, :] = cp.array(pl_px.reshape((Nc, Nc)))
+        self._py_new[:, :] = cp.array(pl_py.reshape((Nc, Nc)))
+        self._pz_new[:, :] = cp.array(pl_pz.reshape((Nc, Nc)))
 
         self.deposit()
 
@@ -921,7 +929,7 @@ class GPUMonolith:
         # iDCT-1 is just DCT-1 in cuFFT
         #self.dct_plan.forward(self._combined_dct1_in.ravel(),
         #                      self._combined_dct1_out.ravel())
-        self._combined_dct1_out[:, :] = cupy.fft.rfft(cupy.asarray(self._combined_dct1_in))
+        self._combined_dct1_out[:, :] = cp.fft.rfft(cp.asarray(self._combined_dct1_in))
         numba.cuda.synchronize()
         # This implementation of DCT is real-to-complex, so scrapping the i, j
         # element of the transposed answer would be dct1_out[j, i].real
@@ -941,7 +949,7 @@ class GPUMonolith:
         # 3. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
         #self.dct_plan.forward(self._combined_dct2_in.ravel(),
         #                      self._combined_dct2_out.ravel())
-        self._combined_dct2_out[:, :] = cupy.fft.rfft(cupy.asarray(self._combined_dct2_in))
+        self._combined_dct2_out[:, :] = cp.fft.rfft(cp.asarray(self._combined_dct2_in))
         numba.cuda.synchronize()
 
     def calculate_Ex_Ey_Bx_By_4(self):
@@ -976,7 +984,7 @@ class GPUMonolith:
         # iDST-1 is just DST-1 in cuFFT
         #self.dst_plan.forward(self._Ez_dst1_in.ravel(),
         #                      self._Ez_dst1_out.ravel())
-        self._Ez_dst1_out[:, :] = cupy.fft.rfft(cupy.asarray(self._Ez_dst1_in))
+        self._Ez_dst1_out[:, :] = cp.fft.rfft(cp.asarray(self._Ez_dst1_in))
         numba.cuda.synchronize()
         # This implementation of DST is real-to-complex, so scrapping the i, j
         # element of the transposed answer would be -dst1_out[j, i + 1].imag
@@ -991,7 +999,7 @@ class GPUMonolith:
         # 3. Apply DST-1 (Discrete Sine Transform Type 1) to the transformed spectra
         #self.dst_plan.forward(self._Ez_dst2_in.ravel(),
         #                      self._Ez_dst2_out.ravel())
-        self._Ez_dst2_out[:, :] = cupy.fft.rfft(cupy.asarray(self._Ez_dst2_in))
+        self._Ez_dst2_out[:, :] = cp.fft.rfft(cp.asarray(self._Ez_dst2_in))
         numba.cuda.synchronize()
 
     def calculate_Ez_4(self):
@@ -1056,11 +1064,11 @@ class GPUMonolith:
         # TODO: array relabeling instead of copying?..
 
         # Intact: self._m, self._q
-        self._x_prev_offt[:, :] = self._x_new_offt
-        self._y_prev_offt[:, :] = self._y_new_offt
-        self._px_prev[:, :] = self._px_new
-        self._py_prev[:, :] = self._py_new
-        self._pz_prev[:, :] = self._pz_new
+        self._x_prev_offt[:, :] = cp.array(self._x_new_offt)
+        self._y_prev_offt[:, :] = cp.array(self._y_new_offt)
+        self._px_prev[:, :] = cp.array(self._px_new)
+        self._py_prev[:, :] = cp.array(self._py_new)
+        self._pz_prev[:, :] = cp.array(self._pz_new)
 
         self._Ex_prev[:, :] = self._Ex
         self._Ey_prev[:, :] = self._Ey
@@ -1250,7 +1258,7 @@ def diags_ro_slice(config, xi_i, xi, ro):
 def diagnostics(gpu, config, xi_i):
     xi = -xi_i * config.xi_step_size
 
-    Ez_00 = gpu._Ez[config.grid_steps // 2, config.grid_steps // 2]
+    Ez_00 = gpu.Ez[config.grid_steps // 2, config.grid_steps // 2]
     peak_report = diags_peak_msg(config, Ez_00)
 
     ro = gpu.ro
@@ -1298,7 +1306,7 @@ def main():
         gpu.reload(beam_ro)
         gpu.step()
 
-        Ez_00 = gpu._Ez[config.grid_steps // 2, config.grid_steps // 2]
+        Ez_00 = gpu.Ez[config.grid_steps // 2, config.grid_steps // 2]
         diags_peak_msg_just_store(Ez_00)
 
         time_for_diags = xi_i % config.diagnostics_each_N_steps == 0

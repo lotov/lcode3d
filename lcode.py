@@ -569,10 +569,10 @@ class GPUMonolith:
 
         self._x_init = cp.array(pl_x_init)
         self._y_init = cp.array(pl_y_init)
-        self._fine_grid = numba.cuda.to_device(fine_grid_init)
+        self._fine_grid = cp.array(fine_grid_init)
 
-        self._m = numba.cuda.device_array((Nc, Nc))
-        self._q = numba.cuda.device_array((Nc, Nc))
+        self._m = cp.zeros((Nc, Nc))
+        self._q = cp.zeros((Nc, Nc))
         self._x_prev_offt = cp.zeros((Nc, Nc))
         self._y_prev_offt = cp.zeros((Nc, Nc))
         self._px_prev = cp.zeros((Nc, Nc))
@@ -595,12 +595,12 @@ class GPUMonolith:
         self._Bys = cp.zeros((Nc, Nc))
         self._Bzs = cp.zeros((Nc, Nc))
 
-        self._A_weights = numba.cuda.to_device(A_weights)
-        self._B_weights = numba.cuda.to_device(B_weights)
-        self._C_weights = numba.cuda.to_device(C_weights)
-        self._D_weights = numba.cuda.to_device(D_weights)
-        self._indices_prev = numba.cuda.to_device(indices_prev)
-        self._indices_next = numba.cuda.to_device(indices_next)
+        self._A_weights = cp.array(A_weights)
+        self._B_weights = cp.array(B_weights)
+        self._C_weights = cp.array(C_weights)
+        self._D_weights = cp.array(D_weights)
+        self._indices_prev = cp.array(indices_prev)
+        self._indices_next = cp.array(indices_next)
 
         # Arrays for mixed boundary conditions solver
         # * diagonal matrix elements (used in the next one)
@@ -611,12 +611,12 @@ class GPUMonolith:
         # * precalculated internal coefficients for tridiagonal solving
         for i in range(1, N):
             alf[:, i + 1] = 1 / (aa - alf[:, i])
-        self._mix_alf = numba.cuda.to_device(alf)
+        self._mix_alf = cp.array(alf)
         # * scratchpad arrays for mixed boundary conditions solver
-        self._Ex_bet = numba.cuda.device_array((N, N))
-        self._Ey_bet = numba.cuda.device_array((N, N))
-        self._Bx_bet = numba.cuda.device_array((N, N))
-        self._By_bet = numba.cuda.device_array((N, N))
+        self._Ex_bet = cp.zeros((N, N))
+        self._Ey_bet = cp.zeros((N, N))
+        self._Bx_bet = cp.zeros((N, N))
+        self._By_bet = cp.zeros((N, N))
 
         # Arrays for Dirichlet boundary conditions solver
         # * diagonal matrix elements (used in the next one)
@@ -628,9 +628,9 @@ class GPUMonolith:
         for k in range(N - 2):
             for i in range(N - 2):
                 Ez_alf[k, i + 1] = 1 / (Ez_a[k] - Ez_alf[k, i])
-        self._Ez_alf = numba.cuda.to_device(Ez_alf)
+        self._Ez_alf = cp.array(Ez_alf)
         # * scratchpad arrays for Dirichlet boundary conditions solver
-        self._Ez_bet = numba.cuda.device_array((N, N))
+        self._Ez_bet = cp.zeros((N, N))
 
         #self.dct_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
         #                                    itype=np.float64,
@@ -691,11 +691,11 @@ class GPUMonolith:
         self._Bz = cp.zeros((N, N))
         self._Bz[:, :] = 0  # Bz = 0 for now
 
-        self._ro_initial = numba.cuda.device_array((N, N))
-        self._ro = numba.cuda.device_array((N, N))
-        self._jx = numba.cuda.device_array((N, N))
-        self._jy = numba.cuda.device_array((N, N))
-        self._jz = numba.cuda.device_array((N, N))
+        self._ro_initial = cp.zeros((N, N))
+        self._ro = cp.zeros((N, N))
+        self._jx = cp.zeros((N, N))
+        self._jy = cp.zeros((N, N))
+        self._jz = cp.zeros((N, N))
 
         self._beam_ro = numba.cuda.device_array((N, N))
 
@@ -752,17 +752,17 @@ class GPUMonolith:
              pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
              pl_px, pl_py, pl_pz, pl_m, pl_q,
              Ex, Ey, Ez, Bx, By, Bz, jx, jy):
-        self._beam_ro[:, :] = np.ascontiguousarray(beam_ro)
+        self._beam_ro[:, :] = cp.array(beam_ro)
 
-        self._Ex_sub[:, :] = np.ascontiguousarray(Ex)
-        self._Ey_sub[:, :] = np.ascontiguousarray(Ey)
-        self._Bx_sub[:, :] = np.ascontiguousarray(Bx)
-        self._By_sub[:, :] = np.ascontiguousarray(By)
+        self._Ex_sub[:, :] = cp.array(Ex)
+        self._Ey_sub[:, :] = cp.array(Ey)
+        self._Bx_sub[:, :] = cp.array(Bx)
+        self._By_sub[:, :] = cp.array(By)
 
         Nc = self.Nc
 
-        self._m[:, :] = np.ascontiguousarray(pl_m.reshape(Nc, Nc))
-        self._q[:, :] = np.ascontiguousarray(pl_q.reshape(Nc, Nc))
+        self._m[:, :] = cp.array(pl_m.reshape(Nc, Nc))
+        self._q[:, :] = cp.array(pl_q.reshape(Nc, Nc))
         self._x_prev_offt[:, :] = cp.array(pl_x_offt.reshape(Nc, Nc))
         self._y_prev_offt[:, :] = cp.array(pl_y_offt.reshape(Nc, Nc))
         self._px_prev[:, :] = cp.array(pl_px.reshape(Nc, Nc))
@@ -775,8 +775,8 @@ class GPUMonolith:
         self._Bx[:, :] = cp.array(Bx)
         self._By[:, :] = cp.array(By)
         self._Bz[:, :] = cp.array(Bz)
-        self._jx[:, :] = np.ascontiguousarray(jx)
-        self._jy[:, :] = np.ascontiguousarray(jy)
+        self._jx[:, :] = cp.array(jx)
+        self._jy[:, :] = cp.array(jy)
 
         #self._Ex[:, :] = self._Ex
         #self._Ey[:, :] = self._Ey
@@ -879,8 +879,8 @@ class GPUMonolith:
         self._jz[:, :] = 0
 
         Nc = self.Nc
-        self._m[:, :] = np.ascontiguousarray(pl_m.reshape(Nc, Nc))
-        self._q[:, :] = np.ascontiguousarray(pl_q.reshape(Nc, Nc))
+        self._m[:, :] = cp.array(pl_m.reshape(Nc, Nc))
+        self._q[:, :] = cp.array(pl_q.reshape(Nc, Nc))
         self._x_new_offt[:, :] = cp.array(pl_x_offt.reshape(Nc, Nc))
         self._y_new_offt[:, :] = cp.array(pl_y_offt.reshape(Nc, Nc))
         self._px_new[:, :] = cp.array(pl_px.reshape((Nc, Nc)))
@@ -889,7 +889,7 @@ class GPUMonolith:
 
         self.deposit()
 
-        self._ro_initial[:, :] = -np.array(self._ro.copy_to_host())
+        self._ro_initial[:, :] = -self._ro  # Right on the GPU, huh
         numba.cuda.synchronize()
 
 

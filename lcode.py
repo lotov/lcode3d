@@ -42,13 +42,8 @@ ELECTRON_MASS = 1
 
 
 # TODO: get rid of reshapes
+# TODO: investigate and possibly get rid of .ascontiguousarray()
 # TODO: macrosity
-plasma_particle_dtype = np.dtype([
-    ('x_init', np.double),
-    ('y_init', np.double),
-    ('x_offt', np.double),
-    ('y_offt', np.double),
-], align=False)
 
 
 @numba.cuda.jit
@@ -544,15 +539,17 @@ class GPUMonolith:
     cfg = (19, 384)  # empirical guess for a GTX 1070 Ti
 
     def __init__(self, config,
-                 plasma,
+                 pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
                  pl_px, pl_py, pl_pz, pl_m, pl_q,
                  A_weights, B_weights, C_weights, D_weights,
                  fine_grid_init,
                  indices_prev, indices_next):
-        self.Nc = Nc = int(sqrt(plasma.size))
         # TODO: compare shapes, not sizes
-        assert Nc**2 == plasma.size == pl_m.size == pl_q.size
+        self.Nc = Nc = int(sqrt(pl_q.size))
+        assert Nc**2 == pl_x_init.size == pl_y_init.size
+        assert Nc**2 == pl_x_offt.size == pl_y_offt.size
         assert Nc**2 == pl_px.size == pl_py.size == pl_pz.size
+        assert Nc**2 == pl_m.size == pl_q.size
 
         # virtual particles should not reach the window pre-boundary cells
         assert config.reflect_padding_steps > config.plasma_coarseness + 1
@@ -570,10 +567,12 @@ class GPUMonolith:
         self.virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                                 config.plasma_fineness)**2
 
-        self.x_init = plasma['x_init'].copy()
-        self.y_init = plasma['y_init'].copy()
-        self._x_init = numba.cuda.to_device(self.x_init.reshape((Nc, Nc)))
-        self._y_init = numba.cuda.to_device(self.y_init.reshape((Nc, Nc)))
+        self._x_init = numba.cuda.to_device(np.ascontiguousarray(
+            pl_x_init.reshape((Nc, Nc))
+        ))
+        self._y_init = numba.cuda.to_device(np.ascontiguousarray(
+            pl_y_init.reshape((Nc, Nc))
+        ))
         self._fine_grid = numba.cuda.to_device(fine_grid_init)
 
         self._m = numba.cuda.device_array((Nc, Nc))
@@ -722,43 +721,61 @@ class GPUMonolith:
         self._Bz_avg = numba.cuda.device_array((N, N))
 
 
-    def load(self, beam_ro, plasma_prev,
-             pl_px_prev, pl_py_prev, pl_pz_prev,
-             pl_m_prev, pl_q_prev,
-             Ex_prev, Ey_prev, Ez_prev, Bx_prev, By_prev, Bz_prev,
-             jx_prev, jy_prev):
+        # Allow accessing `gpu_monolith.ro`
+        # without typing the whole `gpu_monolith._ro.copy_to_host()`.
+        # and setting its value with `gpu_monolith.ro = ...`
+        gpu_array_type = type(self._m)
+        for attrname in dir(self):
+            if attrname.startswith('_'):
+                attrname_unpref = attrname[1:]
+                attr = getattr(self, attrname)
+                if isinstance(attr, gpu_array_type):
+                    # a separate func for copying attrname into another closure
+                    def hook_property(cls, attrname):
+                        def getter(self):
+                            return getattr(self, attrname).copy_to_host()
+                        def setter(self, val):
+                            getattr(self, attrname)[:, :] = val
+                        setattr(cls, attrname_unpref, property(getter, setter))
+                    hook_property(type(self), attrname)
+
+
+    def load(self, beam_ro,
+             pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
+             pl_px, pl_py, pl_pz, pl_m, pl_q,
+             Ex, Ey, Ez, Bx, By, Bz, jx, jy):
         self._beam_ro[:, :] = np.ascontiguousarray(beam_ro)
 
-        self._Ex_sub[:, :] = np.ascontiguousarray(Ex_prev)
-        self._Ey_sub[:, :] = np.ascontiguousarray(Ey_prev)
-        self._Bx_sub[:, :] = np.ascontiguousarray(Bx_prev)
-        self._By_sub[:, :] = np.ascontiguousarray(By_prev)
+        self._Ex_sub[:, :] = np.ascontiguousarray(Ex)
+        self._Ey_sub[:, :] = np.ascontiguousarray(Ey)
+        self._Bx_sub[:, :] = np.ascontiguousarray(Bx)
+        self._By_sub[:, :] = np.ascontiguousarray(By)
 
         Nc = self.Nc
 
-        self._m[:, :] = np.ascontiguousarray(pl_m_prev.reshape(Nc, Nc))
-        self._q[:, :] = np.ascontiguousarray(pl_q_prev.reshape(Nc, Nc))
-        self._x_prev_offt[:, :] = np.ascontiguousarray(plasma_prev['x_offt'].reshape(Nc, Nc))
-        self._y_prev_offt[:, :] = np.ascontiguousarray(plasma_prev['y_offt'].reshape(Nc, Nc))
-        self._px_prev[:, :] = np.ascontiguousarray(pl_px_prev.reshape(Nc, Nc))
-        self._py_prev[:, :] = np.ascontiguousarray(pl_py_prev.reshape(Nc, Nc))
-        self._pz_prev[:, :] = np.ascontiguousarray(pl_pz_prev.reshape(Nc, Nc))
+        self._m[:, :] = np.ascontiguousarray(pl_m.reshape(Nc, Nc))
+        self._q[:, :] = np.ascontiguousarray(pl_q.reshape(Nc, Nc))
+        self._x_prev_offt[:, :] = np.ascontiguousarray(pl_x_offt.reshape(Nc, Nc))
+        self._y_prev_offt[:, :] = np.ascontiguousarray(pl_y_offt.reshape(Nc, Nc))
+        self._px_prev[:, :] = np.ascontiguousarray(pl_px.reshape(Nc, Nc))
+        self._py_prev[:, :] = np.ascontiguousarray(pl_py.reshape(Nc, Nc))
+        self._pz_prev[:, :] = np.ascontiguousarray(pl_pz.reshape(Nc, Nc))
 
-        self._Ex_prev[:, :] = np.ascontiguousarray(Ex_prev)
-        self._Ey_prev[:, :] = np.ascontiguousarray(Ey_prev)
-        self._Ez_prev[:, :] = np.ascontiguousarray(Ez_prev)
-        self._Bx_prev[:, :] = np.ascontiguousarray(Bx_prev)
-        self._By_prev[:, :] = np.ascontiguousarray(By_prev)
-        self._Bz_prev[:, :] = np.ascontiguousarray(Bz_prev)
-        self._jx_prev[:, :] = np.ascontiguousarray(jx_prev)
-        self._jy_prev[:, :] = np.ascontiguousarray(jy_prev)
+        self._Ex[:, :] = np.ascontiguousarray(Ex)
+        self._Ey[:, :] = np.ascontiguousarray(Ey)
+        self._Ez[:, :] = np.ascontiguousarray(Ez)
+        self._Bx[:, :] = np.ascontiguousarray(Bx)
+        self._By[:, :] = np.ascontiguousarray(By)
+        self._Bz[:, :] = np.ascontiguousarray(Bz)
+        self._jx[:, :] = np.ascontiguousarray(jx)
+        self._jy[:, :] = np.ascontiguousarray(jy)
 
-        #self._Ex[:, :] = self._Ex_prev
-        #self._Ey[:, :] = self._Ey_prev
-        #self._Ez[:, :] = self._Ez_prev
-        #self._Bx[:, :] = self._Bx_prev
-        #self._By[:, :] = self._By_prev
-        #self._Bz[:, :] = self._Bz_prev
+        #self._Ex[:, :] = self._Ex
+        #self._Ey[:, :] = self._Ey
+        #self._Ez[:, :] = self._Ez
+        #self._Bx[:, :] = self._Bx
+        #self._By[:, :] = self._By
+        #self._Bz[:, :] = self._Bz
 
         self._Ex_avg[:, :] = self._Ex
         self._Ey_avg[:, :] = self._Ey
@@ -766,8 +783,6 @@ class GPUMonolith:
         self._Bx_avg[:, :] = self._Bx
         self._By_avg[:, :] = self._By
         self._Bz_avg[:, :] = self._Bz
-
-        self.___plasma = plasma_prev.copy()
 
         numba.cuda.synchronize()
 
@@ -839,13 +854,15 @@ class GPUMonolith:
                                  self._ro, self._jx, self._jy, self._jz)
         numba.cuda.synchronize()
 
-    def initial_deposition(self, plasma_prev,
-                           pl_px_prev, pl_py_prev, pl_pz_prev,
-                           pl_m_prev, pl_q_prev):
+
+    def initial_deposition(self,
+                           pl_x_init, pl_y_init, pl_x_offt, pl_y_offt, 
+                           pl_px, pl_py, pl_pz,
+                           pl_m, pl_q):
         # Don't allow initial speeds for calculations with background ions
-        assert np.array_equiv(pl_px_prev, 0)
-        assert np.array_equiv(pl_py_prev, 0)
-        assert np.array_equiv(pl_pz_prev, 0)
+        assert np.array_equiv(pl_px, 0)
+        assert np.array_equiv(pl_py, 0)
+        assert np.array_equiv(pl_pz, 0)
 
         self._ro_initial[:, :] = 0
         self._ro[:, :] = 0
@@ -854,13 +871,13 @@ class GPUMonolith:
         self._jz[:, :] = 0
 
         Nc = self.Nc
-        self._m[:, :] = np.ascontiguousarray(pl_m_prev.reshape(Nc, Nc))
-        self._q[:, :] = np.ascontiguousarray(pl_q_prev.reshape(Nc, Nc))
-        self._x_new_offt[:, :] = np.ascontiguousarray(plasma_prev['x_offt'].reshape(Nc, Nc))
-        self._y_new_offt[:, :] = np.ascontiguousarray(plasma_prev['y_offt'].reshape(Nc, Nc))
-        self._px_new[:, :] = pl_px_prev.reshape((Nc, Nc))
-        self._py_new[:, :] = pl_py_prev.reshape((Nc, Nc))
-        self._pz_new[:, :] = pl_pz_prev.reshape((Nc, Nc))
+        self._m[:, :] = np.ascontiguousarray(pl_m.reshape(Nc, Nc))
+        self._q[:, :] = np.ascontiguousarray(pl_q.reshape(Nc, Nc))
+        self._x_new_offt[:, :] = np.ascontiguousarray(pl_x_offt.reshape(Nc, Nc))
+        self._y_new_offt[:, :] = np.ascontiguousarray(pl_y_offt.reshape(Nc, Nc))
+        self._px_new[:, :] = pl_px.reshape((Nc, Nc))
+        self._py_new[:, :] = pl_py.reshape((Nc, Nc))
+        self._pz_new[:, :] = pl_pz.reshape((Nc, Nc))
 
         self.deposit()
 
@@ -1033,14 +1050,6 @@ class GPUMonolith:
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
 
-    def __getattr__(self, array_name):
-        '''
-        Access GPU arrays of GPUMonolith conveniently, copying them to host.
-        Example: `gpu_monolith.ro` becomes `gpu_monolith._ro.copy_to_host()`.
-        '''
-        return getattr(self, '_' + array_name).copy_to_host()
-
-
     def reload(self, beam_ro):
         self._beam_ro[:, :] = np.ascontiguousarray(beam_ro)
 
@@ -1124,17 +1133,15 @@ def plasma_make(window_width, steps, coarseness=2, fineness=2):
     Nc, Nf = len(coarse_grid), len(fine_grid)
 
     # Create plasma particles on that grids
-
-    coarse_plasma = np.zeros(Nc**2, plasma_particle_dtype)
-    coarse_electrons = coarse_plasma.reshape(Nc, Nc)
-    coarse_electrons['x_init'] = coarse_grid_xs
-    coarse_electrons['y_init'] = coarse_grid_ys
+    coarse_electrons_x_init = np.broadcast_to(coarse_grid_xs, (Nc, Nc))
+    coarse_electrons_y_init = np.broadcast_to(coarse_grid_ys, (Nc, Nc))
+    coarse_electrons_x_offt = np.zeros((Nc, Nc))
+    coarse_electrons_y_offt = np.zeros((Nc, Nc))
     coarse_electrons_px = np.zeros((Nc, Nc))
     coarse_electrons_py = np.zeros((Nc, Nc))
     coarse_electrons_pz = np.zeros((Nc, Nc))
     coarse_electrons_m = np.ones((Nc, Nc)) * ELECTRON_MASS * coarseness**2
     coarse_electrons_q = np.ones((Nc, Nc)) * ELECTRON_CHARGE * coarseness**2
-    # x_offt, y_offt == 0
 
     # Calculate indices for coarse -> fine bilinear interpolation
 
@@ -1189,7 +1196,8 @@ def plasma_make(window_width, steps, coarseness=2, fineness=2):
     ratio = coarseness ** 2 * fineness ** 2
 
     # TODO: decide on a flat-or-square plasma
-    return (coarse_plasma.ravel(),
+    return (coarse_electrons_x_init, coarse_electrons_y_init,
+            coarse_electrons_x_offt, coarse_electrons_y_offt,
             coarse_electrons_px, coarse_electrons_py, coarse_electrons_pz,
             coarse_electrons_m, coarse_electrons_q,
             A_weights, B_weights, C_weights, D_weights,
@@ -1260,23 +1268,29 @@ def init(config):
     xs, ys = grid[:, None], grid[None, :]
 
     grid_step_size = config.window_width / config.grid_steps  # TODO: -1 or not?
-    plasma, pl_px, pl_py, pl_pz, pl_m, pl_q, *virt_params = plasma_make(
+    pl_x_init, pl_y_init, pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz, pl_m, pl_q, *virt_params = plasma_make(
         config.window_width - config.plasma_padding_steps * 2 * grid_step_size,
         config.grid_steps - config.plasma_padding_steps * 2,
         coarseness=config.plasma_coarseness, fineness=config.plasma_fineness
     )
 
-    gpu = GPUMonolith(config, plasma, pl_px, pl_py, pl_pz, pl_m, pl_q, *virt_params)
-    gpu.load(0, plasma, pl_px, pl_py, pl_pz, pl_m, pl_q,
+    gpu = GPUMonolith(config,
+                      pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
+                      pl_px, pl_py, pl_pz, pl_m, pl_q, *virt_params)
+    gpu.load(0,
+             pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
+             pl_px, pl_py, pl_pz, pl_m, pl_q,
              0, 0, 0, 0, 0, 0, 0, 0)
-    gpu.initial_deposition(plasma, pl_px, pl_py, pl_pz, pl_m, pl_q)
+    gpu.initial_deposition(pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
+                           pl_px, pl_py, pl_pz, pl_m, pl_q)
 
-    return gpu, xs, ys, plasma
+    return gpu, xs, ys
 
 
+# TODO: fold init, load, initial_deposition into GPUMonolith.__init__?
 def main():
     import config
-    gpu, xs, ys, plasma = init(config)
+    gpu, xs, ys = init(config)
 
     for xi_i in range(config.xi_steps):
         beam_ro = config.beam(xi_i, xs, ys)

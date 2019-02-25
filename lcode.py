@@ -43,14 +43,6 @@ USUAL_ION_CHARGE = 1
 USUAL_ION_MASS = 1836.152674 * 85.4678
 
 
-RoJ_dtype = np.dtype([
-    ('ro', np.double),
-    ('jz', np.double),
-    ('jx', np.double),
-    ('jy', np.double),
-], align=False)
-
-
 # TODO: macrosity
 plasma_particle_dtype = np.dtype([
     ('v', np.double, (3,)),
@@ -1034,34 +1026,12 @@ class GPUMonolith:
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
 
-    def unload(self):
-        roj = np.zeros((self.grid_steps, self.grid_steps), dtype=RoJ_dtype)
-        roj['ro'] = self._ro.copy_to_host()
-        roj['jx'] = self._jx.copy_to_host()
-        roj['jy'] = self._jy.copy_to_host()
-        roj['jz'] = self._jz.copy_to_host()
-
-        Ex = self._Ex.copy_to_host()
-        Ey = self._Ey.copy_to_host()
-        Ez = self._Ez.copy_to_host()
-        Bx = self._Bx.copy_to_host()
-        By = self._By.copy_to_host()
-        Bz = self._Bz.copy_to_host()
-
-        plasma = self.___plasma
-        plasma['m'] = self._m.reshape(plasma.shape)
-        plasma['q'] = self._q.reshape(plasma.shape)
-        plasma['x_init'] = self._x_new.reshape(plasma.shape)
-        plasma['y_init'] = self._y_new.reshape(plasma.shape)
-        plasma['x_offt'] = self._x_new.reshape(plasma.shape)
-        plasma['y_offt'] = self._y_new.reshape(plasma.shape)
-        plasma['p'][:, 1] = self._px_new.reshape(plasma.shape)
-        plasma['p'][:, 2] = self._py_new.reshape(plasma.shape)
-        plasma['p'][:, 0] = self._pz_new.reshape(plasma.shape)
-
-        numba.cuda.synchronize()
-
-        return roj, plasma, Ex, Ey, Ez, Bx, By, Bz
+    def __getattr__(self, array_name):
+        '''
+        Access GPU arrays of GPUMonolith conveniently, copying them to host.
+        Example: `gpu_monolith.ro` becomes `gpu_monolith._ro.copy_to_host()`.
+        '''
+        return getattr(self, '_' + array_name).copy_to_host()
 
 
     def reload(self, beam_ro):
@@ -1272,7 +1242,7 @@ def diagnostics(gpu, config, xi_i):
     Ez_00 = gpu._Ez[config.grid_steps // 2, config.grid_steps // 2]
     peak_report = diags_peak_msg(config, Ez_00)
 
-    ro = gpu._ro.copy_to_host()
+    ro = gpu.ro
     zn, max_zn = diags_ro_zn(config, ro)
     diags_ro_slice(config, xi_i, xi, ro)
 
@@ -1285,10 +1255,6 @@ def init(config):
             config.window_width / config.grid_steps -
             config.window_width / 2)
     xs, ys = grid[:, None], grid[None, :]
-
-    roj = np.zeros((config.grid_steps, config.grid_steps),
-                   dtype=RoJ_dtype)
-    roj_prev, roj_pprv = np.zeros_like(roj), np.zeros_like(roj)
 
     grid_step_size = config.window_width / config.grid_steps  # TODO: -1 or not?
     plasma, *virt_params = plasma_make(

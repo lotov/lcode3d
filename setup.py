@@ -10,12 +10,7 @@ from setuptools import setup
 
 setup(
     setup_requires=[
-        'cython>=0.21',
-        'mako>=1.0',
-        'numpy>=1.8.2',
         'pbr>=1.9',
-        'pbr<4',
-        'setuptools>=20',
     ],
     pbr=True,
 )

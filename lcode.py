@@ -1,4 +1,6 @@
-# Copyright (c) 2016-2017 LCODE team <team@lcode.info>.
+#!/usr/bin/env python3
+
+# Copyright (c) 2016-2019 LCODE team <team@lcode.info>.
 
 # LCODE is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -26,10 +28,13 @@ import numpy as np
 import numba
 import numba.cuda
 
-import pyculib.fft
+import cupy
 
 import scipy.ndimage
 import scipy.signal
+
+
+os.environ['OMP_NUM_THREADS'] = '1'
 
 
 USUAL_ELECTRON_CHARGE = -1
@@ -642,10 +647,10 @@ class GPUMonolith:
         # * scratchpad arrays for Dirichlet boundary conditions solver
         self._Ez_bet = numba.cuda.device_array((N, N))
 
-        self.dct_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
-                                            itype=np.float64,
-                                            otype=np.complex128,
-                                            batch=(4 * N))
+        #self.dct_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
+        #                                    itype=np.float64,
+        #                                    otype=np.complex128,
+        #                                    batch=(4 * N))
         # (2 * N - 2) // 2 + 1 == (N - 1) + 1 == N
         self._combined_dct1_in = numba.cuda.device_array((4 * N, 2 * N - 2))
         self._combined_dct1_out = numba.cuda.device_array((4 * N, N), dtype=np.complex128)
@@ -676,10 +681,10 @@ class GPUMonolith:
         self._Bx_sub = numba.cuda.device_array((N, N))
         self._By_sub = numba.cuda.device_array((N, N))
 
-        self.dst_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
-                                            itype=np.float64,
-                                            otype=np.complex128,
-                                            batch=(N - 2))
+        #self.dst_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
+        #                                    itype=np.float64,
+        #                                    otype=np.complex128,
+        #                                    batch=(N - 2))
         self._Ez_dst1_in = numba.cuda.device_array((N - 2, 2 * N - 2))
         self._Ez_dst1_out = numba.cuda.device_array((N - 2, N), dtype=np.complex128)
         self._Ez_dst2_in = numba.cuda.device_array((N - 2, 2 * N - 2))
@@ -898,8 +903,9 @@ class GPUMonolith:
     def calculate_Ex_Ey_Bx_By_1(self):
         # 1. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
         # iDCT-1 is just DCT-1 in cuFFT
-        self.dct_plan.forward(self._combined_dct1_in.ravel(),
-                              self._combined_dct1_out.ravel())
+        #self.dct_plan.forward(self._combined_dct1_in.ravel(),
+        #                      self._combined_dct1_out.ravel())
+        self._combined_dct1_out[:, :] = cupy.fft.rfft(cupy.asarray(self._combined_dct1_in))
         numba.cuda.synchronize()
         # This implementation of DCT is real-to-complex, so scrapping the i, j
         # element of the transposed answer would be dct1_out[j, i].real
@@ -917,8 +923,9 @@ class GPUMonolith:
 
     def calculate_Ex_Ey_Bx_By_3(self):
         # 3. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
-        self.dct_plan.forward(self._combined_dct2_in.ravel(),
-                              self._combined_dct2_out.ravel())
+        #self.dct_plan.forward(self._combined_dct2_in.ravel(),
+        #                      self._combined_dct2_out.ravel())
+        self._combined_dct2_out[:, :] = cupy.fft.rfft(cupy.asarray(self._combined_dct2_in))
         numba.cuda.synchronize()
 
     def calculate_Ex_Ey_Bx_By_4(self):
@@ -951,8 +958,9 @@ class GPUMonolith:
     def calculate_Ez_1(self):
         # 1. Apply iDST-1 (Discrete Sine Transform Type 1) to the RHS
         # iDST-1 is just DST-1 in cuFFT
-        self.dst_plan.forward(self._Ez_dst1_in.ravel(),
-                              self._Ez_dst1_out.ravel())
+        #self.dst_plan.forward(self._Ez_dst1_in.ravel(),
+        #                      self._Ez_dst1_out.ravel())
+        self._Ez_dst1_out[:, :] = cupy.fft.rfft(cupy.asarray(self._Ez_dst1_in))
         numba.cuda.synchronize()
         # This implementation of DST is real-to-complex, so scrapping the i, j
         # element of the transposed answer would be -dst1_out[j, i + 1].imag
@@ -965,8 +973,9 @@ class GPUMonolith:
 
     def calculate_Ez_3(self):
         # 3. Apply DST-1 (Discrete Sine Transform Type 1) to the transformed spectra
-        self.dst_plan.forward(self._Ez_dst2_in.ravel(),
-                              self._Ez_dst2_out.ravel())
+        #self.dst_plan.forward(self._Ez_dst2_in.ravel(),
+        #                      self._Ez_dst2_out.ravel())
+        self._Ez_dst2_out[:, :] = cupy.fft.rfft(cupy.asarray(self._Ez_dst2_in))
         numba.cuda.synchronize()
 
     def calculate_Ez_4(self):
@@ -1239,9 +1248,9 @@ def diags_peak_msg(config, Ez_00):
     if peak_indices.size:
         peak_values = Ez_00_array[peak_indices]
         rel_deviations_perc = 100 * (peak_values / peak_values[0] - 1)
-        return (f'{peak_values[-1]:0.3e} '
-                f'{rel_deviations_perc[-1]:+0.2f}% '
-                f'±{rel_deviations_perc.ptp() / 2:0.2f}%')
+        return (f'{peak_values[-1]:0.4e} '
+                f'{rel_deviations_perc[-1]:+0.2f}%')
+                #f' ±{rel_deviations_perc.ptp() / 2:0.2f}%')
     else:
         return '...'
 
@@ -1267,7 +1276,7 @@ def diagnostics(gpu, config, xi_i):
     zn, max_zn = diags_ro_zn(config, ro)
     diags_ro_slice(config, xi_i, xi, ro)
 
-    print(f'xi={xi:+.4f} {Ez_00:+.3e}|{peak_report}|zn={zn:.3f}/{max_zn:.3f}')
+    print(f'xi={xi:+.4f} {Ez_00:+.4e}|{peak_report}|zn={max_zn:.3f}')
     sys.stdout.flush()
 
 

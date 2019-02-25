@@ -1,6 +1,4 @@
-h5py>=2.2
-hacks>=0.0.11
-mako>=0.1
 matplotlib>=1.4
 scipy>=0.14
-numba>=0.41.0
+numba>=0.41
+cupy>=5.1

@@ -670,9 +670,9 @@ class GPUMonolith:
         self._Ez_dst2_out = cp.zeros((N - 2, N), dtype=np.complex128)
         self._Ez = cp.zeros((N, N))
 
-        self._Ez_dst1_in[:, :] = 0
-        self._Ez_dst2_in[:, :] = 0
-        self._Ez[:, :] = 0
+        self._Ez_dst1_in[...] = 0
+        self._Ez_dst2_in[...] = 0
+        self._Ez[...] = 0
 
         # total multiplier to compensate for the iDST+DST transforms
         self.Ez_mul = self.grid_step_size**2
@@ -683,7 +683,7 @@ class GPUMonolith:
         self.mix_mul /= 2 * N - 2  # don't ask
 
         self._Bz = cp.zeros((N, N))
-        self._Bz[:, :] = 0  # Bz = 0 for now
+        self._Bz[...] = 0  # Bz = 0 for now
 
         self._ro_initial = cp.zeros((N, N))
         self._ro = cp.zeros((N, N))
@@ -725,7 +725,7 @@ class GPUMonolith:
                         def getter(self):
                             return getattr(self, attrname).copy_to_host()
                         def setter(self, val):
-                            getattr(self, attrname)[:, :] = val
+                            getattr(self, attrname)[...] = val
                         setattr(cls, attrname_unpref, property(getter, setter))
                     hook_property(type(self), attrname)
         # Allow accessing `gpu_monolith.ro`
@@ -737,7 +737,7 @@ class GPUMonolith:
                         def getter(self):
                             return getattr(self, attrname).get()
                         def setter(self, val):
-                            getattr(self, attrname)[:, :] = val
+                            getattr(self, attrname)[...] = val
                         setattr(cls, attrname_unpref, property(getter, setter))
                     hook_property(type(self), attrname)
 
@@ -746,45 +746,45 @@ class GPUMonolith:
              pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
              pl_px, pl_py, pl_pz, pl_m, pl_q,
              Ex, Ey, Ez, Bx, By, Bz, jx, jy):
-        self._beam_ro[:, :] = cp.array(beam_ro)
+        self._beam_ro[...] = cp.array(beam_ro)
 
-        self._Ex_sub[:, :] = cp.array(Ex)
-        self._Ey_sub[:, :] = cp.array(Ey)
-        self._Bx_sub[:, :] = cp.array(Bx)
-        self._By_sub[:, :] = cp.array(By)
+        self._Ex_sub[...] = cp.array(Ex)
+        self._Ey_sub[...] = cp.array(Ey)
+        self._Bx_sub[...] = cp.array(Bx)
+        self._By_sub[...] = cp.array(By)
 
         Nc = self.Nc
 
-        self._m[:, :] = cp.array(pl_m)
-        self._q[:, :] = cp.array(pl_q)
-        self._x_prev_offt[:, :] = cp.array(pl_x_offt)
-        self._y_prev_offt[:, :] = cp.array(pl_y_offt)
-        self._px_prev[:, :] = cp.array(pl_px)
-        self._py_prev[:, :] = cp.array(pl_py)
-        self._pz_prev[:, :] = cp.array(pl_pz)
+        self._m[...] = cp.array(pl_m)
+        self._q[...] = cp.array(pl_q)
+        self._x_prev_offt[...] = cp.array(pl_x_offt)
+        self._y_prev_offt[...] = cp.array(pl_y_offt)
+        self._px_prev[...] = cp.array(pl_px)
+        self._py_prev[...] = cp.array(pl_py)
+        self._pz_prev[...] = cp.array(pl_pz)
 
-        self._Ex[:, :] = cp.array(Ex)
-        self._Ey[:, :] = cp.array(Ey)
-        self._Ez[:, :] = cp.array(Ez)
-        self._Bx[:, :] = cp.array(Bx)
-        self._By[:, :] = cp.array(By)
-        self._Bz[:, :] = cp.array(Bz)
-        self._jx[:, :] = cp.array(jx)
-        self._jy[:, :] = cp.array(jy)
+        self._Ex[...] = cp.array(Ex)
+        self._Ey[...] = cp.array(Ey)
+        self._Ez[...] = cp.array(Ez)
+        self._Bx[...] = cp.array(Bx)
+        self._By[...] = cp.array(By)
+        self._Bz[...] = cp.array(Bz)
+        self._jx[...] = cp.array(jx)
+        self._jy[...] = cp.array(jy)
 
-        #self._Ex[:, :] = self._Ex
-        #self._Ey[:, :] = self._Ey
-        #self._Ez[:, :] = self._Ez
-        #self._Bx[:, :] = self._Bx
-        #self._By[:, :] = self._By
-        #self._Bz[:, :] = self._Bz
+        #self._Ex[...] = self._Ex
+        #self._Ey[...] = self._Ey
+        #self._Ez[...] = self._Ez
+        #self._Bx[...] = self._Bx
+        #self._By[...] = self._By
+        #self._Bz[...] = self._Bz
 
-        self._Ex_avg[:, :] = self._Ex
-        self._Ey_avg[:, :] = self._Ey
-        self._Ez_avg[:, :] = self._Ez
-        self._Bx_avg[:, :] = self._Bx
-        self._By_avg[:, :] = self._By
-        self._Bz_avg[:, :] = self._Bz
+        self._Ex_avg[...] = self._Ex
+        self._Ey_avg[...] = self._Ey
+        self._Ez_avg[...] = self._Ez
+        self._Bx_avg[...] = self._Bx
+        self._By_avg[...] = self._By
+        self._Bz_avg[...] = self._Bz
 
         numba.cuda.synchronize()
 
@@ -866,24 +866,24 @@ class GPUMonolith:
         assert np.array_equiv(pl_py, 0)
         assert np.array_equiv(pl_pz, 0)
 
-        self._ro_initial[:, :] = 0
-        self._ro[:, :] = 0
-        self._jx[:, :] = 0
-        self._jy[:, :] = 0
-        self._jz[:, :] = 0
+        self._ro_initial[...] = 0
+        self._ro[...] = 0
+        self._jx[...] = 0
+        self._jy[...] = 0
+        self._jz[...] = 0
 
         Nc = self.Nc
-        self._m[:, :] = cp.array(pl_m)
-        self._q[:, :] = cp.array(pl_q)
-        self._x_new_offt[:, :] = cp.array(pl_x_offt)
-        self._y_new_offt[:, :] = cp.array(pl_y_offt)
-        self._px_new[:, :] = cp.array(pl_px)
-        self._py_new[:, :] = cp.array(pl_py)
-        self._pz_new[:, :] = cp.array(pl_pz)
+        self._m[...] = cp.array(pl_m)
+        self._q[...] = cp.array(pl_q)
+        self._x_new_offt[...] = cp.array(pl_x_offt)
+        self._y_new_offt[...] = cp.array(pl_y_offt)
+        self._px_new[...] = cp.array(pl_px)
+        self._py_new[...] = cp.array(pl_py)
+        self._pz_new[...] = cp.array(pl_pz)
 
         self.deposit()
 
-        self._ro_initial[:, :] = -self._ro  # Right on the GPU, huh
+        self._ro_initial[...] = -self._ro  # Right on the GPU, huh
         numba.cuda.synchronize()
 
 
@@ -922,10 +922,10 @@ class GPUMonolith:
     def calculate_Ex_Ey_Bx_By_1(self):
         # 1. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
         # iDCT-1 is just DCT-1 in cuFFT
-        self._Ex_dct1_out[:, :] = cp.fft.rfft(cp.asarray(self._Ex_dct1_in))
-        self._Ey_dct1_out[:, :] = cp.fft.rfft(cp.asarray(self._Ey_dct1_in))
-        self._Bx_dct1_out[:, :] = cp.fft.rfft(cp.asarray(self._Bx_dct1_in))
-        self._By_dct1_out[:, :] = cp.fft.rfft(cp.asarray(self._By_dct1_in))
+        self._Ex_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Ex_dct1_in))
+        self._Ey_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Ey_dct1_in))
+        self._Bx_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Bx_dct1_in))
+        self._By_dct1_out[...] = cp.fft.rfft(cp.asarray(self._By_dct1_in))
         numba.cuda.synchronize()
         # This implementation of DCT is real-to-complex, so scrapping the i, j
         # element of the transposed answer would be dct1_out[j, i].real
@@ -943,10 +943,10 @@ class GPUMonolith:
 
     def calculate_Ex_Ey_Bx_By_3(self):
         # 3. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
-        self._Ex_dct2_out[:, :] = cp.fft.rfft(cp.asarray(self._Ex_dct2_in))
-        self._Ey_dct2_out[:, :] = cp.fft.rfft(cp.asarray(self._Ey_dct2_in))
-        self._Bx_dct2_out[:, :] = cp.fft.rfft(cp.asarray(self._Bx_dct2_in))
-        self._By_dct2_out[:, :] = cp.fft.rfft(cp.asarray(self._By_dct2_in))
+        self._Ex_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Ex_dct2_in))
+        self._Ey_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Ey_dct2_in))
+        self._Bx_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Bx_dct2_in))
+        self._By_dct2_out[...] = cp.fft.rfft(cp.asarray(self._By_dct2_in))
         numba.cuda.synchronize()
 
     def calculate_Ex_Ey_Bx_By_4(self):
@@ -981,7 +981,7 @@ class GPUMonolith:
         # iDST-1 is just DST-1 in cuFFT
         #self.dst_plan.forward(self._Ez_dst1_in.ravel(),
         #                      self._Ez_dst1_out.ravel())
-        self._Ez_dst1_out[:, :] = cp.fft.rfft(cp.asarray(self._Ez_dst1_in))
+        self._Ez_dst1_out[...] = cp.fft.rfft(cp.asarray(self._Ez_dst1_in))
         numba.cuda.synchronize()
         # This implementation of DST is real-to-complex, so scrapping the i, j
         # element of the transposed answer would be -dst1_out[j, i + 1].imag
@@ -996,7 +996,7 @@ class GPUMonolith:
         # 3. Apply DST-1 (Discrete Sine Transform Type 1) to the transformed spectra
         #self.dst_plan.forward(self._Ez_dst2_in.ravel(),
         #                      self._Ez_dst2_out.ravel())
-        self._Ez_dst2_out[:, :] = cp.fft.rfft(cp.asarray(self._Ez_dst2_in))
+        self._Ez_dst2_out[...] = cp.fft.rfft(cp.asarray(self._Ez_dst2_in))
         numba.cuda.synchronize()
 
     def calculate_Ez_4(self):
@@ -1012,10 +1012,10 @@ class GPUMonolith:
         average_arrays_kernel[self.cfg](self._Ez_prev.ravel(), self._Ez.ravel(), self._Ez_avg.ravel())
         average_arrays_kernel[self.cfg](self._Bx_prev.ravel(), self._Bx.ravel(), self._Bx_avg.ravel())
         average_arrays_kernel[self.cfg](self._By_prev.ravel(), self._By.ravel(), self._By_avg.ravel())
-        self._Ex_sub[:, :] = self._Ex_avg
-        self._Ey_sub[:, :] = self._Ey_avg
-        self._Bx_sub[:, :] = self._Bx_avg
-        self._By_sub[:, :] = self._By_avg
+        self._Ex_sub[...] = self._Ex_avg
+        self._Ey_sub[...] = self._Ey_avg
+        self._Bx_sub[...] = self._Bx_avg
+        self._By_sub[...] = self._By_avg
         # average_arrays_kernel[self.cfg](self._Bz_prev.ravel(), self._Bz.ravel(), self._Bz_avg.ravel())  # 0 for now
         numba.cuda.synchronize()
 
@@ -1056,37 +1056,37 @@ class GPUMonolith:
 
 
     def reload(self, beam_ro):
-        self._beam_ro[:, :] = cp.array(beam_ro)
+        self._beam_ro[...] = cp.array(beam_ro)
 
         # TODO: array relabeling instead of copying?..
 
         # Intact: self._m, self._q
-        self._x_prev_offt[:, :] = cp.array(self._x_new_offt)
-        self._y_prev_offt[:, :] = cp.array(self._y_new_offt)
-        self._px_prev[:, :] = cp.array(self._px_new)
-        self._py_prev[:, :] = cp.array(self._py_new)
-        self._pz_prev[:, :] = cp.array(self._pz_new)
+        self._x_prev_offt[...] = cp.array(self._x_new_offt)
+        self._y_prev_offt[...] = cp.array(self._y_new_offt)
+        self._px_prev[...] = cp.array(self._px_new)
+        self._py_prev[...] = cp.array(self._py_new)
+        self._pz_prev[...] = cp.array(self._pz_new)
 
-        self._Ex_prev[:, :] = self._Ex
-        self._Ey_prev[:, :] = self._Ey
-        self._Ez_prev[:, :] = self._Ez
-        self._Bx_prev[:, :] = self._Bx
-        self._By_prev[:, :] = self._By
-        self._Bz_prev[:, :] = self._Bz
-        self._jx_prev[:, :] = self._jx
-        self._jy_prev[:, :] = self._jy
+        self._Ex_prev[...] = self._Ex
+        self._Ey_prev[...] = self._Ey
+        self._Ez_prev[...] = self._Ez
+        self._Bx_prev[...] = self._Bx
+        self._By_prev[...] = self._By
+        self._Bz_prev[...] = self._Bz
+        self._jx_prev[...] = self._jx
+        self._jy_prev[...] = self._jy
 
-        self._Ex_avg[:, :] = self._Ex
-        self._Ey_avg[:, :] = self._Ey
-        self._Ez_avg[:, :] = self._Ez
-        self._Bx_avg[:, :] = self._Bx
-        self._By_avg[:, :] = self._By
-        self._Bz_avg[:, :] = self._Bz
+        self._Ex_avg[...] = self._Ex
+        self._Ey_avg[...] = self._Ey
+        self._Ez_avg[...] = self._Ez
+        self._Bx_avg[...] = self._Bx
+        self._By_avg[...] = self._By
+        self._Bz_avg[...] = self._Bz
 
-        self._Ex_sub[:, :] = self._Ex
-        self._Ey_sub[:, :] = self._Ey
-        self._Bx_sub[:, :] = self._Bx
-        self._By_sub[:, :] = self._By
+        self._Ex_sub[...] = self._Ex
+        self._Ey_sub[...] = self._Ey
+        self._Bx_sub[...] = self._Bx
+        self._By_sub[...] = self._By
 
         numba.cuda.synchronize()
 

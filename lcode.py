@@ -45,14 +45,6 @@ ELECTRON_MASS = 1
 
 
 @numba.cuda.jit
-def zerofill_kernel(arr1d):
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, arr1d.size, stride):
-        arr1d[k] = 0
-
-
-@numba.cuda.jit
 def move_predict_halfstep_kernel(xi_step_size, reflect_boundary, ms,
                                  x_init, y_init, old_x_offt, old_y_offt,
                                  pxs, pys, pzs,

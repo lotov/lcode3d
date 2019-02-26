@@ -71,7 +71,13 @@ def move_predict_halfstep_kernel(xi_step_size, reflect_boundary, ms,
 
 
 @numba.jit(inline=True)
-def weights(x_loc, y_loc):
+def weights(x, y, grid_steps, grid_step_size):
+    x_h, y_h = x / grid_step_size + .5, y / grid_step_size + .5
+    i, j = int(floor(x_h) + grid_steps // 2), int(floor(y_h) + grid_steps // 2)
+    x_loc, y_loc = x_h - floor(x_h) - .5, y_h - floor(y_h) - .5
+    # centered to -.5 to 5, not 0 to 1, as formulas use offset from cell center
+    # TODO: get rid of these deoffsetting/reoffsetting festival
+
     wx0, wy0 = .75 - x_loc**2, .75 - y_loc**2  # fx1, fy1
     wxP, wyP = (.5 + x_loc)**2 / 2, (.5 + y_loc)**2 / 2  # fx2**2/2, fy2**2/2
     wxM, wyM = (.5 - x_loc)**2 / 2, (.5 - y_loc)**2 / 2  # fx3**2/2, fy3**2/2
@@ -80,16 +86,30 @@ def weights(x_loc, y_loc):
     wM0, w00, wP0 = wxM * wy0, wx0 * wy0, wxP * wy0
     wMM, w0M, wPM = wxM * wyM, wx0 * wyM, wxP * wyM
 
-    return wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM
+    return i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM
 
 
 @numba.jit(inline=True)
-def interpolate(a, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
+def interp9(a, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     return (
         a[i - 1, j + 1] * wMP + a[i + 0, j + 1] * w0P + a[i + 1, j + 1] * wPP +
         a[i - 1, j + 0] * wM0 + a[i + 0, j + 0] * w00 + a[i + 1, j + 0] * wP0 +
         a[i - 1, j - 1] * wMM + a[i + 0, j - 1] * w0M + a[i + 1, j - 1] * wPM
     )
+
+
+@numba.jit(inline=True)
+def deposit9(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
+    # atomic +=, thread-safe
+    numba.cuda.atomic.add(a, (i - 1, j + 1), val * wMP)
+    numba.cuda.atomic.add(a, (i + 0, j + 1), val * w0P)
+    numba.cuda.atomic.add(a, (i + 1, j + 1), val * wPP)
+    numba.cuda.atomic.add(a, (i - 1, j + 0), val * wM0)
+    numba.cuda.atomic.add(a, (i + 0, j + 0), val * w00)
+    numba.cuda.atomic.add(a, (i + 1, j + 0), val * wP0)
+    numba.cuda.atomic.add(a, (i - 1, j - 1), val * wMM)
+    numba.cuda.atomic.add(a, (i + 0, j - 1), val * w0M)
+    numba.cuda.atomic.add(a, (i + 1, j - 1), val * wPM)
 
 
 # TODO: write a version fused with averaging
@@ -101,20 +121,15 @@ def interpolate_kernel(x_init, y_init, x_offt, y_offt, Ex, Ey, Ez, Bx, By, Bz,
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
     for k in range(index, x_init.size, stride):
-        x_h = (x_init[k] + x_offt[k]) / grid_step_size + .5
-        y_h = (y_init[k] + y_offt[k]) / grid_step_size + .5
-        i = int(floor(x_h) + grid_steps // 2)
-        j = int(floor(y_h) + grid_steps // 2)
-        x_loc = x_h - floor(x_h) - .5  # centered to -.5 to 5, not 0 to 1 because
-        y_loc = y_h - floor(y_h) - .5  # the latter formulas use offset from cell center
-
-        wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(x_loc, y_loc)
-
-        Exs[k] = interpolate(Ex, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Eys[k] = interpolate(Ey, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Ezs[k] = interpolate(Ez, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Bxs[k] = interpolate(Bx, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Bys[k] = interpolate(By, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        x, y = x_init[k] + x_offt[k], y_init[k] + y_offt[k]
+        i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
+            x, y, grid_steps, grid_step_size
+        )
+        Exs[k] = interp9(Ex, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Eys[k] = interp9(Ey, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Ezs[k] = interp9(Ez, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Bxs[k] = interp9(Bx, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Bys[k] = interp9(By, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
         Bzs[k] = 0  # Bz = 0 for now
 
 
@@ -129,7 +144,7 @@ def roj_init_kernel(ro, jx, jy, jz, ro_initial):
 
 
 @numba.cuda.jit
-def deposit_kernel(n_dim, h,
+def deposit_kernel(grid_steps, grid_step_size,
                    fine_grid,
                    c_x_init, c_y_init, c_x_offt, c_y_offt,
                    c_m, c_q, c_p_x, c_p_y, c_p_z,  # coarse
@@ -170,66 +185,13 @@ def deposit_kernel(n_dim, h,
         djy = p_y * (dro / gamma_m)
         djz = p_z * (dro / gamma_m)
 
-        x_h = x / h + .5
-        y_h = y / h + .5
-        i = int(floor(x_h)) + n_dim // 2
-        j = int(floor(y_h)) + n_dim // 2
-        x_loc = x_h - floor(x_h) - 0.5
-        y_loc = y_h - floor(y_h) - 0.5
-
-        fx1 = .75 - x_loc**2
-        fy1 = .75 - y_loc**2
-        fx2 = .5  + x_loc
-        fy2 = .5  + y_loc
-        fx3 = .5  - x_loc
-        fy3 = .5  - y_loc
-
-        fx2_sq = fx2**2
-        fy2_sq = fy2**2
-        fx3_sq = fx3**2
-        fy3_sq = fy3**2
-
-        # atomic +=, thread-safe
-        numba.cuda.atomic.add(out_ro, (i + 0, j + 0), dro * (fx1 * fy1))
-        numba.cuda.atomic.add(out_ro, (i + 1, j + 0), dro * (fx2_sq * (fy1 / 2)))
-        numba.cuda.atomic.add(out_ro, (i + 0, j + 1), dro * (fy2_sq * (fx1 / 2)))
-        numba.cuda.atomic.add(out_ro, (i + 1, j + 1), dro * (fx2_sq * (fy2_sq / 4)))
-        numba.cuda.atomic.add(out_ro, (i - 1, j + 0), dro * (fx3_sq * (fy1 / 2)))
-        numba.cuda.atomic.add(out_ro, (i + 0, j - 1), dro * (fy3_sq * (fx1 / 2)))
-        numba.cuda.atomic.add(out_ro, (i - 1, j - 1), dro * (fx3_sq * (fy3_sq / 4)))
-        numba.cuda.atomic.add(out_ro, (i - 1, j + 1), dro * (fx3_sq * (fy2_sq / 4)))
-        numba.cuda.atomic.add(out_ro, (i + 1, j - 1), dro * (fx2_sq * (fy3_sq / 4)))
-
-        numba.cuda.atomic.add(out_jx, (i + 0, j + 0), djx * (fx1 * fy1))
-        numba.cuda.atomic.add(out_jx, (i + 1, j + 0), djx * (fx2_sq * (fy1 / 2)))
-        numba.cuda.atomic.add(out_jx, (i + 0, j + 1), djx * (fy2_sq * (fx1 / 2)))
-        numba.cuda.atomic.add(out_jx, (i + 1, j + 1), djx * (fx2_sq * (fy2_sq / 4)))
-        numba.cuda.atomic.add(out_jx, (i - 1, j + 0), djx * (fx3_sq * (fy1 / 2)))
-        numba.cuda.atomic.add(out_jx, (i + 0, j - 1), djx * (fy3_sq * (fx1 / 2)))
-        numba.cuda.atomic.add(out_jx, (i - 1, j - 1), djx * (fx3_sq * (fy3_sq / 4)))
-        numba.cuda.atomic.add(out_jx, (i - 1, j + 1), djx * (fx3_sq * (fy2_sq / 4)))
-        numba.cuda.atomic.add(out_jx, (i + 1, j - 1), djx * (fx2_sq * (fy3_sq / 4)))
-
-        numba.cuda.atomic.add(out_jy, (i + 0, j + 0), djy * (fx1 * fy1))
-        numba.cuda.atomic.add(out_jy, (i + 1, j + 0), djy * (fx2_sq * (fy1 / 2)))
-        numba.cuda.atomic.add(out_jy, (i + 0, j + 1), djy * (fy2_sq * (fx1 / 2)))
-        numba.cuda.atomic.add(out_jy, (i + 1, j + 1), djy * (fx2_sq * (fy2_sq / 4)))
-        numba.cuda.atomic.add(out_jy, (i - 1, j + 0), djy * (fx3_sq * (fy1 / 2)))
-        numba.cuda.atomic.add(out_jy, (i + 0, j - 1), djy * (fy3_sq * (fx1 / 2)))
-        numba.cuda.atomic.add(out_jy, (i - 1, j - 1), djy * (fx3_sq * (fy3_sq / 4)))
-        numba.cuda.atomic.add(out_jy, (i - 1, j + 1), djy * (fx3_sq * (fy2_sq / 4)))
-        numba.cuda.atomic.add(out_jy, (i + 1, j - 1), djy * (fx2_sq * (fy3_sq / 4)))
-
-        numba.cuda.atomic.add(out_jz, (i + 0, j + 0), djz * (fx1 * fy1))
-        numba.cuda.atomic.add(out_jz, (i + 1, j + 0), djz * (fx2_sq * (fy1 / 2)))
-        numba.cuda.atomic.add(out_jz, (i + 0, j + 1), djz * (fy2_sq * (fx1 / 2)))
-        numba.cuda.atomic.add(out_jz, (i + 1, j + 1), djz * (fx2_sq * (fy2_sq / 4)))
-        numba.cuda.atomic.add(out_jz, (i - 1, j + 0), djz * (fx3_sq * (fy1 / 2)))
-        numba.cuda.atomic.add(out_jz, (i + 0, j - 1), djz * (fy3_sq * (fx1 / 2)))
-        numba.cuda.atomic.add(out_jz, (i - 1, j - 1), djz * (fx3_sq * (fy3_sq / 4)))
-        numba.cuda.atomic.add(out_jz, (i - 1, j + 1), djz * (fx3_sq * (fy2_sq / 4)))
-        numba.cuda.atomic.add(out_jz, (i + 1, j - 1), djz * (fx2_sq * (fy3_sq / 4)))
-    #numba.cuda.syncthreads()
+        i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
+            x, y, grid_steps, grid_step_size
+        )
+        deposit9(out_ro, i, j, dro, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        deposit9(out_jx, i, j, djx, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        deposit9(out_jy, i, j, djy, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        deposit9(out_jz, i, j, djz, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
 
 
 @numba.cuda.jit

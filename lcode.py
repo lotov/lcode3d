@@ -70,6 +70,28 @@ def move_predict_halfstep_kernel(xi_step_size, reflect_boundary, ms,
         halfstep_x_offt[k], halfstep_y_offt[k] = x - x_init[k], y - y_init[k]
 
 
+@numba.jit(inline=True)
+def weights(x_loc, y_loc):
+    wx0, wy0 = .75 - x_loc**2, .75 - y_loc**2  # fx1, fy1
+    wxP, wyP = (.5 + x_loc)**2 / 2, (.5 + y_loc)**2 / 2  # fx2**2/2, fy2**2/2
+    wxM, wyM = (.5 - x_loc)**2 / 2, (.5 - y_loc)**2 / 2  # fx3**2/2, fy3**2/2
+
+    wMP, w0P, wPP = wxM * wyP, wx0 * wyP, wxP * wyP
+    wM0, w00, wP0 = wxM * wy0, wx0 * wy0, wxP * wy0
+    wMM, w0M, wPM = wxM * wyM, wx0 * wyM, wxP * wyM
+
+    return wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM
+
+
+@numba.jit(inline=True)
+def interpolate(a, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
+    return (
+        a[i - 1, j + 1] * wMP + a[i + 0, j + 1] * w0P + a[i + 1, j + 1] * wPP +
+        a[i - 1, j + 0] * wM0 + a[i + 0, j + 0] * w00 + a[i + 1, j + 0] * wP0 +
+        a[i - 1, j - 1] * wMM + a[i + 0, j - 1] * w0M + a[i + 1, j - 1] * wPM
+    )
+
+
 # TODO: write a version fused with averaging
 # TODO: fuse with moving?
 @numba.cuda.jit
@@ -86,88 +108,13 @@ def interpolate_kernel(x_init, y_init, x_offt, y_offt, Ex, Ey, Ez, Bx, By, Bz,
         x_loc = x_h - floor(x_h) - .5  # centered to -.5 to 5, not 0 to 1 because
         y_loc = y_h - floor(y_h) - .5  # the latter formulas use offset from cell center
 
-        fx1 = .75 - x_loc**2
-        fy1 = .75 - y_loc**2
-        fx2 = .5 + x_loc
-        fy2 = .5 + y_loc
-        fx3 = .5 - x_loc
-        fy3 = .5 - y_loc
+        wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(x_loc, y_loc)
 
-        # TODO: use the same names in deposition?
-        w00 = fx1 * fy1
-        wP0 = fx2**2 * (fy1 / 2)
-        w0P = fy2**2 * (fx1 / 2)
-        wPP = fx2**2 * (fy2**2 / 4)
-        wM0 = fx3**2 * (fy1 / 2)
-        w0M = fy3**2 * (fx1 / 2)
-        wMM = fx3**2 * (fy3**2 / 4)
-        wMP = fx3**2 * (fy2**2 / 4)
-        wPM = fx2**2 * (fy3**2 / 4)
-
-        # wx0, wy0 = .75 - x_loc**2, .75 - y_loc**2  # fx1, fy1
-        # wxP, wyP = (.5 + x_loc)**2 / 2, (.5 + y_loc)**2 / 2 # fx2**2 / 2, fy2**2 / 2
-        # wxM, wyM = (.5 - x_loc)**2 / 2, (.5 - y_loc)**2 / 2 # fx3**2 / 2, fy3**2 / 2
-
-        Exs[k] = (
-            Ex[i + 0, j + 0] * w00 +
-            Ex[i + 1, j + 0] * wP0 +
-            Ex[i + 0, j + 1] * w0P +
-            Ex[i + 1, j + 1] * wPP +
-            Ex[i - 1, j + 0] * wM0 +
-            Ex[i + 0, j - 1] * w0M +
-            Ex[i - 1, j - 1] * wMM +
-            Ex[i - 1, j + 1] * wMP +
-            Ex[i + 1, j - 1] * wPM
-        )
-
-        Eys[k] = (
-            Ey[i + 0, j + 0] * w00 +
-            Ey[i + 1, j + 0] * wP0 +
-            Ey[i + 0, j + 1] * w0P +
-            Ey[i + 1, j + 1] * wPP +
-            Ey[i - 1, j + 0] * wM0 +
-            Ey[i + 0, j - 1] * w0M +
-            Ey[i - 1, j - 1] * wMM +
-            Ey[i - 1, j + 1] * wMP +
-            Ey[i + 1, j - 1] * wPM
-        )
-
-        Ezs[k] = (
-            Ez[i + 0, j + 0] * w00 +
-            Ez[i + 1, j + 0] * wP0 +
-            Ez[i + 0, j + 1] * w0P +
-            Ez[i + 1, j + 1] * wPP +
-            Ez[i - 1, j + 0] * wM0 +
-            Ez[i + 0, j - 1] * w0M +
-            Ez[i - 1, j - 1] * wMM +
-            Ez[i - 1, j + 1] * wMP +
-            Ez[i + 1, j - 1] * wPM
-        )
-
-        Bxs[k] = (
-            Bx[i + 0, j + 0] * w00 +
-            Bx[i + 1, j + 0] * wP0 +
-            Bx[i + 0, j + 1] * w0P +
-            Bx[i + 1, j + 1] * wPP +
-            Bx[i - 1, j + 0] * wM0 +
-            Bx[i + 0, j - 1] * w0M +
-            Bx[i - 1, j - 1] * wMM +
-            Bx[i - 1, j + 1] * wMP +
-            Bx[i + 1, j - 1] * wPM
-        )
-
-        Bys[k] = (
-            By[i + 0, j + 0] * w00 +
-            By[i + 1, j + 0] * wP0 +
-            By[i + 0, j + 1] * w0P +
-            By[i + 1, j + 1] * wPP +
-            By[i - 1, j + 0] * wM0 +
-            By[i + 0, j - 1] * w0M +
-            By[i - 1, j - 1] * wMM +
-            By[i - 1, j + 1] * wMP +
-            By[i + 1, j - 1] * wPM
-        )
-
+        Exs[k] = interpolate(Ex, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Eys[k] = interpolate(Ey, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Ezs[k] = interpolate(Ez, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Bxs[k] = interpolate(Bx, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Bys[k] = interpolate(By, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
         Bzs[k] = 0  # Bz = 0 for now
 
 

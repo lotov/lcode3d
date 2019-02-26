@@ -41,7 +41,6 @@ ELECTRON_CHARGE = -1
 ELECTRON_MASS = 1
 
 
-# TODO: get rid of reshapes
 # TODO: macrosity
 
 
@@ -756,13 +755,13 @@ class GPUMonolith:
 
         Nc = self.Nc
 
-        self._m[:, :] = cp.array(pl_m.reshape(Nc, Nc))
-        self._q[:, :] = cp.array(pl_q.reshape(Nc, Nc))
-        self._x_prev_offt[:, :] = cp.array(pl_x_offt.reshape(Nc, Nc))
-        self._y_prev_offt[:, :] = cp.array(pl_y_offt.reshape(Nc, Nc))
-        self._px_prev[:, :] = cp.array(pl_px.reshape(Nc, Nc))
-        self._py_prev[:, :] = cp.array(pl_py.reshape(Nc, Nc))
-        self._pz_prev[:, :] = cp.array(pl_pz.reshape(Nc, Nc))
+        self._m[:, :] = cp.array(pl_m)
+        self._q[:, :] = cp.array(pl_q)
+        self._x_prev_offt[:, :] = cp.array(pl_x_offt)
+        self._y_prev_offt[:, :] = cp.array(pl_y_offt)
+        self._px_prev[:, :] = cp.array(pl_px)
+        self._py_prev[:, :] = cp.array(pl_py)
+        self._pz_prev[:, :] = cp.array(pl_pz)
 
         self._Ex[:, :] = cp.array(Ex)
         self._Ey[:, :] = cp.array(Ey)
@@ -874,13 +873,13 @@ class GPUMonolith:
         self._jz[:, :] = 0
 
         Nc = self.Nc
-        self._m[:, :] = cp.array(pl_m.reshape(Nc, Nc))
-        self._q[:, :] = cp.array(pl_q.reshape(Nc, Nc))
-        self._x_new_offt[:, :] = cp.array(pl_x_offt.reshape(Nc, Nc))
-        self._y_new_offt[:, :] = cp.array(pl_y_offt.reshape(Nc, Nc))
-        self._px_new[:, :] = cp.array(pl_px.reshape((Nc, Nc)))
-        self._py_new[:, :] = cp.array(pl_py.reshape((Nc, Nc)))
-        self._pz_new[:, :] = cp.array(pl_pz.reshape((Nc, Nc)))
+        self._m[:, :] = cp.array(pl_m)
+        self._q[:, :] = cp.array(pl_q)
+        self._x_new_offt[:, :] = cp.array(pl_x_offt)
+        self._y_new_offt[:, :] = cp.array(pl_y_offt)
+        self._px_new[:, :] = cp.array(pl_px)
+        self._py_new[:, :] = cp.array(pl_py)
+        self._pz_new[:, :] = cp.array(pl_pz)
 
         self.deposit()
 

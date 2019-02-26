@@ -42,7 +42,6 @@ ELECTRON_MASS = 1
 
 
 # TODO: get rid of reshapes
-# TODO: investigate and possibly get rid of .ascontiguousarray()
 # TODO: macrosity
 
 
@@ -661,19 +660,19 @@ class GPUMonolith:
         self._Ey = cp.zeros((N, N))
         self._Bx = cp.zeros((N, N))
         self._By = cp.zeros((N, N))
-        self._Ex_sub = numba.cuda.device_array((N, N))
-        self._Ey_sub = numba.cuda.device_array((N, N))
-        self._Bx_sub = numba.cuda.device_array((N, N))
-        self._By_sub = numba.cuda.device_array((N, N))
+        self._Ex_sub = cp.zeros((N, N))
+        self._Ey_sub = cp.zeros((N, N))
+        self._Bx_sub = cp.zeros((N, N))
+        self._By_sub = cp.zeros((N, N))
 
         #self.dst_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
         #                                    itype=np.float64,
         #                                    otype=np.complex128,
         #                                    batch=(N - 2))
-        self._Ez_dst1_in = numba.cuda.device_array((N - 2, 2 * N - 2))
-        self._Ez_dst1_out = numba.cuda.device_array((N - 2, N), dtype=np.complex128)
-        self._Ez_dst2_in = numba.cuda.device_array((N - 2, 2 * N - 2))
-        self._Ez_dst2_out = numba.cuda.device_array((N - 2, N), dtype=np.complex128)
+        self._Ez_dst1_in = cp.zeros((N - 2, 2 * N - 2))
+        self._Ez_dst1_out = cp.zeros((N - 2, N), dtype=np.complex128)
+        self._Ez_dst2_in = cp.zeros((N - 2, 2 * N - 2))
+        self._Ez_dst2_out = cp.zeros((N - 2, N), dtype=np.complex128)
         self._Ez = cp.zeros((N, N))
 
         self._Ez_dst1_in[:, :] = 0
@@ -697,24 +696,24 @@ class GPUMonolith:
         self._jy = cp.zeros((N, N))
         self._jz = cp.zeros((N, N))
 
-        self._beam_ro = numba.cuda.device_array((N, N))
+        self._beam_ro = cp.zeros((N, N))
 
-        self._jx_prev = numba.cuda.device_array((N, N))
-        self._jy_prev = numba.cuda.device_array((N, N))
+        self._jx_prev = cp.zeros((N, N))
+        self._jy_prev = cp.zeros((N, N))
 
-        self._Ex_prev = numba.cuda.device_array((N, N))
-        self._Ey_prev = numba.cuda.device_array((N, N))
-        self._Ez_prev = numba.cuda.device_array((N, N))
-        self._Bx_prev = numba.cuda.device_array((N, N))
-        self._By_prev = numba.cuda.device_array((N, N))
-        self._Bz_prev = numba.cuda.device_array((N, N))
+        self._Ex_prev = cp.zeros((N, N))
+        self._Ey_prev = cp.zeros((N, N))
+        self._Ez_prev = cp.zeros((N, N))
+        self._Bx_prev = cp.zeros((N, N))
+        self._By_prev = cp.zeros((N, N))
+        self._Bz_prev = cp.zeros((N, N))
 
-        self._Ex_avg = numba.cuda.device_array((N, N))
-        self._Ey_avg = numba.cuda.device_array((N, N))
-        self._Ez_avg = numba.cuda.device_array((N, N))
-        self._Bx_avg = numba.cuda.device_array((N, N))
-        self._By_avg = numba.cuda.device_array((N, N))
-        self._Bz_avg = numba.cuda.device_array((N, N))
+        self._Ex_avg = cp.zeros((N, N))
+        self._Ey_avg = cp.zeros((N, N))
+        self._Ez_avg = cp.zeros((N, N))
+        self._Bx_avg = cp.zeros((N, N))
+        self._By_avg = cp.zeros((N, N))
+        self._Bz_avg = cp.zeros((N, N))
 
 
         # Allow accessing `gpu_monolith.ro`
@@ -1059,7 +1058,7 @@ class GPUMonolith:
 
 
     def reload(self, beam_ro):
-        self._beam_ro[:, :] = np.ascontiguousarray(beam_ro)
+        self._beam_ro[:, :] = cp.array(beam_ro)
 
         # TODO: array relabeling instead of copying?..
 

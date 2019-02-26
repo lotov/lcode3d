@@ -636,26 +636,22 @@ class GPUMonolith:
         #                                    otype=np.complex128,
         #                                    batch=(4 * N))
         # (2 * N - 2) // 2 + 1 == (N - 1) + 1 == N
-        self._combined_dct1_in = numba.cuda.device_array((4 * N, 2 * N - 2))
-        self._combined_dct1_out = numba.cuda.device_array((4 * N, N), dtype=np.complex128)
-        self._combined_dct2_in = numba.cuda.device_array((4 * N, 2 * N - 2))
-        self._combined_dct2_out = numba.cuda.device_array((4 * N, N), dtype=np.complex128)
-        self._Ex_dct1_in = self._combined_dct1_in[:N, :]
-        self._Ex_dct1_out = self._combined_dct1_out[:N, :]
-        self._Ex_dct2_in = self._combined_dct2_in[:N, :]
-        self._Ex_dct2_out = self._combined_dct2_out[:N, :]
-        self._Ey_dct1_in = self._combined_dct1_in[N:2*N, :]
-        self._Ey_dct1_out = self._combined_dct1_out[N:2*N, :]
-        self._Ey_dct2_in = self._combined_dct2_in[N:2*N, :]
-        self._Ey_dct2_out = self._combined_dct2_out[N:2*N, :]
-        self._Bx_dct1_in = self._combined_dct1_in[2*N:3*N, :]
-        self._Bx_dct1_out = self._combined_dct1_out[2*N:3*N, :]
-        self._Bx_dct2_in = self._combined_dct2_in[2*N:3*N, :]
-        self._Bx_dct2_out = self._combined_dct2_out[2*N:3*N, :]
-        self._By_dct1_in = self._combined_dct1_in[3*N:, :]
-        self._By_dct1_out = self._combined_dct1_out[3*N:, :]
-        self._By_dct2_in = self._combined_dct2_in[3*N:, :]
-        self._By_dct2_out = self._combined_dct2_out[3*N:, :]
+        self._Ex_dct1_in = cp.zeros((N, 2 * N - 2))
+        self._Ex_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Ex_dct2_in = cp.zeros((N, 2 * N - 2))
+        self._Ex_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Ey_dct1_in = cp.zeros((N, 2 * N - 2))
+        self._Ey_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Ey_dct2_in = cp.zeros((N, 2 * N - 2))
+        self._Ey_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Bx_dct1_in = cp.zeros((N, 2 * N - 2))
+        self._Bx_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Bx_dct2_in = cp.zeros((N, 2 * N - 2))
+        self._Bx_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._By_dct1_in = cp.zeros((N, 2 * N - 2))
+        self._By_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._By_dct2_in = cp.zeros((N, 2 * N - 2))
+        self._By_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
         self._Ex = cp.zeros((N, N))
         self._Ey = cp.zeros((N, N))
         self._Bx = cp.zeros((N, N))
@@ -903,6 +899,7 @@ class GPUMonolith:
         self.calculate_Ex_Ey_Bx_By_3()
         self.calculate_Ex_Ey_Bx_By_4()
 
+
     def calculate_RHS_Ex_Ey_Bx_By(self):
         calculate_RHS_Ex_Ey_Bx_By_kernel[self.cfg](self._Ex_sub,
                                                    self._Ey_sub,
@@ -926,9 +923,10 @@ class GPUMonolith:
     def calculate_Ex_Ey_Bx_By_1(self):
         # 1. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
         # iDCT-1 is just DCT-1 in cuFFT
-        #self.dct_plan.forward(self._combined_dct1_in.ravel(),
-        #                      self._combined_dct1_out.ravel())
-        self._combined_dct1_out[:, :] = cp.fft.rfft(cp.asarray(self._combined_dct1_in))
+        self._Ex_dct1_out[:, :] = cp.fft.rfft(cp.asarray(self._Ex_dct1_in))
+        self._Ey_dct1_out[:, :] = cp.fft.rfft(cp.asarray(self._Ey_dct1_in))
+        self._Bx_dct1_out[:, :] = cp.fft.rfft(cp.asarray(self._Bx_dct1_in))
+        self._By_dct1_out[:, :] = cp.fft.rfft(cp.asarray(self._By_dct1_in))
         numba.cuda.synchronize()
         # This implementation of DCT is real-to-complex, so scrapping the i, j
         # element of the transposed answer would be dct1_out[j, i].real
@@ -946,9 +944,10 @@ class GPUMonolith:
 
     def calculate_Ex_Ey_Bx_By_3(self):
         # 3. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
-        #self.dct_plan.forward(self._combined_dct2_in.ravel(),
-        #                      self._combined_dct2_out.ravel())
-        self._combined_dct2_out[:, :] = cp.fft.rfft(cp.asarray(self._combined_dct2_in))
+        self._Ex_dct2_out[:, :] = cp.fft.rfft(cp.asarray(self._Ex_dct2_in))
+        self._Ey_dct2_out[:, :] = cp.fft.rfft(cp.asarray(self._Ey_dct2_in))
+        self._Bx_dct2_out[:, :] = cp.fft.rfft(cp.asarray(self._Bx_dct2_in))
+        self._By_dct2_out[:, :] = cp.fft.rfft(cp.asarray(self._By_dct2_in))
         numba.cuda.synchronize()
 
     def calculate_Ex_Ey_Bx_By_4(self):

@@ -145,8 +145,7 @@ def roj_init_kernel(ro, jx, jy, jz, ro_initial):
 
 @numba.cuda.jit
 def deposit_kernel(grid_steps, grid_step_size,
-                   fine_grid,
-                   c_x_init, c_y_init, c_x_offt, c_y_offt,
+                   fine_grid, c_x_offt, c_y_offt,
                    c_m, c_q, c_p_x, c_p_y, c_p_z,  # coarse
                    A_weights, B_weights, C_weights, D_weights,
                    indices_prev, indices_next, smallness_factor,
@@ -349,8 +348,7 @@ def mid_dst_transform(Ez_dst1_out, Ez_dst2_in,
 
 
 @numba.cuda.jit
-def unpack_Ez_kernel(Ez_dst2_out, Ez,
-                     Ez_dst1_in, Ez_dst1_out, Ez_dst2_in):
+def unpack_Ez_kernel(Ez_dst2_out, Ez):
     N = Ez.shape[0]
     Ns = N - 2
     index = numba.cuda.grid(1)
@@ -644,8 +642,7 @@ class GPUMonolith:
 
 
     def load(self, beam_ro,
-             pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
-             pl_px, pl_py, pl_pz, pl_m, pl_q,
+             pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz, pl_m, pl_q,
              Ex, Ey, Ez, Bx, By, Bz, jx, jy):
         self._beam_ro[...] = cp.array(beam_ro)
 
@@ -653,8 +650,6 @@ class GPUMonolith:
         self._Ey_sub[...] = cp.array(Ey)
         self._Bx_sub[...] = cp.array(Bx)
         self._By_sub[...] = cp.array(By)
-
-        Nc = self.Nc
 
         self._m[...] = cp.array(pl_m)
         self._q[...] = cp.array(pl_q)
@@ -672,13 +667,6 @@ class GPUMonolith:
         self._Bz[...] = cp.array(Bz)
         self._jx[...] = cp.array(jx)
         self._jy[...] = cp.array(jy)
-
-        #self._Ex[...] = self._Ex
-        #self._Ey[...] = self._Ey
-        #self._Ez[...] = self._Ez
-        #self._Bx[...] = self._Bx
-        #self._By[...] = self._By
-        #self._Bz[...] = self._Bz
 
         self._Ex_avg[...] = self._Ex
         self._Ey_avg[...] = self._Ey
@@ -746,7 +734,6 @@ class GPUMonolith:
 
         deposit_kernel[self.cfg](self.grid_steps, self.grid_step_size,
                                  self._fine_grid,
-                                 self._x_init, self._y_init,
                                  self._x_new_offt, self._y_new_offt,
                                  self._m, self._q,
                                  self._px_new, self._py_new, self._pz_new,
@@ -758,10 +745,8 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
 
-    def initial_deposition(self,
-                           pl_x_init, pl_y_init, pl_x_offt, pl_y_offt, 
-                           pl_px, pl_py, pl_pz,
-                           pl_m, pl_q):
+    def initial_deposition(self, pl_x_offt, pl_y_offt, 
+                           pl_px, pl_py, pl_pz, pl_m, pl_q):
         # Don't allow initial speeds for calculations with background ions
         assert np.array_equiv(pl_px, 0)
         assert np.array_equiv(pl_py, 0)
@@ -773,7 +758,6 @@ class GPUMonolith:
         self._jy[...] = 0
         self._jz[...] = 0
 
-        Nc = self.Nc
         self._m[...] = cp.array(pl_m)
         self._q[...] = cp.array(pl_q)
         self._x_new_offt[...] = cp.array(pl_x_offt)
@@ -902,8 +886,7 @@ class GPUMonolith:
 
     def calculate_Ez_4(self):
         # 4. Transpose the resulting Ex (TODO: fuse this step into later steps?)
-        unpack_Ez_kernel[self.cfg](self._Ez_dst2_out, self._Ez,
-                                   self._Ez_dst1_in, self._Ez_dst1_out, self._Ez_dst2_in)
+        unpack_Ez_kernel[self.cfg](self._Ez_dst2_out, self._Ez)
         numba.cuda.synchronize()
 
 
@@ -1023,8 +1006,7 @@ def make_fine_plasma_grid(window_width, steps, fineness):
 
 def plasma_make(window_width, steps, coarseness=2, fineness=2):
     cell_size = window_width / steps
-    half_width = window_width / 2
-    coarse_step, fine_step = cell_size * coarseness, cell_size / fineness
+    coarse_step = cell_size * coarseness
 
     # Make two initial grids of plasma particles, coarse and fine.
     # Coarse is the one that will evolve and fine is the one to be bilinearly
@@ -1036,7 +1018,7 @@ def plasma_make(window_width, steps, coarseness=2, fineness=2):
     fine_grid = make_fine_plasma_grid(window_width, steps, fineness)
     fine_grid_xs, fine_grid_ys = fine_grid[:, None], fine_grid[None, :]
 
-    Nc, Nf = len(coarse_grid), len(fine_grid)
+    Nc = len(coarse_grid)
 
     # Create plasma particles on that grids
     coarse_electrons_x_init = np.broadcast_to(coarse_grid_xs, (Nc, Nc))
@@ -1099,8 +1081,6 @@ def plasma_make(window_width, steps, coarseness=2, fineness=2):
     # D is coarse_plasma[i_next_in_x, i_next_in_y], same for upper right
     D_weights = influence_next_x * influence_next_y
 
-    ratio = coarseness ** 2 * fineness ** 2
-
     # TODO: decide on a flat-or-square plasma
     return (coarse_electrons_x_init, coarse_electrons_y_init,
             coarse_electrons_x_offt, coarse_electrons_y_offt,
@@ -1119,16 +1099,10 @@ def diags_ro_zn(config, ro):
     hf = ro - blurred
     zn = np.abs(hf).mean() / 4.23045376e-04
     max_zn = max(max_zn, zn)
-    return zn, max_zn
+    return max_zn
 
 
-Ez_00_history = []
-def diags_peak_msg_just_store(Ez_00):
-    global Ez_00_history
-    Ez_00_history.append(Ez_00)
-
-def diags_peak_msg(config, Ez_00):
-    global Ez_00_history
+def diags_peak_msg(Ez_00_history):
     Ez_00_array = np.array(Ez_00_history)
     peak_indices = scipy.signal.argrelmax(Ez_00_array)[0]
 
@@ -1153,14 +1127,14 @@ def diags_ro_slice(config, xi_i, xi, ro):
                origin='lower', vmin=-0.1, vmax=0.1, cmap='bwr')
 
 
-def diagnostics(gpu, config, xi_i):
+def diagnostics(gpu, config, xi_i, Ez_00_history):
     xi = -xi_i * config.xi_step_size
 
-    Ez_00 = gpu.Ez[config.grid_steps // 2, config.grid_steps // 2]
-    peak_report = diags_peak_msg(config, Ez_00)
+    Ez_00 = Ez_00_history[-1]
+    peak_report = diags_peak_msg(Ez_00_history)
 
     ro = gpu.ro
-    zn, max_zn = diags_ro_zn(config, ro)
+    max_zn = diags_ro_zn(config, ro)
     diags_ro_slice(config, xi_i, xi, ro)
 
     print(f'xi={xi:+.4f} {Ez_00:+.4e}|{peak_report}|zn={max_zn:.3f}')
@@ -1183,11 +1157,10 @@ def init(config):
     gpu = GPUMonolith(config,
                       pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
                       pl_px, pl_py, pl_pz, pl_m, pl_q, *virt_params)
-    gpu.load(0,
-             pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
+    gpu.load(0, pl_x_offt, pl_y_offt,
              pl_px, pl_py, pl_pz, pl_m, pl_q,
              0, 0, 0, 0, 0, 0, 0, 0)
-    gpu.initial_deposition(pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
+    gpu.initial_deposition(pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q)
 
     return gpu, xs, ys
@@ -1197,6 +1170,7 @@ def init(config):
 def main():
     import config
     gpu, xs, ys = init(config)
+    Ez_00_history = []
 
     for xi_i in range(config.xi_steps):
         beam_ro = config.beam(xi_i, xs, ys)
@@ -1205,12 +1179,12 @@ def main():
         gpu.step()
 
         Ez_00 = gpu.Ez[config.grid_steps // 2, config.grid_steps // 2]
-        diags_peak_msg_just_store(Ez_00)
+        Ez_00_history.append(Ez_00)
 
         time_for_diags = xi_i % config.diagnostics_each_N_steps == 0
         last_step = xi_i == config.xi_steps - 1
         if time_for_diags or last_step:
-            diagnostics(gpu, config, xi_i)
+            diagnostics(gpu, config, xi_i, Ez_00_history)
 
 
 if __name__ == '__main__':

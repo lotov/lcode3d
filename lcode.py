@@ -44,61 +44,65 @@ ELECTRON_MASS = 1
 # TODO: macrosity
 
 
-def dst2d(array):
-    l0 = array.shape[0]
-    l1 = array.shape[1]
-    z = cp.zeros(2*l0 + 2).reshape(2*l0 + 2, 1)
-    
-    a00 = cp.vstack((cp.zeros(l1), array))
-    a01 = cp.vstack((cp.zeros(l1), -cp.fliplr(array)))
-    a10 = cp.vstack((cp.zeros(l1), -cp.flipud(array)))
-    a11 = cp.vstack((cp.zeros(l1), +cp.fliplr(cp.flipud(array))))
-    
-    p = cp.hstack((z, cp.vstack((a00, a10)), z, cp.vstack((a01, a11))))
-    return -cp.fft.rfft2(p)[1:l0 + 1, 1:l1 + 1].real
+def dst2d(a):
+    # DST-Type1-2D, jury-rigged from symmetrically-padded rFFT
+    assert a.shape[0] == a.shape[1]
+    N = a.shape[0]
+    #                                 / 0  0  0  0  0  0 \
+    #                                |  0  1  2  0 -2 -1  |
+    #  / 1  2 \  anti-symmetrically  |  0  3  4  0 -4 -3  |
+    #  \ 3  4 /      padded to       |  0  0  0  0  0  0  |
+    #                                |  0 -3 -4  0 +4 +3  |
+    #                                 \ 0 -1 -2  0 +2 +1 /
+    p = cp.zeros((2 * N + 2, 2 * N + 2))
+    p[1:N+1, 1:N+1], p[1:N+1, N+2:] = a,             -cp.fliplr(a)
+    p[N+2:,  1:N+1], p[N+2:,  N+2:] = -cp.flipud(a), +cp.fliplr(cp.flipud(a))
+
+    # rFFT-2D, cut out the top-left corner, take -Re
+    return -cp.fft.rfft2(p)[1:N+1, 1:N+1].real
 
 
 class DirichletSolver:
     def __init__(self, N, h):
         self.N, self.h = N, h
-        L = h * (N - 1) / 2
     
         # Samarskiy-Nikolaev, p. 187
         k = np.arange(1, N)
-        lamb = 4 / self.h**2 * np.sin(k * np.pi * self.h / (4 * L))**2
-        self.mul = np.zeros((N - 2, N - 2))
+        # 4 / h**2 * sin(k * pi * h / (2 * L2))**2, where L2 = h * (N - 1)
+        lamb = 4 / self.h**2 * np.sin(k * np.pi / (2 * (N - 1)))**2
+        mul = np.zeros((N - 2, N - 2))
         for i in range(N - 2):
             for j in range(N - 2):
-                self.mul[i, j] = 1 / (lamb[i] + lamb[j])
-                
-        self.mul *= 1 / (2 * (N - 1)) ** 2  # scipy's dctn+idctn give this multiplier
-        self.mul = cp.array(self.mul)
+                # 1 / (2 * (N - 1))**2 makes up for DST+iDST scaling
+                # 1 / (lamb[i] + lamb[j] is part of the method
+                mul[i, j] = 1 / (2 * (N - 1))**2 / (lamb[i] + lamb[j])
+        self._mul = cp.array(mul)
 
 
     def solve(self, rhs, out):
-        # Solve Laplace x = (-)? RHS for x with Dirichlet boundary conditions using DST-1
-        # Only operates on the internal cells of rhs and out
-        assert rhs.shape[0] == rhs.shape[1] == self.N
+        # TODO: Try to optimize pad-dst-mul-unpad-pad-dst-unpad-pad
+        #       down to pad-dst-mul-dst-unpad, but carefully.
+        #       Or maybe not.
+
+        # Solve Laplace x = -RHS for x with Dirichlet boundary conditions.
+        # The perimeter of rhs and out is assumed to be zero.
         N = self.N
+        assert rhs.shape[0] == rhs.shape[1] == N
     
-        # 1. Apply DST-1-2D (Discrete Sine Transform Type 1 2D) to the RHS
-        ri = rhs[1:-1, 1:-1]
+        # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS
         #f = scipy.fftpack.dstn(rhs[1:-1, 1:-1].get(), type=1)
         f = dst2d(rhs[1:-1, 1:-1])
         
         # 2. Multiply f by mul
-        f *= self.mul
-        #F *= self.mul
+        #f *= self._mul.get()
+        f *= self._mul
         
-        # 3. Apply iDST-1-2D (Inverse Discrete Sine Transform Type 1 2D)
-        #inv = scipy.fftpack.idstn(f, type=1)
+        # 3. Apply iDST-Type1-2D (Inverse Discrete Sine Transform Type 1 2D),
+        #    which matches DST-Type1-2D to the multiplier.
+        #out[1:-1, 1:-1] = cp.asarray(scipy.fftpack.idstn(f, type=1))
+        out[1:-1, 1:-1] = dst2d(f)
 
-        out[...] = 0
-        #out[1:-1, 1:-1] = inv
-        #cp.copyto(out[1:-1, 1:-1], cp.asarray(inv))
-
-        inv = dst2d(f)
-        cp.copyto(out[1:-1, 1:-1], inv)
+        numba.cuda.synchronize()
 
         #lap_res = scipy.ndimage.filters.laplace(out.get(), mode='constant') / self.h**2
         #inner_error = (-lap_res[1:-1, 1:-1]- rhs[1:-1, 1:-1].get()).ptp()
@@ -379,44 +383,7 @@ def calculate_RHS_Ez_kernel(jx, jy, grid_step_size, Ez_rhs):
         djx_dx = (jx[i + 1, j] - jx[i - 1, j]) / (2 * grid_step_size)  # - ?
         djy_dy = (jy[i, j + 1] - jy[i, j - 1]) / (2 * grid_step_size)  # - ?
 
-        Ez_rhs[i0, j0 + 1] = -(djx_dx + djy_dy)
-        # anti-symmetrically pad dct1_in to apply DCT-via-FFT later
-        #Ez_dst1_in[i0, 2 * Ns + 1 - j0] = -Ez_rhs
-
-@numba.cuda.jit
-def mid_dst_transform(Ez_dst1_out, Ez_dst2_in,
-                      Ez_bet, Ez_alf, mul):
-    Ns = Ez_dst1_out.shape[0]  # == N - 2
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-
-    # Solve tridiagonal matrix equation for each spectral column with Thomas method:
-    # A @ tmp_2[k, :] = tmp_1[k, :]
-    # A has -1 on superdiagonal, -1 on subdiagonal and aa[i] at the main diagonal
-    for i in range(index, Ns, stride):
-        Ez_bet[i, 0] = 0
-        for j in range(Ns):
-            # Note the transposition for dst1_out!
-            Ez_bet[i, j + 1] = (mul * -Ez_dst1_out[j, i + 1].imag + Ez_bet[i, j]) * Ez_alf[i, j + 1]
-        # Note the transposition for dct2_in!
-        Ez_dst2_in[Ns - 1, i + 1] = 0 + Ez_bet[i, Ns]  # 0 = Ez_dst2_in[i, Ns] (fake)
-        Ez_dst2_in[Ns - 1, 2 * Ns + 1 - i] = -Ez_dst2_in[Ns - 1, i + 1]
-        for j in range(Ns - 2, 0 - 1, -1):
-            Ez_dst2_in[j, i + 1] = Ez_alf[i, j + 1] * Ez_dst2_in[j + 1, i + 1] + Ez_bet[i, j + 1]
-            # anti-symmetrically pad dct1_in to apply DCT-via-FFT later
-            Ez_dst2_in[j, 2 * Ns + 1 - i] = -Ez_dst2_in[j, i + 1]
-
-
-@numba.cuda.jit
-def unpack_Ez_kernel(Ez_dst2_out, Ez):
-    N = Ez.shape[0]
-    Ns = N - 2
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, Ns**2, stride):
-        i0, j0 = k // Ns, k % Ns
-        i, j = i0 + 1, j0 + 1
-        Ez[i, j] = -Ez_dst2_out[i0, j0 + 1].imag
+        Ez_rhs[i0 + 1, j0 + 1] = -(djx_dx + djy_dy)
 
 
 # TODO: try averaging many arrays at once, * .5,
@@ -909,48 +876,13 @@ class GPUMonolith:
 
 
     def calculate_Ez(self):
-        # The grand plan: mul * iDST(SPECTRAL_MAGIC(DST(in).T)).T)
-        # where iDST is DST;
-        # and DST is jury-rigged from symmetrically-padded DFT
         self.calculate_RHS_Ez()
         self.Ez_solver.solve(self._Ez_rhs, self._Ez)
-        #self.calculate_Ez_1()
-        #self.calculate_Ez_2()
-        #self.calculate_Ez_3()
-        #self.calculate_Ez_4()
 
     def calculate_RHS_Ez(self):
         calculate_RHS_Ez_kernel[self.cfg](self._jx, self._jy,
                                           self.grid_step_size,
                                           self._Ez_rhs)
-        numba.cuda.synchronize()
-
-    def calculate_Ez_1(self):
-        # 1. Apply iDST-1 (Discrete Sine Transform Type 1) to the RHS
-        # iDST-1 is just DST-1 in cuFFT
-        #self.dst_plan.forward(self._Ez_dst1_in.ravel(),
-        #                      self._Ez_dst1_out.ravel())
-        self._Ez_dst1_out[...] = cp.fft.rfft(cp.asarray(self._Ez_dst1_in))
-        numba.cuda.synchronize()
-        # This implementation of DST is real-to-complex, so scrapping the i, j
-        # element of the transposed answer would be -dst1_out[j, i + 1].imag
-
-    def calculate_Ez_2(self):
-        # 2. Solve tridiagonal matrix equation for each spectral column with Thomas method:
-        mid_dst_transform[self.cfg](self._Ez_dst1_out, self._Ez_dst2_in,
-                                    self._Ez_bet, self._Ez_alf, self.Ez_mul)
-        numba.cuda.synchronize()
-
-    def calculate_Ez_3(self):
-        # 3. Apply DST-1 (Discrete Sine Transform Type 1) to the transformed spectra
-        #self.dst_plan.forward(self._Ez_dst2_in.ravel(),
-        #                      self._Ez_dst2_out.ravel())
-        self._Ez_dst2_out[...] = cp.fft.rfft(cp.asarray(self._Ez_dst2_in))
-        numba.cuda.synchronize()
-
-    def calculate_Ez_4(self):
-        # 4. Transpose the resulting Ex (TODO: fuse this step into later steps?)
-        unpack_Ez_kernel[self.cfg](self._Ez_dst2_out, self._Ez)
         numba.cuda.synchronize()
 
 
@@ -1198,7 +1130,7 @@ def diagnostics(gpu, config, xi_i, Ez_00_history):
     peak_report = diags_peak_msg(Ez_00_history)
 
     ro = gpu.ro
-    max_zn = diags_ro_zn(config, ro)
+    max_zn = diags_ro_zn(config, gpu.ro)
     diags_ro_slice(config, xi_i, xi, ro)
 
     print(f'xi={xi:+.4f} {Ez_00:+.4e}|{peak_report}|zn={max_zn:.3f}')

@@ -44,6 +44,67 @@ ELECTRON_MASS = 1
 # TODO: macrosity
 
 
+def dst2d(array):
+    l0 = array.shape[0]
+    l1 = array.shape[1]
+    z = cp.zeros(2*l0 + 2).reshape(2*l0 + 2, 1)
+    
+    a00 = cp.vstack((cp.zeros(l1), array))
+    a01 = cp.vstack((cp.zeros(l1), -cp.fliplr(array)))
+    a10 = cp.vstack((cp.zeros(l1), -cp.flipud(array)))
+    a11 = cp.vstack((cp.zeros(l1), +cp.fliplr(cp.flipud(array))))
+    
+    p = cp.hstack((z, cp.vstack((a00, a10)), z, cp.vstack((a01, a11))))
+    return -cp.fft.rfft2(p)[1:l0 + 1, 1:l1 + 1].real
+
+
+class DirichletSolver:
+    def __init__(self, N, h):
+        self.N, self.h = N, h
+        L = h * (N - 1) / 2
+    
+        # Samarskiy-Nikolaev, p. 187
+        k = np.arange(1, N)
+        lamb = 4 / self.h**2 * np.sin(k * np.pi * self.h / (4 * L))**2
+        self.mul = np.zeros((N - 2, N - 2))
+        for i in range(N - 2):
+            for j in range(N - 2):
+                self.mul[i, j] = 1 / (lamb[i] + lamb[j])
+                
+        self.mul *= 1 / (2 * (N - 1)) ** 2  # scipy's dctn+idctn give this multiplier
+        self.mul = cp.array(self.mul)
+
+
+    def solve(self, rhs, out):
+        # Solve Laplace x = (-)? RHS for x with Dirichlet boundary conditions using DST-1
+        # Only operates on the internal cells of rhs and out
+        assert rhs.shape[0] == rhs.shape[1] == self.N
+        N = self.N
+    
+        # 1. Apply DST-1-2D (Discrete Sine Transform Type 1 2D) to the RHS
+        ri = rhs[1:-1, 1:-1]
+        #f = scipy.fftpack.dstn(rhs[1:-1, 1:-1].get(), type=1)
+        f = dst2d(rhs[1:-1, 1:-1])
+        
+        # 2. Multiply f by mul
+        f *= self.mul
+        #F *= self.mul
+        
+        # 3. Apply iDST-1-2D (Inverse Discrete Sine Transform Type 1 2D)
+        #inv = scipy.fftpack.idstn(f, type=1)
+
+        out[...] = 0
+        #out[1:-1, 1:-1] = inv
+        #cp.copyto(out[1:-1, 1:-1], cp.asarray(inv))
+
+        inv = dst2d(f)
+        cp.copyto(out[1:-1, 1:-1], inv)
+
+        #lap_res = scipy.ndimage.filters.laplace(out.get(), mode='constant') / self.h**2
+        #inner_error = (-lap_res[1:-1, 1:-1]- rhs[1:-1, 1:-1].get()).ptp()
+        #print(f'{inner_error:e}')
+
+
 @numba.cuda.jit
 def move_predict_halfstep_kernel(xi_step_size, reflect_boundary, ms,
                                  x_init, y_init, old_x_offt, old_y_offt,
@@ -306,7 +367,7 @@ def unpack_Ex_Ey_Bx_By_fields_kernel(Ex_dct2_out, Ey_dct2_out,
 
 
 @numba.cuda.jit
-def calculate_RHS_Ez_kernel(jx, jy, grid_step_size, Ez_dst1_in):
+def calculate_RHS_Ez_kernel(jx, jy, grid_step_size, Ez_rhs):
     N = jx.shape[0]
     Ns = N - 2
     index = numba.cuda.grid(1)
@@ -318,10 +379,9 @@ def calculate_RHS_Ez_kernel(jx, jy, grid_step_size, Ez_dst1_in):
         djx_dx = (jx[i + 1, j] - jx[i - 1, j]) / (2 * grid_step_size)  # - ?
         djy_dy = (jy[i, j + 1] - jy[i, j - 1]) / (2 * grid_step_size)  # - ?
 
-        Ez_rhs = -(djx_dx + djy_dy)
-        Ez_dst1_in[i0, j0 + 1] = Ez_rhs
+        Ez_rhs[i0, j0 + 1] = -(djx_dx + djy_dy)
         # anti-symmetrically pad dct1_in to apply DCT-via-FFT later
-        Ez_dst1_in[i0, 2 * Ns + 1 - j0] = -Ez_rhs
+        #Ez_dst1_in[i0, 2 * Ns + 1 - j0] = -Ez_rhs
 
 @numba.cuda.jit
 def mid_dst_transform(Ez_dst1_out, Ez_dst2_in,
@@ -453,12 +513,13 @@ class GPUMonolith:
         # the alternative is to reflect after plasma virtualization
 
         self.grid_steps = N = config.grid_steps
+        assert self.grid_steps % 2 == 1
         self.xi_step_size = config.xi_step_size
-        self.grid_step_size = config.window_width / config.grid_steps
+        #self.grid_step_size = config.window_width / (config.grid_steps - 1)
+        self.grid_step_size = config.grid_step_size
         self.subtraction_trick = config.field_solver_subtraction_trick
-        self.reflect_boundary = (
-            +config.window_width / 2
-            -config.reflect_padding_steps * self.grid_step_size
+        self.reflect_boundary = self.grid_step_size * (
+            config.grid_steps / 2 - config.reflect_padding_steps
         )
 
         self.virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
@@ -559,23 +620,25 @@ class GPUMonolith:
         self._Bx_sub = cp.zeros((N, N))
         self._By_sub = cp.zeros((N, N))
 
+        self.Ez_solver = DirichletSolver(N, self.grid_step_size)
         #self.dst_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
         #                                    itype=np.float64,
         #                                    otype=np.complex128,
         #                                    batch=(N - 2))
-        self._Ez_dst1_in = cp.zeros((N - 2, 2 * N - 2))
-        self._Ez_dst1_out = cp.zeros((N - 2, N), dtype=np.complex128)
-        self._Ez_dst2_in = cp.zeros((N - 2, 2 * N - 2))
-        self._Ez_dst2_out = cp.zeros((N - 2, N), dtype=np.complex128)
+        #self._Ez_dst1_in = cp.zeros((N - 2, 2 * N - 2))
+        #self._Ez_dst1_out = cp.zeros((N - 2, N), dtype=np.complex128)
+        #self._Ez_dst2_in = cp.zeros((N - 2, 2 * N - 2))
+        #self._Ez_dst2_out = cp.zeros((N - 2, N), dtype=np.complex128)
+        self._Ez_rhs = cp.zeros((N, N))
         self._Ez = cp.zeros((N, N))
 
-        self._Ez_dst1_in[...] = 0
-        self._Ez_dst2_in[...] = 0
-        self._Ez[...] = 0
+        #self._Ez_dst1_in[...] = 0
+        #self._Ez_dst2_in[...] = 0
+        #self._Ez[...] = 0
 
         # total multiplier to compensate for the iDST+DST transforms
-        self.Ez_mul = self.grid_step_size**2
-        self.Ez_mul /= 2 * N - 2  # don't ask
+        #self.Ez_mul = self.grid_step_size**2
+        #self.Ez_mul /= 2 * N - 2  # don't ask
 
         # total multiplier to compensate for the iDCT+DCT transforms
         self.mix_mul = self.grid_step_size**2
@@ -850,15 +913,16 @@ class GPUMonolith:
         # where iDST is DST;
         # and DST is jury-rigged from symmetrically-padded DFT
         self.calculate_RHS_Ez()
-        self.calculate_Ez_1()
-        self.calculate_Ez_2()
-        self.calculate_Ez_3()
-        self.calculate_Ez_4()
+        self.Ez_solver.solve(self._Ez_rhs, self._Ez)
+        #self.calculate_Ez_1()
+        #self.calculate_Ez_2()
+        #self.calculate_Ez_3()
+        #self.calculate_Ez_4()
 
     def calculate_RHS_Ez(self):
         calculate_RHS_Ez_kernel[self.cfg](self._jx, self._jy,
                                           self.grid_step_size,
-                                          self._Ez_dst1_in)
+                                          self._Ez_rhs)
         numba.cuda.synchronize()
 
     def calculate_Ez_1(self):
@@ -980,42 +1044,42 @@ class GPUMonolith:
 # TODO: try going syncless
 
 
-def make_coarse_plasma_grid(window_width, steps, coarseness):
-    plasma_step = window_width * coarseness / steps
-    right_half = np.arange(0, window_width / 2, plasma_step)
+def make_coarse_plasma_grid(steps, step_size, coarseness):
+    assert coarseness == int(coarseness)
+    plasma_step = step_size * coarseness
+    right_half = np.arange(steps // (coarseness * 2)) * plasma_step
     left_half = -right_half[:0:-1]  # invert, reverse, drop zero
     plasma_grid = np.concatenate([left_half, right_half])
     assert(np.array_equal(plasma_grid, -plasma_grid[::-1]))
     return plasma_grid
 
 
-def make_fine_plasma_grid(window_width, steps, fineness):
-    plasma_step = window_width / steps / fineness
-    assert(fineness == int(fineness))
+def make_fine_plasma_grid(steps, step_size, fineness):
+    assert fineness == int(fineness)
+    plasma_step = step_size / fineness
     if fineness % 2:  # some on zero axes, none on cell corners
-        right_half = np.arange(0, window_width / 2, plasma_step)
+        right_half = np.arange(steps // 2 * fineness) * plasma_step
         left_half = -right_half[:0:-1]  # invert, reverse, drop zero
         plasma_grid = np.concatenate([left_half, right_half])
     else:  # none on zero axes, none on cell corners
-        right_half = np.arange(plasma_step / 2, window_width / 2, plasma_step)
+        right_half = (.5 + np.arange(steps // 2 * fineness)) * plasma_step
         left_half = -right_half[::-1]  # invert, reverse
         plasma_grid = np.concatenate([left_half, right_half])
     assert(np.array_equal(plasma_grid, -plasma_grid[::-1]))
     return plasma_grid
 
 
-def plasma_make(window_width, steps, coarseness=2, fineness=2):
-    cell_size = window_width / steps
+def plasma_make(steps, cell_size, coarseness=2, fineness=2):
     coarse_step = cell_size * coarseness
 
     # Make two initial grids of plasma particles, coarse and fine.
     # Coarse is the one that will evolve and fine is the one to be bilinearly
     # interpolated from the coarse one based on the initial positions.
 
-    coarse_grid = make_coarse_plasma_grid(window_width, steps, coarseness)
+    coarse_grid = make_coarse_plasma_grid(steps, cell_size, coarseness)
     coarse_grid_xs, coarse_grid_ys = coarse_grid[:, None], coarse_grid[None, :]
 
-    fine_grid = make_fine_plasma_grid(window_width, steps, fineness)
+    fine_grid = make_fine_plasma_grid(steps, cell_size, fineness)
     fine_grid_xs, fine_grid_ys = fine_grid[:, None], fine_grid[None, :]
 
     Nc = len(coarse_grid)
@@ -1094,7 +1158,7 @@ max_zn = 0
 def diags_ro_zn(config, ro):
     global max_zn
 
-    sigma = 0.25 * config.grid_steps / config.window_width
+    sigma = 0.25 / config.grid_step_size
     blurred = scipy.ndimage.gaussian_filter(ro, sigma=sigma)
     hf = ro - blurred
     zn = np.abs(hf).mean() / 4.23045376e-04
@@ -1142,15 +1206,13 @@ def diagnostics(gpu, config, xi_i, Ez_00_history):
 
 
 def init(config):
-    grid = ((np.arange(config.grid_steps) + .5) *
-            config.window_width / config.grid_steps -
-            config.window_width / 2)
+    grid = ((np.arange(config.grid_steps) - config.grid_steps // 2)
+            * config.grid_step_size)
     xs, ys = grid[:, None], grid[None, :]
 
-    grid_step_size = config.window_width / config.grid_steps  # TODO: -1 or not?
     pl_x_init, pl_y_init, pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz, pl_m, pl_q, *virt_params = plasma_make(
-        config.window_width - config.plasma_padding_steps * 2 * grid_step_size,
         config.grid_steps - config.plasma_padding_steps * 2,
+        config.grid_step_size,
         coarseness=config.plasma_coarseness, fineness=config.plasma_fineness
     )
 

@@ -134,10 +134,10 @@ class DirichletSolver:
 
 
 @numba.cuda.jit  # TODO: shorten with cupy
-def calculate_RHS_Ex_Ey_Bx_By_kernel(Ex_sub, Ey_sub, Bx_sub, By_sub,
+def calculate_RHS_Ex_Ey_Bx_By_kernel(Ex_avg, Ey_avg, Bx_avg, By_avg,
                                      beam_ro, ro, jx, jx_prev, jy, jy_prev, jz,
                                      grid_step_size, xi_step_size,
-                                     subtraction_trick,
+                                     avgtraction_trick,
                                      Ex_dct1_in, Ey_dct1_in,
                                      Bx_dct1_in, By_dct1_in):
     N = ro.shape[0]
@@ -165,10 +165,10 @@ def calculate_RHS_Ex_Ey_Bx_By_kernel(Ex_sub, Ey_sub, Bx_sub, By_sub,
         djx_dxi = (jx_prev[i, j] - jx[i, j]) / xi_step_size               # - ?
         djy_dxi = (jy_prev[i, j] - jy[i, j]) / xi_step_size               # - ?
 
-        Ex_rhs = -((dro_dx - djx_dxi) - Ex_sub[i, j] * subtraction_trick)
-        Ey_rhs = -((dro_dy - djy_dxi) - Ey_sub[i, j] * subtraction_trick)
-        Bx_rhs = +((djz_dy - djy_dxi) + Bx_sub[i, j] * subtraction_trick)
-        By_rhs = -((djz_dx - djx_dxi) - By_sub[i, j] * subtraction_trick)
+        Ex_rhs = -((dro_dx - djx_dxi) - Ex_avg[i, j] * avgtraction_trick)
+        Ey_rhs = -((dro_dy - djy_dxi) - Ey_avg[i, j] * avgtraction_trick)
+        Bx_rhs = +((djz_dy - djy_dxi) + Bx_avg[i, j] * avgtraction_trick)
+        By_rhs = -((djz_dx - djx_dxi) - By_avg[i, j] * avgtraction_trick)
         Ex_dct1_in[j, i] = Ex_rhs
         Ey_dct1_in[i, j] = Ey_rhs
         Bx_dct1_in[i, j] = Bx_rhs
@@ -188,6 +188,46 @@ def calculate_RHS_Ex_Ey_Bx_By_kernel(Ex_sub, Ey_sub, Bx_sub, By_sub,
             ## rhs_fixed[0, i] = rhs_fixed[self.N - 1, i] = 0
             ### changes nothing, as there's a particle-free padding zone?
 
+
+@numba.cuda.jit
+def mid_dct_transform(Ex_dct1_out, Ex_dct2_in,
+                      Ey_dct1_out, Ey_dct2_in,
+                      Bx_dct1_out, Bx_dct2_in,
+                      By_dct1_out, By_dct2_in,
+                      Ex_bet, Ey_bet, Bx_bet, By_bet,
+                      alf, mul):
+    N = Ex_dct1_out.shape[0]
+    index = numba.cuda.grid(1)
+    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+
+    # Solve tridiagonal matrix equation for each spectral column with Thomas method:
+    # A @ tmp_2[k, :] = tmp_1[k, :]
+    # A has -1 on superdiagonal, -1 on subdiagonal and aa[k] at the main diagonal
+    # The edge elements of each column are forced to 0!
+    for i in range(index, N, stride):
+        Ex_bet[i, 0] = Ey_bet[i, 0] = Bx_bet[i, 0] = By_bet[i, 0] = 0
+        for j in range(1, N - 1):
+            # Note the transposition for dct1_out!
+            Ex_bet[i, j + 1] = (mul * Ex_dct1_out[j, i].real + Ex_bet[i, j]) * alf[i, j + 1]
+            Ey_bet[i, j + 1] = (mul * Ey_dct1_out[j, i].real + Ey_bet[i, j]) * alf[i, j + 1]
+            Bx_bet[i, j + 1] = (mul * Bx_dct1_out[j, i].real + Bx_bet[i, j]) * alf[i, j + 1]
+            By_bet[i, j + 1] = (mul * By_dct1_out[j, i].real + By_bet[i, j]) * alf[i, j + 1]
+        # Note the transposition for dct2_in!
+        # TODO: it can be set once only? Maybe we can comment that out then?
+        Ex_dct2_in[N - 1, i] = Ey_dct2_in[N - 1, i] = 0  # Note the forced zero
+        Bx_dct2_in[N - 1, i] = By_dct2_in[N - 1, i] = 0
+        for j in range(N - 2, 0 - 1, -1):
+            Ex_dct2_in[j, i] = alf[i, j + 1] * Ex_dct2_in[j + 1, i] + Ex_bet[i, j + 1]
+            Ey_dct2_in[j, i] = alf[i, j + 1] * Ey_dct2_in[j + 1, i] + Ey_bet[i, j + 1]
+            Bx_dct2_in[j, i] = alf[i, j + 1] * Bx_dct2_in[j + 1, i] + Bx_bet[i, j + 1]
+            By_dct2_in[j, i] = alf[i, j + 1] * By_dct2_in[j + 1, i] + By_bet[i, j + 1]
+            # also symmetrical-fill the array in preparation for a second DCT
+            ii = max(i, 1)  # avoid writing to dct_in[:, 2 * N - 2], w/o branching
+            Ex_dct2_in[j, 2 * N - 2 - ii] = Ex_dct2_in[j, ii]
+            Ey_dct2_in[j, 2 * N - 2 - ii] = Ey_dct2_in[j, ii]
+            Bx_dct2_in[j, 2 * N - 2 - ii] = Bx_dct2_in[j, ii]
+            By_dct2_in[j, 2 * N - 2 - ii] = By_dct2_in[j, ii]
+        # dct2_in[:, 0] == 0  # happens by itself
 
 
 class MixedSolver:
@@ -422,47 +462,6 @@ def deposit_kernel(grid_steps, grid_step_size,
 
 
 @numba.cuda.jit
-def mid_dct_transform(Ex_dct1_out, Ex_dct2_in,
-                      Ey_dct1_out, Ey_dct2_in,
-                      Bx_dct1_out, Bx_dct2_in,
-                      By_dct1_out, By_dct2_in,
-                      Ex_bet, Ey_bet, Bx_bet, By_bet,
-                      alf, mul):
-    N = Ex_dct1_out.shape[0]
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-
-    # Solve tridiagonal matrix equation for each spectral column with Thomas method:
-    # A @ tmp_2[k, :] = tmp_1[k, :]
-    # A has -1 on superdiagonal, -1 on subdiagonal and aa[k] at the main diagonal
-    # The edge elements of each column are forced to 0!
-    for i in range(index, N, stride):
-        Ex_bet[i, 0] = Ey_bet[i, 0] = Bx_bet[i, 0] = By_bet[i, 0] = 0
-        for j in range(1, N - 1):
-            # Note the transposition for dct1_out!
-            Ex_bet[i, j + 1] = (mul * Ex_dct1_out[j, i].real + Ex_bet[i, j]) * alf[i, j + 1]
-            Ey_bet[i, j + 1] = (mul * Ey_dct1_out[j, i].real + Ey_bet[i, j]) * alf[i, j + 1]
-            Bx_bet[i, j + 1] = (mul * Bx_dct1_out[j, i].real + Bx_bet[i, j]) * alf[i, j + 1]
-            By_bet[i, j + 1] = (mul * By_dct1_out[j, i].real + By_bet[i, j]) * alf[i, j + 1]
-        # Note the transposition for dct2_in!
-        # TODO: it can be set once only? Maybe we can comment that out then?
-        Ex_dct2_in[N - 1, i] = Ey_dct2_in[N - 1, i] = 0  # Note the forced zero
-        Bx_dct2_in[N - 1, i] = By_dct2_in[N - 1, i] = 0
-        for j in range(N - 2, 0 - 1, -1):
-            Ex_dct2_in[j, i] = alf[i, j + 1] * Ex_dct2_in[j + 1, i] + Ex_bet[i, j + 1]
-            Ey_dct2_in[j, i] = alf[i, j + 1] * Ey_dct2_in[j + 1, i] + Ey_bet[i, j + 1]
-            Bx_dct2_in[j, i] = alf[i, j + 1] * Bx_dct2_in[j + 1, i] + Bx_bet[i, j + 1]
-            By_dct2_in[j, i] = alf[i, j + 1] * By_dct2_in[j + 1, i] + By_bet[i, j + 1]
-            # also symmetrical-fill the array in preparation for a second DCT
-            ii = max(i, 1)  # avoid writing to dct_in[:, 2 * N - 2], w/o branching
-            Ex_dct2_in[j, 2 * N - 2 - ii] = Ex_dct2_in[j, ii]
-            Ey_dct2_in[j, 2 * N - 2 - ii] = Ey_dct2_in[j, ii]
-            Bx_dct2_in[j, 2 * N - 2 - ii] = Bx_dct2_in[j, ii]
-            By_dct2_in[j, 2 * N - 2 - ii] = By_dct2_in[j, ii]
-        # dct2_in[:, 0] == 0  # happens by itself
-
-
-@numba.cuda.jit
 def unpack_Ex_Ey_Bx_By_fields_kernel(Ex_dct2_out, Ey_dct2_out,
                                      Bx_dct2_out, By_dct2_out,
                                      Ex, Ey, Bx, By):
@@ -475,16 +474,6 @@ def unpack_Ex_Ey_Bx_By_fields_kernel(Ex_dct2_out, Ey_dct2_out,
         Ey[i, j] = Ey_dct2_out[i, j].real
         Bx[i, j] = Bx_dct2_out[i, j].real
         By[i, j] = By_dct2_out[j, i].real
-
-
-# TODO: try averaging many arrays at once, * .5,
-#       maybe even combining field arrays into one
-@numba.cuda.jit
-def average_arrays_kernel(arr1, arr2, out):
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, out.size, stride):
-        out[k] = (arr1[k] + arr2[k]) / 2
 
 
 @numba.cuda.jit
@@ -623,10 +612,6 @@ class GPUMonolith:
         self._Ey = cp.zeros((N, N))
         self._Bx = cp.zeros((N, N))
         self._By = cp.zeros((N, N))
-        self._Ex_sub = cp.zeros((N, N))
-        self._Ey_sub = cp.zeros((N, N))
-        self._Bx_sub = cp.zeros((N, N))
-        self._By_sub = cp.zeros((N, N))
 
         self.Ez_solver = DirichletSolver(N, self.grid_step_size)
         self._Ez_rhs = cp.zeros((N, N))
@@ -696,11 +681,6 @@ class GPUMonolith:
              pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz, pl_m, pl_q,
              Ex, Ey, Ez, Bx, By, Bz, jx, jy):
         self._beam_ro[...] = cp.array(beam_ro)
-
-        self._Ex_sub[...] = cp.array(Ex)
-        self._Ey_sub[...] = cp.array(Ey)
-        self._Bx_sub[...] = cp.array(Bx)
-        self._By_sub[...] = cp.array(By)
 
         self._m[...] = cp.array(pl_m)
         self._q[...] = cp.array(pl_q)
@@ -830,10 +810,10 @@ class GPUMonolith:
 
 
     def calculate_RHS_Ex_Ey_Bx_By(self):
-        calculate_RHS_Ex_Ey_Bx_By_kernel[self.cfg](self._Ex_sub,
-                                                   self._Ey_sub,
-                                                   self._Bx_sub,
-                                                   self._By_sub,
+        calculate_RHS_Ex_Ey_Bx_By_kernel[self.cfg](self._Ex_avg,
+                                                   self._Ey_avg,
+                                                   self._Bx_avg,
+                                                   self._By_avg,
                                                    self._beam_ro,
                                                    self._ro,
                                                    self._jx,
@@ -862,24 +842,18 @@ class GPUMonolith:
 
 
     def average_fields(self):
-        average_arrays_kernel[self.cfg](self._Ex_prev.ravel(), self._Ex.ravel(), self._Ex_avg.ravel())
-        average_arrays_kernel[self.cfg](self._Ey_prev.ravel(), self._Ey.ravel(), self._Ey_avg.ravel())
-        average_arrays_kernel[self.cfg](self._Ez_prev.ravel(), self._Ez.ravel(), self._Ez_avg.ravel())
-        average_arrays_kernel[self.cfg](self._Bx_prev.ravel(), self._Bx.ravel(), self._Bx_avg.ravel())
-        average_arrays_kernel[self.cfg](self._By_prev.ravel(), self._By.ravel(), self._By_avg.ravel())
-        self._Ex_sub[...] = self._Ex_avg
-        self._Ey_sub[...] = self._Ey_avg
-        self._Bx_sub[...] = self._Bx_avg
-        self._By_sub[...] = self._By_avg
-        # average_arrays_kernel[self.cfg](self._Bz_prev.ravel(), self._Bz.ravel(), self._Bz_avg.ravel())  # 0 for now
+        self._Ex_avg[...] = (self._Ex + self._Ex_prev) / 2
+        self._Ey_avg[...] = (self._Ey + self._Ey_prev) / 2
+        self._Ez_avg[...] = (self._Ez + self._Ez_prev) / 2
+        self._Bx_avg[...] = (self._Bx + self._Bx_prev) / 2
+        self._By_avg[...] = (self._By + self._By_prev) / 2
+        # Bz = 0 for now
         numba.cuda.synchronize()
 
 
     def average_halfstep(self):
-        average_arrays_kernel[self.cfg](self._x_prev_offt.ravel(), self._x_new_offt.ravel(),
-                                        self._halfstep_x_offt.ravel())
-        average_arrays_kernel[self.cfg](self._y_prev_offt.ravel(), self._y_new_offt.ravel(),
-                                        self._halfstep_y_offt.ravel())
+        self._halfstep_x_offt[...] = (self._x_prev_offt + self._x_new_offt) / 2
+        self._halfstep_y_offt[...] = (self._y_prev_offt + self._y_new_offt) / 2
         numba.cuda.synchronize()
 
 
@@ -937,11 +911,6 @@ class GPUMonolith:
         self._Bx_avg[...] = self._Bx
         self._By_avg[...] = self._By
         self._Bz_avg[...] = self._Bz
-
-        self._Ex_sub[...] = self._Ex
-        self._Ey_sub[...] = self._Ey
-        self._Bx_sub[...] = self._Bx
-        self._By_sub[...] = self._By
 
         numba.cuda.synchronize()
 

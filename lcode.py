@@ -628,20 +628,6 @@ class GPUMonolith:
         self._indices_prev = cp.array(indices_prev)
         self._indices_next = cp.array(indices_next)
 
-        # Arrays for Dirichlet boundary conditions solver
-        # * diagonal matrix elements (used in the next one)
-        Ez_a = 2 + 4 * np.sin(np.arange(1, N - 1) * np.pi / (2 * (N - 1)))**2
-        #  +  h**2  # only used with xi derivatives
-        # * precalculated internal coefficients for tridiagonal solving
-        Ez_alf = np.zeros((N - 2, N - 1))
-        Ez_alf[:, 0] = 0
-        for k in range(N - 2):
-            for i in range(N - 2):
-                Ez_alf[k, i + 1] = 1 / (Ez_a[k] - Ez_alf[k, i])
-        self._Ez_alf = cp.array(Ez_alf)
-        # * scratchpad arrays for Dirichlet boundary conditions solver
-        self._Ez_bet = cp.zeros((N, N))
-
         self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick, self.cfg)
         self._Ex = cp.zeros((N, N))
         self._Ey = cp.zeros((N, N))
@@ -653,24 +639,8 @@ class GPUMonolith:
         self._By_sub = cp.zeros((N, N))
 
         self.Ez_solver = DirichletSolver(N, self.grid_step_size)
-        #self.dst_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
-        #                                    itype=np.float64,
-        #                                    otype=np.complex128,
-        #                                    batch=(N - 2))
-        #self._Ez_dst1_in = cp.zeros((N - 2, 2 * N - 2))
-        #self._Ez_dst1_out = cp.zeros((N - 2, N), dtype=np.complex128)
-        #self._Ez_dst2_in = cp.zeros((N - 2, 2 * N - 2))
-        #self._Ez_dst2_out = cp.zeros((N - 2, N), dtype=np.complex128)
         self._Ez_rhs = cp.zeros((N, N))
         self._Ez = cp.zeros((N, N))
-
-        #self._Ez_dst1_in[...] = 0
-        #self._Ez_dst2_in[...] = 0
-        #self._Ez[...] = 0
-
-        # total multiplier to compensate for the iDST+DST transforms
-        #self.Ez_mul = self.grid_step_size**2
-        #self.Ez_mul /= 2 * N - 2  # don't ask
 
         self._Bz = cp.zeros((N, N))
         self._Bz[...] = 0  # Bz = 0 for now

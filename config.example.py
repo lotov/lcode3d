@@ -6,9 +6,9 @@
 #grid_steps = 1025
 #grid_steps = 2049
 
-#grid_steps = 513; window_width = 513 * .03  # 15.39
-grid_steps = 641; window_width = 641 * .025  # 16.025
-#grid_steps = 769; window_width = 769 * .02  # 15.38
+#grid_steps = 513; grid_step_size = .03  # 15.39
+grid_steps = 641; grid_step_size = .025  # 16.025
+#grid_steps = 769; grid_step_size = .02  # 15.38
 
 #xi_step_size = .04
 #xi_step_size = .02

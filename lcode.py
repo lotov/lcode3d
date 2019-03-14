@@ -371,16 +371,6 @@ def interpolate_kernel(x_init, y_init, x_offt, y_offt, Ex, Ey, Ez, Bx, By, Bz,
         Bzs[k] = 0  # Bz = 0 for now
 
 
-# TODO: add ro_initial the last, as it is comparatively large (float tricks)?
-@numba.cuda.jit
-def roj_init_kernel(ro, jx, jy, jz, ro_initial):
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, ro.size, stride):
-        ro[k] = ro_initial[k]
-        jx[k] = jy[k] = jz[k] = 0
-
-
 @numba.cuda.jit
 def deposit_kernel(grid_steps, grid_step_size,
                    fine_grid, c_x_offt, c_y_offt,
@@ -788,11 +778,7 @@ class GPUMonolith:
 
 
     def deposit(self):
-        roj_init_kernel[self.cfg](self._ro.ravel(), self._jx.ravel(),
-                                  self._jy.ravel(), self._jz.ravel(),
-                                  self._ro_initial.ravel())
-        numba.cuda.synchronize()
-
+        self._ro[...] = self._jx[...] = self._jy[...] = self._jz[...] = 0
         deposit_kernel[self.cfg](self.grid_steps, self.grid_step_size,
                                  self._fine_grid,
                                  self._x_new_offt, self._y_new_offt,
@@ -803,6 +789,7 @@ class GPUMonolith:
                                  self._indices_prev, self._indices_next,
                                  self.virtplasma_smallness_factor,
                                  self._ro, self._jx, self._jy, self._jz)
+        self._ro += self._ro_initial  # Do it last to preserve more float precision
         numba.cuda.synchronize()
 
 

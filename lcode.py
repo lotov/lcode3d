@@ -44,6 +44,25 @@ ELECTRON_MASS = 1
 # TODO: macrosity
 
 
+### Solving Laplace equation with Dirichlet boundary conditions (Ez)
+
+
+@numba.cuda.jit  # TODO: oneline with cupy
+def calculate_RHS_Ez_kernel(jx, jy, grid_step_size, Ez_rhs):
+    N = jx.shape[0]
+    Ns = N - 2
+    index = numba.cuda.grid(1)
+    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+    for k in range(index, Ns**2, stride):
+        i0, j0 = k // Ns, k % Ns
+        i, j = i0 + 1, j0 + 1
+
+        djx_dx = (jx[i + 1, j] - jx[i - 1, j]) / (2 * grid_step_size)  # - ?
+        djy_dy = (jy[i, j + 1] - jy[i, j - 1]) / (2 * grid_step_size)  # - ?
+
+        Ez_rhs[i0 + 1, j0 + 1] = -(djx_dx + djy_dy)
+
+
 def dst2d(a):
     # DST-Type1-2D, jury-rigged from symmetrically-padded rFFT
     assert a.shape[0] == a.shape[1]
@@ -65,7 +84,7 @@ def dst2d(a):
 class DirichletSolver:
     def __init__(self, N, h):
         self.N, self.h = N, h
-    
+
         # Samarskiy-Nikolaev, p. 187
         k = np.arange(1, N)
         # 4 / h**2 * sin(k * pi * h / (2 * L2))**2, where L2 = h * (N - 1)
@@ -88,15 +107,15 @@ class DirichletSolver:
         # The perimeter of rhs and out is assumed to be zero.
         N = self.N
         assert rhs.shape[0] == rhs.shape[1] == N
-    
+
         # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS
         #f = scipy.fftpack.dstn(rhs[1:-1, 1:-1].get(), type=1)
         f = dst2d(rhs[1:-1, 1:-1])
-        
+
         # 2. Multiply f by mul
         #f *= self._mul.get()
         f *= self._mul
-        
+
         # 3. Apply iDST-Type1-2D (Inverse Discrete Sine Transform Type 1 2D),
         #    which matches DST-Type1-2D to the multiplier.
         #out[1:-1, 1:-1] = cp.asarray(scipy.fftpack.idstn(f, type=1))
@@ -107,6 +126,159 @@ class DirichletSolver:
         #lap_res = scipy.ndimage.filters.laplace(out.get(), mode='constant') / self.h**2
         #inner_error = (-lap_res[1:-1, 1:-1]- rhs[1:-1, 1:-1].get()).ptp()
         #print(f'{inner_error:e}')
+
+
+### Solving Laplace or Helmholtz equation with mixed boundary conditions
+# TODO: do not prettify too much, replace with DCT-2D instead
+
+
+@numba.cuda.jit  # TODO: shorten with cupy
+def calculate_RHS_Ex_Ey_Bx_By_kernel(Ex_sub, Ey_sub, Bx_sub, By_sub,
+                                     beam_ro, ro, jx, jx_prev, jy, jy_prev, jz,
+                                     grid_step_size, xi_step_size,
+                                     subtraction_trick,
+                                     Ex_dct1_in, Ey_dct1_in,
+                                     Bx_dct1_in, By_dct1_in):
+    N = ro.shape[0]
+    index = numba.cuda.grid(1)
+    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+    for k in range(index, ro.size, stride):
+        i, j = k // N, k % N
+
+        dro_dx = (((+ro[i + 1, j] + beam_ro[i + 1, j]
+                    -ro[i - 1, j] - beam_ro[i - 1, j])
+                  ) / (2 * grid_step_size)  # - ?
+                  if 0 < i < N - 1 else 0)
+        dro_dy = (((+ro[i, j + 1] + beam_ro[i, j + 1]
+                    -ro[i, j - 1] - beam_ro[i, j - 1])
+                  ) / (2 * grid_step_size)  # - ?
+                  if 0 < j < N - 1 else 0)
+        djz_dx = (((+jz[i + 1, j] + beam_ro[i + 1, j]
+                    -jz[i - 1, j] - beam_ro[i - 1, j])
+                  ) / (2 * grid_step_size)  # - ?
+                  if 0 < i < N - 1 else 0)
+        djz_dy = (((+jz[i, j + 1] + beam_ro[i, j + 1]
+                    -jz[i, j - 1] - beam_ro[i, j - 1])
+                  ) / (2 * grid_step_size)  # - ?
+                  if 0 < j < N - 1 else 0)
+        djx_dxi = (jx_prev[i, j] - jx[i, j]) / xi_step_size               # - ?
+        djy_dxi = (jy_prev[i, j] - jy[i, j]) / xi_step_size               # - ?
+
+        Ex_rhs = -((dro_dx - djx_dxi) - Ex_sub[i, j] * subtraction_trick)
+        Ey_rhs = -((dro_dy - djy_dxi) - Ey_sub[i, j] * subtraction_trick)
+        Bx_rhs = +((djz_dy - djy_dxi) + Bx_sub[i, j] * subtraction_trick)
+        By_rhs = -((djz_dx - djx_dxi) - By_sub[i, j] * subtraction_trick)
+        Ex_dct1_in[j, i] = Ex_rhs
+        Ey_dct1_in[i, j] = Ey_rhs
+        Bx_dct1_in[i, j] = Bx_rhs
+        By_dct1_in[j, i] = By_rhs
+        # symmetrically pad dct1_in to apply DCT-via-FFT later
+        ii = max(i, 1)  # avoid writing to dct_in[:, 2 * N - 2], w/o branching
+        jj = max(j, 1)
+        Ex_dct1_in[j, 2 * N - 2 - ii] = Ex_rhs
+        Ey_dct1_in[i, 2 * N - 2 - jj] = Ey_rhs
+        Bx_dct1_in[i, 2 * N - 2 - jj] = Bx_rhs
+        By_dct1_in[j, 2 * N - 2 - ii] = By_rhs
+
+        # applying non-zero boundary conditions to the RHS would be:
+        # for i in range(self.N):
+            # rhs_fixed[i, 0] += top[i] * (2 / self.grid_step_size)
+            # rhs_fixed[i, self.N - 1] += bot[i] * (2 / self.grid_step_size)
+            ## rhs_fixed[0, i] = rhs_fixed[self.N - 1, i] = 0
+            ### changes nothing, as there's a particle-free padding zone?
+
+
+
+class MixedSolver:
+    def __init__(self, N, h, subtraction_trick, cfg):
+        # Arrays for mixed boundary conditions solver
+        # * diagonal matrix elements (used in the next one)
+        aa = 2 + 4 * np.sin(np.arange(0, N) * np.pi / (2 * (N - 1)))**2
+        if subtraction_trick:
+            aa += h**2 * subtraction_trick
+        alf = np.zeros((N, N + 1))
+        # * precalculated internal coefficients for tridiagonal solving
+        for i in range(1, N):
+            alf[:, i + 1] = 1 / (aa - alf[:, i])
+        self._mix_alf = cp.array(alf)
+
+        # * scratchpad arrays for mixed boundary conditions solver
+        #self.dct_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
+        #                                    itype=np.float64,
+        #                                    otype=np.complex128,
+        #                                    batch=(4 * N))
+        # (2 * N - 2) // 2 + 1 == (N - 1) + 1 == N
+        self._Ex = cp.zeros((N, N))
+        self._Ey = cp.zeros((N, N))
+        self._Bx = cp.zeros((N, N))
+        self._By = cp.zeros((N, N))
+        self._Ex_dct1_in = cp.zeros((N, 2 * N - 2))
+        self._Ex_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Ex_dct2_in = cp.zeros((N, 2 * N - 2))
+        self._Ex_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Ey_dct1_in = cp.zeros((N, 2 * N - 2))
+        self._Ey_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Ey_dct2_in = cp.zeros((N, 2 * N - 2))
+        self._Ey_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Bx_dct1_in = cp.zeros((N, 2 * N - 2))
+        self._Bx_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Bx_dct2_in = cp.zeros((N, 2 * N - 2))
+        self._Bx_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._By_dct1_in = cp.zeros((N, 2 * N - 2))
+        self._By_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._By_dct2_in = cp.zeros((N, 2 * N - 2))
+        self._By_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
+        self._Ex_bet = cp.zeros((N, N))
+        self._Ey_bet = cp.zeros((N, N))
+        self._Bx_bet = cp.zeros((N, N))
+        self._By_bet = cp.zeros((N, N))
+
+
+        # total multiplier to compensate for the iDCT+DCT transforms
+        self.mix_mul = h**2
+        self.mix_mul /= 2 * N - 2  # don't ask
+
+        self.cfg = cfg
+
+    def solve(self):
+        # 1. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
+        # iDCT-1 is just DCT-1 in cuFFT
+        self._Ex_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Ex_dct1_in))
+        self._Ey_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Ey_dct1_in))
+        self._Bx_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Bx_dct1_in))
+        self._By_dct1_out[...] = cp.fft.rfft(cp.asarray(self._By_dct1_in))
+        # This implementation of DCT is real-to-complex, so scrapping the i, j
+        # element of the transposed answer would be dct1_out[j, i].real
+
+        # 2. Solve tridiagonal matrix equation for each spectral column with Thomas method:
+        mid_dct_transform[self.cfg](self._Ex_dct1_out, self._Ex_dct2_in,
+                                    self._Ey_dct1_out, self._Ey_dct2_in,
+                                    self._Bx_dct1_out, self._Bx_dct2_in,
+                                    self._By_dct1_out, self._By_dct2_in,
+                                    self._Ex_bet, self._Ey_bet,
+                                    self._Bx_bet, self._By_bet,
+                                    self._mix_alf, self.mix_mul)
+
+        # 3. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
+        self._Ex_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Ex_dct2_in))
+        self._Ey_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Ey_dct2_in))
+        self._Bx_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Bx_dct2_in))
+        self._By_dct2_out[...] = cp.fft.rfft(cp.asarray(self._By_dct2_in))
+
+        # 4. Transpose the resulting Ex (TODO: fuse this step into later steps?)
+        unpack_Ex_Ey_Bx_By_fields_kernel[self.cfg](self._Ex_dct2_out,
+                                                   self._Ey_dct2_out,
+                                                   self._Bx_dct2_out,
+                                                   self._By_dct2_out,
+                                                   self._Ex, self._Ey,
+                                                   self._Bx, self._By)
+
+        numba.cuda.synchronize()
+
+        return self._Ex, self._Ey, self._Bx, self._By
+
+
+### Unsorted
 
 
 @numba.cuda.jit
@@ -259,62 +431,6 @@ def deposit_kernel(grid_steps, grid_step_size,
 
 
 @numba.cuda.jit
-def calculate_RHS_Ex_Ey_Bx_By_kernel(Ex_sub, Ey_sub, Bx_sub, By_sub,
-                                     beam_ro, ro, jx, jx_prev, jy, jy_prev, jz,
-                                     grid_step_size, xi_step_size,
-                                     subtraction_trick,
-                                     Ex_dct1_in, Ey_dct1_in,
-                                     Bx_dct1_in, By_dct1_in):
-    N = ro.shape[0]
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, ro.size, stride):
-        i, j = k // N, k % N
-
-        dro_dx = (((+ro[i + 1, j] + beam_ro[i + 1, j]
-                    -ro[i - 1, j] - beam_ro[i - 1, j])
-                  ) / (2 * grid_step_size)  # - ?
-                  if 0 < i < N - 1 else 0)
-        dro_dy = (((+ro[i, j + 1] + beam_ro[i, j + 1]
-                    -ro[i, j - 1] - beam_ro[i, j - 1])
-                  ) / (2 * grid_step_size)  # - ?
-                  if 0 < j < N - 1 else 0)
-        djz_dx = (((+jz[i + 1, j] + beam_ro[i + 1, j]
-                    -jz[i - 1, j] - beam_ro[i - 1, j])
-                  ) / (2 * grid_step_size)  # - ?
-                  if 0 < i < N - 1 else 0)
-        djz_dy = (((+jz[i, j + 1] + beam_ro[i, j + 1]
-                    -jz[i, j - 1] - beam_ro[i, j - 1])
-                  ) / (2 * grid_step_size)  # - ?
-                  if 0 < j < N - 1 else 0)
-        djx_dxi = (jx_prev[i, j] - jx[i, j]) / xi_step_size               # - ?
-        djy_dxi = (jy_prev[i, j] - jy[i, j]) / xi_step_size               # - ?
-
-        Ex_rhs = -((dro_dx - djx_dxi) - Ex_sub[i, j] * subtraction_trick)
-        Ey_rhs = -((dro_dy - djy_dxi) - Ey_sub[i, j] * subtraction_trick)
-        Bx_rhs = +((djz_dy - djy_dxi) + Bx_sub[i, j] * subtraction_trick)
-        By_rhs = -((djz_dx - djx_dxi) - By_sub[i, j] * subtraction_trick)
-        Ex_dct1_in[j, i] = Ex_rhs
-        Ey_dct1_in[i, j] = Ey_rhs
-        Bx_dct1_in[i, j] = Bx_rhs
-        By_dct1_in[j, i] = By_rhs
-        # symmetrically pad dct1_in to apply DCT-via-FFT later
-        ii = max(i, 1)  # avoid writing to dct_in[:, 2 * N - 2], w/o branching
-        jj = max(j, 1)
-        Ex_dct1_in[j, 2 * N - 2 - ii] = Ex_rhs
-        Ey_dct1_in[i, 2 * N - 2 - jj] = Ey_rhs
-        Bx_dct1_in[i, 2 * N - 2 - jj] = Bx_rhs
-        By_dct1_in[j, 2 * N - 2 - ii] = By_rhs
-
-        # applying non-zero boundary conditions to the RHS would be:
-        # for i in range(self.N):
-            # rhs_fixed[i, 0] += top[i] * (2 / self.grid_step_size)
-            # rhs_fixed[i, self.N - 1] += bot[i] * (2 / self.grid_step_size)
-            ## rhs_fixed[0, i] = rhs_fixed[self.N - 1, i] = 0
-            ### changes nothing, as there's a particle-free padding zone?
-
-
-@numba.cuda.jit
 def mid_dct_transform(Ex_dct1_out, Ex_dct2_in,
                       Ey_dct1_out, Ey_dct2_in,
                       Bx_dct1_out, Bx_dct2_in,
@@ -368,22 +484,6 @@ def unpack_Ex_Ey_Bx_By_fields_kernel(Ex_dct2_out, Ey_dct2_out,
         Ey[i, j] = Ey_dct2_out[i, j].real
         Bx[i, j] = Bx_dct2_out[i, j].real
         By[i, j] = By_dct2_out[j, i].real
-
-
-@numba.cuda.jit
-def calculate_RHS_Ez_kernel(jx, jy, grid_step_size, Ez_rhs):
-    N = jx.shape[0]
-    Ns = N - 2
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, Ns**2, stride):
-        i0, j0 = k // Ns, k % Ns
-        i, j = i0 + 1, j0 + 1
-
-        djx_dx = (jx[i + 1, j] - jx[i - 1, j]) / (2 * grid_step_size)  # - ?
-        djy_dy = (jy[i, j + 1] - jy[i, j - 1]) / (2 * grid_step_size)  # - ?
-
-        Ez_rhs[i0 + 1, j0 + 1] = -(djx_dx + djy_dy)
 
 
 # TODO: try averaging many arrays at once, * .5,
@@ -527,22 +627,6 @@ class GPUMonolith:
         self._indices_prev = cp.array(indices_prev)
         self._indices_next = cp.array(indices_next)
 
-        # Arrays for mixed boundary conditions solver
-        # * diagonal matrix elements (used in the next one)
-        aa = 2 + 4 * np.sin(np.arange(0, N) * np.pi / (2 * (N - 1)))**2
-        if self.subtraction_trick:
-            aa += self.grid_step_size**2 * self.subtraction_trick
-        alf = np.zeros((N, N + 1))
-        # * precalculated internal coefficients for tridiagonal solving
-        for i in range(1, N):
-            alf[:, i + 1] = 1 / (aa - alf[:, i])
-        self._mix_alf = cp.array(alf)
-        # * scratchpad arrays for mixed boundary conditions solver
-        self._Ex_bet = cp.zeros((N, N))
-        self._Ey_bet = cp.zeros((N, N))
-        self._Bx_bet = cp.zeros((N, N))
-        self._By_bet = cp.zeros((N, N))
-
         # Arrays for Dirichlet boundary conditions solver
         # * diagonal matrix elements (used in the next one)
         Ez_a = 2 + 4 * np.sin(np.arange(1, N - 1) * np.pi / (2 * (N - 1)))**2
@@ -557,27 +641,7 @@ class GPUMonolith:
         # * scratchpad arrays for Dirichlet boundary conditions solver
         self._Ez_bet = cp.zeros((N, N))
 
-        #self.dct_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
-        #                                    itype=np.float64,
-        #                                    otype=np.complex128,
-        #                                    batch=(4 * N))
-        # (2 * N - 2) // 2 + 1 == (N - 1) + 1 == N
-        self._Ex_dct1_in = cp.zeros((N, 2 * N - 2))
-        self._Ex_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Ex_dct2_in = cp.zeros((N, 2 * N - 2))
-        self._Ex_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Ey_dct1_in = cp.zeros((N, 2 * N - 2))
-        self._Ey_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Ey_dct2_in = cp.zeros((N, 2 * N - 2))
-        self._Ey_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Bx_dct1_in = cp.zeros((N, 2 * N - 2))
-        self._Bx_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Bx_dct2_in = cp.zeros((N, 2 * N - 2))
-        self._Bx_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._By_dct1_in = cp.zeros((N, 2 * N - 2))
-        self._By_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._By_dct2_in = cp.zeros((N, 2 * N - 2))
-        self._By_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
+        self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick, self.cfg)
         self._Ex = cp.zeros((N, N))
         self._Ey = cp.zeros((N, N))
         self._Bx = cp.zeros((N, N))
@@ -606,10 +670,6 @@ class GPUMonolith:
         # total multiplier to compensate for the iDST+DST transforms
         #self.Ez_mul = self.grid_step_size**2
         #self.Ez_mul /= 2 * N - 2  # don't ask
-
-        # total multiplier to compensate for the iDCT+DCT transforms
-        self.mix_mul = self.grid_step_size**2
-        self.mix_mul /= 2 * N - 2  # don't ask
 
         self._Bz = cp.zeros((N, N))
         self._Bz[...] = 0  # Bz = 0 for now
@@ -808,10 +868,7 @@ class GPUMonolith:
         # where iDCT is DCT;
         # and DCT is jury-rigged from symmetrically-padded DFT
         self.calculate_RHS_Ex_Ey_Bx_By()
-        self.calculate_Ex_Ey_Bx_By_1()
-        self.calculate_Ex_Ey_Bx_By_2()
-        self.calculate_Ex_Ey_Bx_By_3()
-        self.calculate_Ex_Ey_Bx_By_4()
+        self._Ex[...], self._Ey[...], self._Bx[...], self._By[...] = self.mixed_solver.solve()
 
 
     def calculate_RHS_Ex_Ey_Bx_By(self):
@@ -828,50 +885,10 @@ class GPUMonolith:
                                                    self._jz,
                                                    self.grid_step_size, self.xi_step_size,
                                                    self.subtraction_trick,
-                                                   self._Ex_dct1_in,
-                                                   self._Ey_dct1_in,
-                                                   self._Bx_dct1_in,
-                                                   self._By_dct1_in)
-        numba.cuda.synchronize()
-
-    def calculate_Ex_Ey_Bx_By_1(self):
-        # 1. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
-        # iDCT-1 is just DCT-1 in cuFFT
-        self._Ex_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Ex_dct1_in))
-        self._Ey_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Ey_dct1_in))
-        self._Bx_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Bx_dct1_in))
-        self._By_dct1_out[...] = cp.fft.rfft(cp.asarray(self._By_dct1_in))
-        numba.cuda.synchronize()
-        # This implementation of DCT is real-to-complex, so scrapping the i, j
-        # element of the transposed answer would be dct1_out[j, i].real
-
-    def calculate_Ex_Ey_Bx_By_2(self):
-        # 2. Solve tridiagonal matrix equation for each spectral column with Thomas method:
-        mid_dct_transform[self.cfg](self._Ex_dct1_out, self._Ex_dct2_in,
-                                    self._Ey_dct1_out, self._Ey_dct2_in,
-                                    self._Bx_dct1_out, self._Bx_dct2_in,
-                                    self._By_dct1_out, self._By_dct2_in,
-                                    self._Ex_bet, self._Ey_bet,
-                                    self._Bx_bet, self._By_bet,
-                                    self._mix_alf, self.mix_mul)
-        numba.cuda.synchronize()
-
-    def calculate_Ex_Ey_Bx_By_3(self):
-        # 3. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
-        self._Ex_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Ex_dct2_in))
-        self._Ey_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Ey_dct2_in))
-        self._Bx_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Bx_dct2_in))
-        self._By_dct2_out[...] = cp.fft.rfft(cp.asarray(self._By_dct2_in))
-        numba.cuda.synchronize()
-
-    def calculate_Ex_Ey_Bx_By_4(self):
-        # 4. Transpose the resulting Ex (TODO: fuse this step into later steps?)
-        unpack_Ex_Ey_Bx_By_fields_kernel[self.cfg](self._Ex_dct2_out,
-                                                   self._Ey_dct2_out,
-                                                   self._Bx_dct2_out,
-                                                   self._By_dct2_out,
-                                                   self._Ex, self._Ey,
-                                                   self._Bx, self._By)
+                                                   self.mixed_solver._Ex_dct1_in,
+                                                   self.mixed_solver._Ey_dct1_in,
+                                                   self.mixed_solver._Bx_dct1_in,
+                                                   self.mixed_solver._By_dct1_in)
         numba.cuda.synchronize()
 
 

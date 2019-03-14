@@ -18,8 +18,8 @@
 
 from math import sqrt, floor
 
-import sys
 import os
+import sys
 
 import matplotlib.pyplot as plt
 
@@ -34,7 +34,8 @@ import scipy.ndimage
 import scipy.signal
 
 
-os.environ['OMP_NUM_THREADS'] = '1'
+# Prevent all CPU cores waiting for the GPU at 100% utilization (under conda).
+# os.environ['OMP_NUM_THREADS'] = '1'
 
 
 ELECTRON_CHARGE = -1

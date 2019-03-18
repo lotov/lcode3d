@@ -773,7 +773,7 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
 
-    def initial_deposition(self, pl_x_offt, pl_y_offt, 
+    def initial_deposition(self, pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q):
         # Don't allow initial speeds for calculations with background ions
         assert np.array_equiv(pl_px, 0)
@@ -857,15 +857,18 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
 
-    def step(self):
+    def step(self, beam_ro):
+        self.reload(beam_ro)
+
         self.move_predict_halfstep()  # ... -> v1 [xy]_halfstep
         self.interpolate()            # ... -> v1 [EB][xyz]s  # fake-avg
         self.move_smart()             # ... -> v1 [xy]_new, p[xyz]_new
         self.deposit()                # ... -> v1 ro, j[xyz
+
         self.calculate_Ex_Ey_Bx_By()  # ... -> v2 [EB][xy]
         self.calculate_Ez()           # ... -> v2 Ez
         # Bz = 0 for now
-        self.average_fields()         # ... -> v2 [EB][xyz]_avg -> [EB][xy]_sub  # TODO: are avg/sub both needed?
+        self.average_fields()         # ... -> v2 [EB][xy]_avg
 
         self.average_halfstep()       # ... -> v2 [xy]_halfstep
         self.interpolate()            # ... -> v2 [EB][xyz]s
@@ -874,8 +877,7 @@ class GPUMonolith:
         self.calculate_Ex_Ey_Bx_By()  # ... -> v3 [EB][xy]
         self.calculate_Ez()           # ... -> v3 Ez
         # Bz = 0 for now
-        self.average_fields()         # ... -> v3 [EB][xyz]_avg -> [EB][xy]_sub  # TODO: are avg/sub both needed?
-
+        self.average_fields()         # ... -> v3 [EB][xy]_avg
         self.average_halfstep()       # ... -> v3 [xy]_halfstep
         self.interpolate()            # ... -> v3 [EB][xyz]s
         self.move_smart()             # ... -> v3 [xy]_new, p[xyz]_new
@@ -1113,8 +1115,7 @@ def main():
     for xi_i in range(config.xi_steps):
         beam_ro = config.beam(xi_i, xs, ys)
 
-        gpu.reload(beam_ro)
-        gpu.step()
+        gpu.step(beam_ro)
 
         Ez_00 = gpu.Ez[config.grid_steps // 2, config.grid_steps // 2]
         Ez_00_history.append(Ez_00)

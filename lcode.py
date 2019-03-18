@@ -390,27 +390,6 @@ def deposit9(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     numba.cuda.atomic.add(a, (i + 1, j - 1), val * wPM)
 
 
-# TODO: write a version fused with averaging
-# TODO: fuse with moving?
-@numba.cuda.jit
-def interpolate_kernel(x_init, y_init, x_offt, y_offt, Ex, Ey, Ez, Bx, By, Bz,
-                       grid_step_size, grid_steps,
-                       Exs, Eys, Ezs, Bxs, Bys, Bzs):
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, x_init.size, stride):
-        x, y = x_init[k] + x_offt[k], y_init[k] + y_offt[k]
-        i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
-            x, y, grid_steps, grid_step_size
-        )
-        Exs[k] = interp9(Ex, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Eys[k] = interp9(Ey, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Ezs[k] = interp9(Ez, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Bxs[k] = interp9(Bx, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Bys[k] = interp9(By, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Bzs[k] = 0  # Bz = 0 for now
-
-
 @numba.cuda.jit
 def deposit_kernel(grid_steps, grid_step_size,
                    fine_grid, c_x_offt, c_y_offt,
@@ -478,19 +457,33 @@ def unpack_Ex_Ey_Bx_By_fields_kernel(Ex_dct2_out, Ey_dct2_out,
 
 @numba.cuda.jit
 def move_smart_kernel(xi_step_size, reflect_boundary,
+                      grid_step_size, grid_steps,
                       ms, qs,
-                      x_init, y_init, old_x_offt, old_y_offt,
+                      x_init, y_init,
+                      halfstep_x_offt, halfstep_y_offt,
+                      old_x_offt, old_y_offt,
                       old_px, old_py, old_pz,
-                      Exs, Eys, Ezs, Bxs, Bys, Bzs,
+                      Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
                       new_x_offt, new_y_offt, new_px, new_py, new_pz):
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
     for k in range(index, ms.size, stride):
         m, q = ms[k], qs[k]
+
         opx, opy, opz = old_px[k], old_py[k], old_pz[k]
         px, py, pz = opx, opy, opz
         x_offt, y_offt = old_x_offt[k], old_y_offt[k]
-        Ex, Ey, Ez, Bx, By, Bz = Exs[k], Eys[k], Ezs[k], Bxs[k], Bys[k], Bzs[k]
+
+        xh, yh = x_init[k] + halfstep_x_offt[k], y_init[k] + halfstep_y_offt[k]
+        i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
+            xh, yh, grid_steps, grid_step_size
+        )
+        Ex = interp9(Ex_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Ey = interp9(Ey_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Ez = interp9(Ez_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Bx = interp9(Bx_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        By = interp9(By_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+        Bz = 0  # Bz = 0 for now
 
         gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
         vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
@@ -589,9 +582,6 @@ class GPUMonolith:
         self._px_new = cp.zeros((Nc, Nc))
         self._py_new = cp.zeros((Nc, Nc))
         self._pz_new = cp.zeros((Nc, Nc))
-
-        self._halfstep_x_offt = cp.zeros((Nc, Nc))
-        self._halfstep_y_offt = cp.zeros((Nc, Nc))
 
         self._Exs = cp.zeros((Nc, Nc))
         self._Eys = cp.zeros((Nc, Nc))
@@ -709,49 +699,43 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
 
-    def move_predict_halfstep(self):
+    def move_predict_halfstep(self,
+                              m, x_init, y_init, x_prev_offt, y_prev_offt,
+                              px_prev, py_prev, pz_prev):
+        halfstep_x_offt = cp.zeros_like(x_init)
+        halfstep_y_offt = cp.zeros_like(x_init)
         move_predict_halfstep_kernel[self.cfg](self.xi_step_size,
                                                self.reflect_boundary,
-                                               self._m.ravel(),
-                                               self._x_init.ravel(),
-                                               self._y_init.ravel(),
-                                               self._x_prev_offt.ravel(),
-                                               self._y_prev_offt.ravel(),
-                                               self._px_prev.ravel(),
-                                               self._py_prev.ravel(),
-                                               self._pz_prev.ravel(),
-                                               self._halfstep_x_offt.ravel(),
-                                               self._halfstep_y_offt.ravel())
+                                               m.ravel(),
+                                               x_init.ravel(),
+                                               y_init.ravel(),
+                                               x_prev_offt.ravel(),
+                                               y_prev_offt.ravel(),
+                                               px_prev.ravel(),
+                                               py_prev.ravel(),
+                                               pz_prev.ravel(),
+                                               halfstep_x_offt.ravel(),
+                                               halfstep_y_offt.ravel())
         numba.cuda.synchronize()
+        return halfstep_x_offt, halfstep_y_offt
 
 
-    def interpolate(self):
-        interpolate_kernel[self.cfg](self._x_init.ravel(),
-                                     self._y_init.ravel(),
-                                     self._halfstep_x_offt.ravel(),
-                                     self._halfstep_y_offt.ravel(),
-                                     self._Ex_avg, self._Ey_avg, self._Ez_avg,
-                                     self._Bx_avg, self._By_avg, self._Bz_avg,
-                                     self.grid_step_size, self.grid_steps,
-                                     self._Exs.ravel(), self._Eys.ravel(),
-                                     self._Ezs.ravel(), self._Bxs.ravel(),
-                                     self._Bys.ravel(), self._Bzs.ravel())
-        numba.cuda.synchronize()
-
-
-    def move_smart(self):
-        move_smart_kernel[self.cfg](self.xi_step_size,
-                                    self.reflect_boundary,
+    def move_smart(self, halfstep_x_offt, halfstep_y_offt):
+        move_smart_kernel[self.cfg](self.xi_step_size, self.reflect_boundary,
+                                    self.grid_step_size, self.grid_steps,
                                     self._m.ravel(), self._q.ravel(),
                                     self._x_init.ravel(), self._y_init.ravel(),
-                                    self._x_prev_offt.ravel(), self._y_prev_offt.ravel(),
+                                    halfstep_x_offt.ravel(),
+                                    halfstep_y_offt.ravel(),
+                                    self._x_prev_offt.ravel(),
+                                    self._y_prev_offt.ravel(),
                                     self._px_prev.ravel(),
                                     self._py_prev.ravel(),
                                     self._pz_prev.ravel(),
-                                    self._Exs.ravel(), self._Eys.ravel(),
-                                    self._Ezs.ravel(), self._Bxs.ravel(),
-                                    self._Bys.ravel(), self._Bzs.ravel(),
-                                    self._x_new_offt.ravel(), self._y_new_offt.ravel(),
+                                    self._Ex_avg, self._Ey_avg, self._Ez_avg,
+                                    self._Bx_avg, self._By_avg, self._Bz_avg,
+                                    self._x_new_offt.ravel(),
+                                    self._y_new_offt.ravel(),
                                     self._px_new.ravel(), self._py_new.ravel(),
                                     self._pz_new.ravel())
         numba.cuda.synchronize()
@@ -840,7 +824,6 @@ class GPUMonolith:
                                           self._Ez_rhs)
         numba.cuda.synchronize()
 
-
     def average_fields(self):
         self._Ex_avg[...] = (self._Ex + self._Ex_prev) / 2
         self._Ey_avg[...] = (self._Ey + self._Ey_prev) / 2
@@ -852,17 +835,26 @@ class GPUMonolith:
 
 
     def average_halfstep(self):
-        self._halfstep_x_offt[...] = (self._x_prev_offt + self._x_new_offt) / 2
-        self._halfstep_y_offt[...] = (self._y_prev_offt + self._y_new_offt) / 2
+        halfstep_x_offt = (self._x_prev_offt + self._x_new_offt) / 2
+        halfstep_y_offt = (self._y_prev_offt + self._y_new_offt) / 2
         numba.cuda.synchronize()
+        return halfstep_x_offt, halfstep_y_offt
 
 
     def step(self, beam_ro):
         self.reload(beam_ro)
 
-        self.move_predict_halfstep()  # ... -> v1 [xy]_halfstep
-        self.interpolate()            # ... -> v1 [EB][xyz]s  # fake-avg
-        self.move_smart()             # ... -> v1 [xy]_new, p[xyz]_new
+        m = self._m
+        x_init, y_init = self._x_init, self._y_init
+        x_prev_offt, y_prev_offt = self.x_prev_offt, self.y_prev_offt
+        px_prev, py_prev, pz_prev = self._px_prev, self.py_prev, self.pz_prev
+
+        halfstep_x_offt, halfstep_y_offt = self.move_predict_halfstep(
+            m, x_init, y_init, x_prev_offt, y_prev_offt,
+            px_prev, py_prev, pz_prev
+        )
+
+        self.move_smart(halfstep_x_offt, halfstep_y_offt)  # ... -> v1 [xy]_new, p[xyz]_new
         self.deposit()                # ... -> v1 ro, j[xyz
 
         self.calculate_Ex_Ey_Bx_By()  # ... -> v2 [EB][xy]
@@ -870,17 +862,15 @@ class GPUMonolith:
         # Bz = 0 for now
         self.average_fields()         # ... -> v2 [EB][xy]_avg
 
-        self.average_halfstep()       # ... -> v2 [xy]_halfstep
-        self.interpolate()            # ... -> v2 [EB][xyz]s
-        self.move_smart()             # ... -> v2 [xy]_new, p[xyz]_new
+        halfstep_x_offt, halfstep_y_offt = self.average_halfstep()  # ... -> v2 [xy]_halfstep
+        self.move_smart(halfstep_x_offt, halfstep_y_offt)  # ... -> v2 [xy]_new, p[xyz]_new
         self.deposit()                # ... -> v2 ro, j[xyz]
         self.calculate_Ex_Ey_Bx_By()  # ... -> v3 [EB][xy]
         self.calculate_Ez()           # ... -> v3 Ez
         # Bz = 0 for now
-        self.average_fields()         # ... -> v3 [EB][xy]_avg
-        self.average_halfstep()       # ... -> v3 [xy]_halfstep
-        self.interpolate()            # ... -> v3 [EB][xyz]s
-        self.move_smart()             # ... -> v3 [xy]_new, p[xyz]_new
+        self.average_fields() # ... -> v3 [EB][xy]_avg
+        halfstep_x_offt, halfstep_y_offt = self.average_halfstep()  # ... -> v3 [xy]_halfstep
+        self.move_smart(halfstep_x_offt, halfstep_y_offt)  # ... -> v3 [xy]_new, p[xyz]_new
         self.deposit()                # ... -> v3 ro, j[xyz]
 
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?

@@ -354,7 +354,7 @@ def weights(x, y, grid_steps, grid_step_size):
     i, j = int(floor(x_h) + grid_steps // 2), int(floor(y_h) + grid_steps // 2)
     x_loc, y_loc = x_h - floor(x_h) - .5, y_h - floor(y_h) - .5
     # centered to -.5 to 5, not 0 to 1, as formulas use offset from cell center
-    # TODO: get rid of these deoffsetting/reoffsetting festival
+    # TODO: get rid of this deoffsetting/reoffsetting festival
 
     wx0, wy0 = .75 - x_loc**2, .75 - y_loc**2  # fx1, fy1
     wxP, wyP = (.5 + x_loc)**2 / 2, (.5 + y_loc)**2 / 2  # fx2**2/2, fy2**2/2
@@ -504,8 +504,8 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
 
         gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
 
-        x_offt += px / (gamma_m - pz) * xi_step_size
-        y_offt += py / (gamma_m - pz) * xi_step_size
+        x_offt += px / (gamma_m - pz) * xi_step_size  # no mixing with x_init
+        y_offt += py / (gamma_m - pz) * xi_step_size  # no mixing with y_init
 
         px, py, pz = opx + dpx, opy + dpy, opz + dpz
 

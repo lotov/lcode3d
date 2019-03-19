@@ -533,6 +533,29 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
         new_px[k], new_py[k], new_pz[k] = px, py, pz
 
 
+def move_smart(cfg, xi_step_size, reflect_boundary, grid_step_size, grid_steps,
+               m, q, x_init, y_init, x_prev_offt, y_prev_offt,
+               estimated_x_offt, estimated_y_offt, px_prev, py_prev, pz_prev,
+               Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg):
+    x_offt_new = cp.zeros_like(x_prev_offt)
+    y_offt_new = cp.zeros_like(y_prev_offt)
+    px_new = cp.zeros_like(px_prev)
+    py_new = cp.zeros_like(py_prev)
+    pz_new = cp.zeros_like(pz_prev)
+    move_smart_kernel[cfg](xi_step_size, reflect_boundary,
+                           grid_step_size, grid_steps,
+                           m.ravel(), q.ravel(),
+                           x_init.ravel(), y_init.ravel(),
+                           x_prev_offt.ravel(), y_prev_offt.ravel(),
+                           estimated_x_offt.ravel(), estimated_y_offt.ravel(),
+                           px_prev.ravel(), py_prev.ravel(), pz_prev.ravel(),
+                           Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
+                           x_offt_new.ravel(), y_offt_new.ravel(),
+                           px_new.ravel(), py_new.ravel(), pz_new.ravel())
+    numba.cuda.synchronize()
+    return x_offt_new, y_offt_new, px_new, py_new, pz_new
+
+
 class GPUMonolith:
     cfg = (19, 384)  # empirical guess for a GTX 1070 Ti
 
@@ -704,7 +727,7 @@ class GPUMonolith:
                                 m, x_init, y_init, x_prev_offt, y_prev_offt,
                                 px_prev, py_prev, pz_prev):
         estimated_x_offt = cp.zeros_like(x_init)
-        estimated_y_offt = cp.zeros_like(x_init)
+        estimated_y_offt = cp.zeros_like(y_init)
         move_estimate_wo_fields_kernel[self.cfg](self.xi_step_size,
                                                  self.reflect_boundary,
                                                  m.ravel(),
@@ -721,34 +744,13 @@ class GPUMonolith:
         return estimated_x_offt, estimated_y_offt
 
 
-    def move_smart(self, estimated_x_offt, estimated_y_offt):
-        move_smart_kernel[self.cfg](self.xi_step_size, self.reflect_boundary,
-                                    self.grid_step_size, self.grid_steps,
-                                    self._m.ravel(), self._q.ravel(),
-                                    self._x_init.ravel(), self._y_init.ravel(),
-                                    self._x_prev_offt.ravel(),
-                                    self._y_prev_offt.ravel(),
-                                    estimated_x_offt.ravel(),
-                                    estimated_y_offt.ravel(),
-                                    self._px_prev.ravel(),
-                                    self._py_prev.ravel(),
-                                    self._pz_prev.ravel(),
-                                    self._Ex_avg, self._Ey_avg, self._Ez_avg,
-                                    self._Bx_avg, self._By_avg, self._Bz_avg,
-                                    self._x_new_offt.ravel(),
-                                    self._y_new_offt.ravel(),
-                                    self._px_new.ravel(), self._py_new.ravel(),
-                                    self._pz_new.ravel())
-        numba.cuda.synchronize()
-
-
-    def deposit(self):
+    def deposit(self, x_offt_new, y_offt_new, px_new, py_new, pz_new):
         self._ro[...] = self._jx[...] = self._jy[...] = self._jz[...] = 0
         deposit_kernel[self.cfg](self.grid_steps, self.grid_step_size,
                                  self._fine_grid,
-                                 self._x_new_offt, self._y_new_offt,
+                                 x_offt_new, y_offt_new,
                                  self._m, self._q,
-                                 self._px_new, self._py_new, self._pz_new,
+                                 px_new, py_new, pz_new,
                                  self._A_weights, self._B_weights,
                                  self._C_weights, self._D_weights,
                                  self._indices_prev, self._indices_next,
@@ -773,13 +775,13 @@ class GPUMonolith:
 
         self._m[...] = cp.array(pl_m)
         self._q[...] = cp.array(pl_q)
-        self._x_new_offt[...] = cp.array(pl_x_offt)
-        self._y_new_offt[...] = cp.array(pl_y_offt)
-        self._px_new[...] = cp.array(pl_px)
-        self._py_new[...] = cp.array(pl_py)
-        self._pz_new[...] = cp.array(pl_pz)
+        #self._x_new_offt[...] = cp.array(pl_x_offt)
+        #self._y_new_offt[...] = cp.array(pl_y_offt)
+        #self._px_new[...] = cp.array(pl_px)
+        #self._py_new[...] = cp.array(pl_py)
+        #self._pz_new[...] = cp.array(pl_pz)
 
-        self.deposit()
+        self.deposit(pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz)
 
         self._ro_initial[...] = -self._ro  # Right on the GPU, huh
         numba.cuda.synchronize()
@@ -849,25 +851,60 @@ class GPUMonolith:
             px_prev, py_prev, pz_prev
         )
 
-        self.move_smart(estimated_x_offt, estimated_y_offt)  # ... -> v1 [xy]_new, p[xyz]_new
-        self.deposit()                # ... -> v1 ro, j[xyz
+        x_offt_new, y_offt_new, px_new, py_new, pz_new = move_smart(
+            self.cfg, self.xi_step_size, self.reflect_boundary,
+            self.grid_step_size, self.grid_steps,
+            self._m, self._q, self._x_init, self._y_init,
+            self._x_prev_offt, self._y_prev_offt,
+            estimated_x_offt, estimated_y_offt,
+            self._px_prev, self._py_prev, self._pz_prev,
+            self._Ex_avg, self._Ey_avg, self._Ez_avg,
+            self._Bx_avg, self._By_avg, self._Bz_avg
+        )
+        self.deposit(x_offt_new, y_offt_new, px_new, py_new, pz_new)
+                                      # ... -> v1 ro, j[xyz]
 
         self.calculate_Ex_Ey_Bx_By()  # ... -> v2 [EB][xy]
         self.calculate_Ez()           # ... -> v2 Ez
         # Bz = 0 for now
         self.average_fields()         # ... -> v2 [EB][xy]_avg
 
-        self.move_smart(self._x_new_offt, self._y_new_offt)  # ... -> v2 [xy]_new, p[xyz]_new
-        self.deposit()                # ... -> v2 ro, j[xyz]
+        x_offt_new, y_offt_new, px_new, py_new, pz_new = move_smart(
+            self.cfg, self.xi_step_size, self.reflect_boundary,
+            self.grid_step_size, self.grid_steps,
+            self._m, self._q, self._x_init, self._y_init,
+            self._x_prev_offt, self._y_prev_offt,
+            x_offt_new, y_offt_new,
+            self._px_prev, self._py_prev, self._pz_prev,
+            self._Ex_avg, self._Ey_avg, self._Ez_avg,
+            self._Bx_avg, self._By_avg, self._Bz_avg
+        )
+        self.deposit(x_offt_new, y_offt_new, px_new, py_new, pz_new)
+                                      # ... -> v2 ro, j[xyz]
         self.calculate_Ex_Ey_Bx_By()  # ... -> v3 [EB][xy]
         self.calculate_Ez()           # ... -> v3 Ez
         # Bz = 0 for now
         self.average_fields() # ... -> v3 [EB][xy]_avg
-        self.move_smart(self._x_new_offt, self._y_new_offt)  # ... -> v3 [xy]_new, p[xyz]_new
-        self.deposit()                # ... -> v3 ro, j[xyz]
+        x_offt_new, y_offt_new, px_new, py_new, pz_new = move_smart(
+            self.cfg, self.xi_step_size, self.reflect_boundary,
+            self.grid_step_size, self.grid_steps,
+            self._m, self._q, self._x_init, self._y_init,
+            self._x_prev_offt, self._y_prev_offt,
+            x_offt_new, y_offt_new,
+            self._px_prev, self._py_prev, self._pz_prev,
+            self._Ex_avg, self._Ey_avg, self._Ez_avg,
+            self._Bx_avg, self._By_avg, self._Bz_avg
+        )
+        self.deposit(x_offt_new, y_offt_new, px_new, py_new, pz_new)
+                                      # ... -> v3 ro, j[xyz]
 
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
+        self._x_new_offt[...] = x_offt_new
+        self._y_new_offt[...] = y_offt_new
+        self._px_new[...] = px_new
+        self._py_new[...] = py_new
+        self._pz_new[...] = pz_new
 
     def reload(self, beam_ro):
         self._beam_ro[...] = cp.array(beam_ro)

@@ -440,6 +440,26 @@ def deposit_kernel(grid_steps, grid_step_size,
         deposit9(out_jz, i, j, djz, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
 
 
+def deposit(cfg, ro_initial,
+            grid_steps, grid_step_size, fine_grid, x_offt_new, y_offt_new,
+            m, q, px_new, py_new, pz_new,
+            A_weights, B_weights, C_weights, D_weights,
+            indices_prev, indices_next, virtplasma_smallness_factor):
+    ro = cp.zeros((grid_steps, grid_steps))
+    jx = cp.zeros((grid_steps, grid_steps))
+    jy = cp.zeros((grid_steps, grid_steps))
+    jz = cp.zeros((grid_steps, grid_steps))
+    deposit_kernel[cfg](grid_steps, grid_step_size, fine_grid,
+                        x_offt_new, y_offt_new, m, q, px_new, py_new, pz_new,
+                        A_weights, B_weights, C_weights, D_weights,
+                        indices_prev, indices_next,
+                        virtplasma_smallness_factor,
+                        ro, jx, jy, jz)
+    ro += ro_initial  # Do it last to preserve more float precision
+    numba.cuda.synchronize()
+    return ro, jx, jy, jz
+
+
 @numba.cuda.jit
 def unpack_Ex_Ey_Bx_By_fields_kernel(Ex_dct2_out, Ey_dct2_out,
                                      Bx_dct2_out, By_dct2_out,
@@ -744,22 +764,6 @@ class GPUMonolith:
         return estimated_x_offt, estimated_y_offt
 
 
-    def deposit(self, x_offt_new, y_offt_new, px_new, py_new, pz_new):
-        self._ro[...] = self._jx[...] = self._jy[...] = self._jz[...] = 0
-        deposit_kernel[self.cfg](self.grid_steps, self.grid_step_size,
-                                 self._fine_grid,
-                                 x_offt_new, y_offt_new,
-                                 self._m, self._q,
-                                 px_new, py_new, pz_new,
-                                 self._A_weights, self._B_weights,
-                                 self._C_weights, self._D_weights,
-                                 self._indices_prev, self._indices_next,
-                                 self.virtplasma_smallness_factor,
-                                 self._ro, self._jx, self._jy, self._jz)
-        self._ro += self._ro_initial  # Do it last to preserve more float precision
-        numba.cuda.synchronize()
-
-
     def initial_deposition(self, pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q):
         # Don't allow initial speeds for calculations with background ions
@@ -767,23 +771,16 @@ class GPUMonolith:
         assert np.array_equiv(pl_py, 0)
         assert np.array_equiv(pl_pz, 0)
 
-        self._ro_initial[...] = 0
-        self._ro[...] = 0
-        self._jx[...] = 0
-        self._jy[...] = 0
-        self._jz[...] = 0
+        ro_initial = cp.zeros((self.grid_steps, self.grid_steps))
+        ro_electrons_initial, _, _, _ = deposit(
+            self.cfg, ro_initial, self.grid_steps, self.grid_step_size,
+            self._fine_grid,
+            pl_x_offt, pl_y_offt, pl_m, pl_q, pl_px, pl_py, pl_pz,
+            self._A_weights, self._B_weights, self._C_weights, self._D_weights,
+            self._indices_prev, self._indices_next,
+            self.virtplasma_smallness_factor)
 
-        self._m[...] = cp.array(pl_m)
-        self._q[...] = cp.array(pl_q)
-        #self._x_new_offt[...] = cp.array(pl_x_offt)
-        #self._y_new_offt[...] = cp.array(pl_y_offt)
-        #self._px_new[...] = cp.array(pl_px)
-        #self._py_new[...] = cp.array(pl_py)
-        #self._pz_new[...] = cp.array(pl_pz)
-
-        self.deposit(pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz)
-
-        self._ro_initial[...] = -self._ro  # Right on the GPU, huh
+        self._ro_initial = -ro_electrons_initial  # Right on the GPU, huh
         numba.cuda.synchronize()
 
 
@@ -861,8 +858,13 @@ class GPUMonolith:
             self._Ex_avg, self._Ey_avg, self._Ez_avg,
             self._Bx_avg, self._By_avg, self._Bz_avg
         )
-        self.deposit(x_offt_new, y_offt_new, px_new, py_new, pz_new)
-                                      # ... -> v1 ro, j[xyz]
+        self._ro[...], self._jx[...], self._jy[...], self._jz[...] = deposit(
+            self.cfg, self._ro_initial, self.grid_steps, self.grid_step_size,
+            self._fine_grid, x_offt_new, y_offt_new, self._m, self._q,
+            px_new, py_new, pz_new,
+            self._A_weights, self._B_weights, self._C_weights, self._D_weights,
+            self._indices_prev, self._indices_next,
+            self.virtplasma_smallness_factor)
 
         self.calculate_Ex_Ey_Bx_By()  # ... -> v2 [EB][xy]
         self.calculate_Ez()           # ... -> v2 Ez
@@ -879,8 +881,13 @@ class GPUMonolith:
             self._Ex_avg, self._Ey_avg, self._Ez_avg,
             self._Bx_avg, self._By_avg, self._Bz_avg
         )
-        self.deposit(x_offt_new, y_offt_new, px_new, py_new, pz_new)
-                                      # ... -> v2 ro, j[xyz]
+        self._ro[...], self._jx[...], self._jy[...], self._jz[...] = deposit(
+            self.cfg, self._ro_initial, self.grid_steps, self.grid_step_size,
+            self._fine_grid, x_offt_new, y_offt_new, self._m, self._q,
+            px_new, py_new, pz_new,
+            self._A_weights, self._B_weights, self._C_weights, self._D_weights,
+            self._indices_prev, self._indices_next,
+            self.virtplasma_smallness_factor)
         self.calculate_Ex_Ey_Bx_By()  # ... -> v3 [EB][xy]
         self.calculate_Ez()           # ... -> v3 Ez
         # Bz = 0 for now
@@ -895,8 +902,13 @@ class GPUMonolith:
             self._Ex_avg, self._Ey_avg, self._Ez_avg,
             self._Bx_avg, self._By_avg, self._Bz_avg
         )
-        self.deposit(x_offt_new, y_offt_new, px_new, py_new, pz_new)
-                                      # ... -> v3 ro, j[xyz]
+        self._ro[...], self._jx[...], self._jy[...], self._jz[...] = deposit(
+            self.cfg, self._ro_initial, self.grid_steps, self.grid_step_size,
+            self._fine_grid, x_offt_new, y_offt_new, self._m, self._q,
+            px_new, py_new, pz_new,
+            self._A_weights, self._B_weights, self._C_weights, self._D_weights,
+            self._indices_prev, self._indices_next,
+            self.virtplasma_smallness_factor)
 
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 

@@ -48,20 +48,14 @@ ELECTRON_MASS = 1
 ### Solving Laplace equation with Dirichlet boundary conditions (Ez)
 
 
-@numba.cuda.jit  # TODO: oneline with cupy
-def calculate_RHS_Ez_kernel(jx, jy, grid_step_size, Ez_rhs):
-    N = jx.shape[0]
-    Ns = N - 2
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, Ns**2, stride):
-        i0, j0 = k // Ns, k % Ns
-        i, j = i0 + 1, j0 + 1
+def calculate_RHS_Ez(grid_step_size, jx, jy):
+    h2 = grid_step_size * 2
 
-        djx_dx = (jx[i + 1, j] - jx[i - 1, j]) / (2 * grid_step_size)  # - ?
-        djy_dy = (jy[i, j + 1] - jy[i, j - 1]) / (2 * grid_step_size)  # - ?
+    # NOTE: use gradient instead if available (cupy doesn't have gradient)
+    djx_dx, _ = dx_dy(jx, h2)
+    _, djy_dy = dx_dy(jy, h2)
 
-        Ez_rhs[i0 + 1, j0 + 1] = -(djx_dx + djy_dy)
+    return -(djx_dx + djy_dy)
 
 
 def dst2d(a):
@@ -99,7 +93,7 @@ class DirichletSolver:
         self._mul = cp.array(mul)
 
 
-    def solve(self, rhs, out):
+    def solve(self, rhs):
         # TODO: Try to optimize pad-dst-mul-unpad-pad-dst-unpad-pad
         #       down to pad-dst-mul-dst-unpad, but carefully.
         #       Or maybe not.
@@ -108,6 +102,7 @@ class DirichletSolver:
         # The perimeter of rhs and out is assumed to be zero.
         N = self.N
         assert rhs.shape[0] == rhs.shape[1] == N
+        out = cp.zeros((N, N))
 
         # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS
         #f = scipy.fftpack.dstn(rhs[1:-1, 1:-1].get(), type=1)
@@ -123,10 +118,14 @@ class DirichletSolver:
         out[1:-1, 1:-1] = dst2d(f)
 
         numba.cuda.synchronize()
+        return out
 
-        #lap_res = scipy.ndimage.filters.laplace(out.get(), mode='constant') / self.h**2
-        #inner_error = (-lap_res[1:-1, 1:-1]- rhs[1:-1, 1:-1].get()).ptp()
-        #print(f'{inner_error:e}')
+
+def calculate_Ez(dirichlet_solver, grid_step_size, jx, jy):
+    Ez_rhs = calculate_RHS_Ez(grid_step_size, jx, jy)
+    Ez = dirichlet_solver.solve(Ez_rhs)
+    numba.cuda.synchronize()
+    return Ez
 
 
 ### Solving Laplace or Helmholtz equation with mixed boundary conditions
@@ -642,7 +641,7 @@ class GPUMonolith:
         self._Bx = cp.zeros((N, N))
         self._By = cp.zeros((N, N))
 
-        self.Ez_solver = DirichletSolver(N, self.grid_step_size)
+        self.dirichlet_solver = DirichletSolver(N, self.grid_step_size)
         self._Ez_rhs = cp.zeros((N, N))
         self._Ez = cp.zeros((N, N))
 
@@ -779,17 +778,6 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
 
-    def calculate_Ez(self):
-        self.calculate_RHS_Ez()
-        self.Ez_solver.solve(self._Ez_rhs, self._Ez)
-
-    def calculate_RHS_Ez(self):
-        calculate_RHS_Ez_kernel[self.cfg](self._jx, self._jy,
-                                          self.grid_step_size,
-                                          self._Ez_rhs)
-        numba.cuda.synchronize()
-
-
     def average_fields(self):
         self._Ex_avg[...] = (self._Ex + self._Ex_prev) / 2
         self._Ey_avg[...] = (self._Ey + self._Ey_prev) / 2
@@ -840,7 +828,8 @@ class GPUMonolith:
                                   self._beam_ro, self._ro,
                                   self._jx, self._jy, self._jz,
                                   self._jx_prev, self._jy_prev)
-        self.calculate_Ez()           # ... -> v2 Ez
+        self._Ez[...] = calculate_Ez(self.dirichlet_solver,
+                                     self.grid_step_size, self._jx, self._jy)
         # Bz = 0 for now
         self.average_fields()         # ... -> v2 [EB][xy]_avg
 
@@ -869,7 +858,8 @@ class GPUMonolith:
                                   self._beam_ro, self._ro,
                                   self._jx, self._jy, self._jz,
                                   self._jx_prev, self._jy_prev)
-        self.calculate_Ez()           # ... -> v3 Ez
+        self._Ez[...] = calculate_Ez(self.dirichlet_solver,
+                                     self.grid_step_size, self._jx, self._jy)
         # Bz = 0 for now
         self.average_fields() # ... -> v3 [EB][xy]_avg
         x_offt_new, y_offt_new, px_new, py_new, pz_new = move_smart(

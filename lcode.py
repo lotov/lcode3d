@@ -570,6 +570,33 @@ def move_smart(cfg, xi_step_size, reflect_boundary, grid_step_size, grid_steps,
     return x_offt_new, y_offt_new, px_new, py_new, pz_new
 
 
+# two parts: constants and variables? parametrized the type like namedtuple?
+# TODO: dumb struct-like class, but return a transparent wrapper instead???
+class GPUArraysView:
+    def __init__(self, object_with_arrays):
+        # works like self._obj = object_with_arrays
+        super(GPUArraysView, self).__setattr__('_obj', object_with_arrays)
+
+    def __dir__(self):
+        return list(dir(self)) + list(self._obj.keys())
+
+    def __getattr__(self, attrname):
+        return getattr(self._obj, attrname).get()  # auto-copies to host RAM
+
+    def __setattr__(self, attrname, value):
+        getattr(self._obj, attrname)[...] = value  # copies to GPU RAM
+
+
+class State:
+    # TODO: Make a constructor that takes config+kwargs? Or go plain object?
+    # TODO: Think about it, where should we init stuff?
+    def __init__(self, Ex, Ey, Ez, Bx, By, Bz):
+        self.Ex, self.Ey = cp.asarray(Ex), cp.asarray(Ey)
+        self.Ez = cp.asarray(Ez)
+        self.Bx, self.By = cp.asarray(Bx), cp.asarray(By)
+        self.Bz = cp.asarray(Bz)
+
+
 class GPUMonolith:
     cfg = (19, 384)  # empirical guess for a GTX 1070 Ti
 
@@ -629,16 +656,7 @@ class GPUMonolith:
         self._indices_next = cp.array(indices_next)
 
         self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick, self.cfg)
-        self._Ex = cp.zeros((N, N))
-        self._Ey = cp.zeros((N, N))
-        self._Bx = cp.zeros((N, N))
-        self._By = cp.zeros((N, N))
-
         self.dirichlet_solver = DirichletSolver(N, self.grid_step_size)
-        self._Ez = cp.zeros((N, N))
-
-        self._Bz = cp.zeros((N, N))
-
         self._ro_initial = cp.zeros((N, N))
         self._ro = cp.zeros((N, N))
         self._jx = cp.zeros((N, N))
@@ -649,13 +667,6 @@ class GPUMonolith:
 
         self._jx_prev = cp.zeros((N, N))
         self._jy_prev = cp.zeros((N, N))
-
-        self._Ex_prev = cp.zeros((N, N))
-        self._Ey_prev = cp.zeros((N, N))
-        self._Ez_prev = cp.zeros((N, N))
-        self._Bx_prev = cp.zeros((N, N))
-        self._By_prev = cp.zeros((N, N))
-        self._Bz_prev = cp.zeros((N, N))
 
         # Allow accessing `gpu_monolith.ro`
         # without typing the whole `gpu_monolith._ro.copy_to_host()`.
@@ -689,8 +700,7 @@ class GPUMonolith:
 
 
     def load(self, beam_ro,
-             pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz, pl_m, pl_q,
-             Ex, Ey, Ez, Bx, By, Bz, jx, jy):
+             pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz, pl_m, pl_q, jx, jy):
         self._beam_ro[...] = cp.array(beam_ro)
 
         self._m[...] = cp.array(pl_m)
@@ -700,15 +710,6 @@ class GPUMonolith:
         self._px_prev[...] = cp.array(pl_px)
         self._py_prev[...] = cp.array(pl_py)
         self._pz_prev[...] = cp.array(pl_pz)
-
-        self._Ex[...] = cp.array(Ex)
-        self._Ey[...] = cp.array(Ey)
-        self._Ez[...] = cp.array(Ez)
-        self._Bx[...] = cp.array(Bx)
-        self._By[...] = cp.array(By)
-        self._Bz[...] = cp.array(Bz)
-        self._jx[...] = cp.array(jx)
-        self._jy[...] = cp.array(jy)
 
         numba.cuda.synchronize()
 
@@ -753,15 +754,15 @@ class GPUMonolith:
         self._ro_initial = -ro_electrons_initial  # Right on the GPU, huh
         numba.cuda.synchronize()
 
-
-    def step(self, beam_ro):
+    def step(self, beam_ro, prev):
         self.reload(beam_ro)
+
+        Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
 
         m = self._m
         x_init, y_init = self._x_init, self._y_init
         x_prev_offt, y_prev_offt = self.x_prev_offt, self.y_prev_offt
         px_prev, py_prev, pz_prev = self._px_prev, self.py_prev, self.pz_prev
-        Ex_avg = self._Ex.copy()
 
         # TODO: use regular pusher?
         estimated_x_offt, estimated_y_offt = self.move_estimate_wo_fields(
@@ -777,8 +778,7 @@ class GPUMonolith:
             estimated_x_offt, estimated_y_offt,
             self._px_prev, self._py_prev, self._pz_prev,
             # no halfstep-averaged fields yet
-            self._Ex_prev, self._Ey_prev, self._Ez_prev,
-            self._Bx_prev, self._By_prev, Bz_avg=0,
+            prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
         )
         self._ro[...], self._jx[...], self._jy[...], self._jz[...] = deposit(
             self.cfg, self._ro_initial, self.grid_steps, self.grid_step_size,
@@ -788,23 +788,22 @@ class GPUMonolith:
             self._indices_prev, self._indices_next,
             self.virtplasma_smallness_factor)
 
-        self._Ex[...], self._Ey[...], self._Bx[...], self._By[...] = \
+        Ex, Ey, Bx, By = \
             calculate_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
                                   self.subtraction_trick, self.mixed_solver,
                                   # no halfstep-averaged fields yet
-                                  self._Ex_prev, self._Ey_prev,
-                                  self._Bx_prev, self._By_prev,
+                                  prev.Ex, prev.Ey, prev.Bx, prev.By,
                                   self._beam_ro, self._ro,
                                   self._jx, self._jy, self._jz,
                                   self._jx_prev, self._jy_prev)
-        self._Ez[...] = calculate_Ez(self.dirichlet_solver,
-                                     self.grid_step_size, self._jx, self._jy)
+        Ez = calculate_Ez(self.dirichlet_solver,
+                          self.grid_step_size, self._jx, self._jy)
         # Bz = 0 for now
-        Ex_avg = (self._Ex + self._Ex_prev) / 2
-        Ey_avg = (self._Ey + self._Ey_prev) / 2
-        Ez_avg = (self._Ez + self._Ez_prev) / 2
-        Bx_avg = (self._Bx + self._Bx_prev) / 2
-        By_avg = (self._By + self._By_prev) / 2
+        Ex_avg = (Ex + prev.Ex) / 2
+        Ey_avg = (Ey + prev.Ey) / 2
+        Ez_avg = (Ez + prev.Ez) / 2
+        Bx_avg = (Bx + prev.Bx) / 2
+        By_avg = (By + prev.By) / 2
 
         x_offt_new, y_offt_new, px_new, py_new, pz_new = move_smart(
             self.cfg, self.xi_step_size, self.reflect_boundary,
@@ -822,21 +821,21 @@ class GPUMonolith:
             self._A_weights, self._B_weights, self._C_weights, self._D_weights,
             self._indices_prev, self._indices_next,
             self.virtplasma_smallness_factor)
-        self._Ex[...], self._Ey[...], self._Bx[...], self._By[...] = \
+        Ex, Ey, Bx, By = \
             calculate_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
                                   self.subtraction_trick, self.mixed_solver,
                                   Ex_avg, Ey_avg, Bx_avg, By_avg,
                                   self._beam_ro, self._ro,
                                   self._jx, self._jy, self._jz,
                                   self._jx_prev, self._jy_prev)
-        self._Ez[...] = calculate_Ez(self.dirichlet_solver,
-                                     self.grid_step_size, self._jx, self._jy)
+        Ez = calculate_Ez(self.dirichlet_solver, self.grid_step_size,
+                          self._jx, self._jy)
         # Bz = 0 for now
-        Ex_avg = (self._Ex + self._Ex_prev) / 2
-        Ey_avg = (self._Ey + self._Ey_prev) / 2
-        Ez_avg = (self._Ez + self._Ez_prev) / 2
-        Bx_avg = (self._Bx + self._Bx_prev) / 2
-        By_avg = (self._By + self._By_prev) / 2
+        Ex_avg = (Ex + prev.Ex) / 2
+        Ey_avg = (Ey + prev.Ey) / 2
+        Ez_avg = (Ez + prev.Ez) / 2
+        Bx_avg = (Bx + prev.Bx) / 2
+        By_avg = (By + prev.By) / 2
 
         x_offt_new, y_offt_new, px_new, py_new, pz_new = move_smart(
             self.cfg, self.xi_step_size, self.reflect_boundary,
@@ -863,6 +862,11 @@ class GPUMonolith:
         self._py_new[...] = py_new
         self._pz_new[...] = pz_new
 
+        new_state = State(Ex.copy(), Ey.copy(), Ez.copy(),
+                          Bx.copy(), By.copy(), Bz.copy())
+
+        return new_state
+
     def reload(self, beam_ro):
         self._beam_ro[...] = cp.array(beam_ro)
 
@@ -875,12 +879,6 @@ class GPUMonolith:
         self._py_prev[...] = cp.array(self._py_new)
         self._pz_prev[...] = cp.array(self._pz_new)
 
-        self._Ex_prev[...] = self._Ex
-        self._Ey_prev[...] = self._Ey
-        self._Ez_prev[...] = self._Ez
-        self._Bx_prev[...] = self._Bx
-        self._By_prev[...] = self._By
-        self._Bz_prev[...] = self._Bz
         self._jx_prev[...] = self._jx
         self._jy_prev[...] = self._jy
 
@@ -1068,26 +1066,29 @@ def init(config):
                       pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
                       pl_px, pl_py, pl_pz, pl_m, pl_q, *virt_params)
     gpu.load(0, pl_x_offt, pl_y_offt,
-             pl_px, pl_py, pl_pz, pl_m, pl_q,
-             0, 0, 0, 0, 0, 0, 0, 0)
+             pl_px, pl_py, pl_pz, pl_m, pl_q, jx=0, jy=0)
     gpu.initial_deposition(pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q)
+    fl0 = [cp.zeros((config.grid_steps, config.grid_steps)) for _ in range(6)]
+    state = State(*fl0)
 
-    return gpu, xs, ys
+    return gpu, xs, ys, state
 
 
 # TODO: fold init, load, initial_deposition into GPUMonolith.__init__?
 def main():
     import config
-    gpu, xs, ys = init(config)
+    gpu, xs, ys, state = init(config)
     Ez_00_history = []
 
     for xi_i in range(config.xi_steps):
         beam_ro = config.beam(xi_i, xs, ys)
 
-        gpu.step(beam_ro)
+        state = gpu.step(beam_ro, state)
 
-        Ez_00 = gpu.Ez[config.grid_steps // 2, config.grid_steps // 2]
+        view = GPUArraysView(state)
+
+        Ez_00 = view.Ez[config.grid_steps // 2, config.grid_steps // 2]
         Ez_00_history.append(Ez_00)
 
         time_for_diags = xi_i % config.diagnostics_each_N_steps == 0

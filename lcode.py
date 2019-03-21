@@ -303,6 +303,17 @@ class MixedSolver:
         return self._Ex, self._Ey, self._Bx, self._By
 
 
+def calculate_Ex_Ey_Bx_By(grid_step_size, xi_step_size, subtraction_trick,
+                          mixed_solver, Ex_avg, Ey_avg, Bx_avg, By_avg,
+                          beam_ro, ro, jx, jy, jz, jx_prev, jy_prev):
+    Ex_rhs, Ey_rhs, Bx_rhs, By_rhs = \
+        calculate_RHS_Ex_Ey_Bx_By(grid_step_size, xi_step_size,
+                                  subtraction_trick,
+                                  Ex_avg, Ey_avg, Bx_avg, By_avg,
+                                  beam_ro, ro, jx, jy, jz, jx_prev, jy_prev)
+    return mixed_solver.solve(Ex_rhs, Ey_rhs, Bx_rhs, By_rhs)
+
+
 ### Unsorted
 
 
@@ -768,23 +779,6 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
 
-    def calculate_Ex_Ey_Bx_By(self):
-        # The grand plan: mul * iDCT(SPECTRAL_MAGIC(DCT(in.T).T)).T).T for Ex/By
-        # and mul * iDCT(SPECTRAL_MAGIC(DCT(in).T)).T) for Ey/Bx
-        # where iDCT is DCT;
-        # and DCT is jury-rigged from symmetrically-padded DFT
-        Ex_rhs, Ey_rhs, Bx_rhs, By_rhs = \
-            calculate_RHS_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
-                                      self.subtraction_trick,
-                                      self._Ex_avg, self._Ey_avg,
-                                      self._Bx_avg, self._By_avg,
-                                      self._beam_ro, self._ro,
-                                      self._jx, self._jy, self._jz,
-                                      self._jx_prev, self._jy_prev)
-        self._Ex[...], self._Ey[...], self._Bx[...], self._By[...] = \
-            self.mixed_solver.solve(Ex_rhs, Ey_rhs, Bx_rhs, By_rhs)
-
-
     def calculate_Ez(self):
         self.calculate_RHS_Ez()
         self.Ez_solver.solve(self._Ez_rhs, self._Ez)
@@ -794,6 +788,7 @@ class GPUMonolith:
                                           self.grid_step_size,
                                           self._Ez_rhs)
         numba.cuda.synchronize()
+
 
     def average_fields(self):
         self._Ex_avg[...] = (self._Ex + self._Ex_prev) / 2
@@ -837,7 +832,14 @@ class GPUMonolith:
             self._indices_prev, self._indices_next,
             self.virtplasma_smallness_factor)
 
-        self.calculate_Ex_Ey_Bx_By()  # ... -> v2 [EB][xy]
+        self._Ex[...], self._Ey[...], self._Bx[...], self._By[...] = \
+            calculate_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
+                                  self.subtraction_trick, self.mixed_solver,
+                                  self._Ex_avg, self._Ey_avg,
+                                  self._Bx_avg, self._By_avg,
+                                  self._beam_ro, self._ro,
+                                  self._jx, self._jy, self._jz,
+                                  self._jx_prev, self._jy_prev)
         self.calculate_Ez()           # ... -> v2 Ez
         # Bz = 0 for now
         self.average_fields()         # ... -> v2 [EB][xy]_avg
@@ -859,7 +861,14 @@ class GPUMonolith:
             self._A_weights, self._B_weights, self._C_weights, self._D_weights,
             self._indices_prev, self._indices_next,
             self.virtplasma_smallness_factor)
-        self.calculate_Ex_Ey_Bx_By()  # ... -> v3 [EB][xy]
+        self._Ex[...], self._Ey[...], self._Bx[...], self._By[...] = \
+            calculate_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
+                                  self.subtraction_trick, self.mixed_solver,
+                                  self._Ex_avg, self._Ey_avg,
+                                  self._Bx_avg, self._By_avg,
+                                  self._beam_ro, self._ro,
+                                  self._jx, self._jy, self._jz,
+                                  self._jx_prev, self._jy_prev)
         self.calculate_Ez()           # ... -> v3 Ez
         # Bz = 0 for now
         self.average_fields() # ... -> v3 [EB][xy]_avg

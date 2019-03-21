@@ -778,16 +778,6 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
 
-    def average_fields(self):
-        self._Ex_avg[...] = (self._Ex + self._Ex_prev) / 2
-        self._Ey_avg[...] = (self._Ey + self._Ey_prev) / 2
-        self._Ez_avg[...] = (self._Ez + self._Ez_prev) / 2
-        self._Bx_avg[...] = (self._Bx + self._Bx_prev) / 2
-        self._By_avg[...] = (self._By + self._By_prev) / 2
-        # Bz = 0 for now
-        numba.cuda.synchronize()
-
-
     def step(self, beam_ro):
         self.reload(beam_ro)
 
@@ -831,7 +821,11 @@ class GPUMonolith:
         self._Ez[...] = calculate_Ez(self.dirichlet_solver,
                                      self.grid_step_size, self._jx, self._jy)
         # Bz = 0 for now
-        self.average_fields()         # ... -> v2 [EB][xy]_avg
+        self._Ex_avg[...] = (self._Ex + self._Ex_prev) / 2
+        self._Ey_avg[...] = (self._Ey + self._Ey_prev) / 2
+        self._Ez_avg[...] = (self._Ez + self._Ez_prev) / 2
+        self._Bx_avg[...] = (self._Bx + self._Bx_prev) / 2
+        self._By_avg[...] = (self._By + self._By_prev) / 2
 
         x_offt_new, y_offt_new, px_new, py_new, pz_new = move_smart(
             self.cfg, self.xi_step_size, self.reflect_boundary,
@@ -861,7 +855,12 @@ class GPUMonolith:
         self._Ez[...] = calculate_Ez(self.dirichlet_solver,
                                      self.grid_step_size, self._jx, self._jy)
         # Bz = 0 for now
-        self.average_fields() # ... -> v3 [EB][xy]_avg
+        self._Ex_avg[...] = (self._Ex + self._Ex_prev) / 2
+        self._Ey_avg[...] = (self._Ey + self._Ey_prev) / 2
+        self._Ez_avg[...] = (self._Ez + self._Ez_prev) / 2
+        self._Bx_avg[...] = (self._Bx + self._Bx_prev) / 2
+        self._By_avg[...] = (self._By + self._By_prev) / 2
+
         x_offt_new, y_offt_new, px_new, py_new, pz_new = move_smart(
             self.cfg, self.xi_step_size, self.reflect_boundary,
             self.grid_step_size, self.grid_steps,

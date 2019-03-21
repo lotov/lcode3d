@@ -621,13 +621,6 @@ class GPUMonolith:
         self._py_new = cp.zeros((Nc, Nc))
         self._pz_new = cp.zeros((Nc, Nc))
 
-        self._Exs = cp.zeros((Nc, Nc))
-        self._Eys = cp.zeros((Nc, Nc))
-        self._Ezs = cp.zeros((Nc, Nc))
-        self._Bxs = cp.zeros((Nc, Nc))
-        self._Bys = cp.zeros((Nc, Nc))
-        self._Bzs = cp.zeros((Nc, Nc))
-
         self._A_weights = cp.array(A_weights)
         self._B_weights = cp.array(B_weights)
         self._C_weights = cp.array(C_weights)
@@ -642,11 +635,9 @@ class GPUMonolith:
         self._By = cp.zeros((N, N))
 
         self.dirichlet_solver = DirichletSolver(N, self.grid_step_size)
-        self._Ez_rhs = cp.zeros((N, N))
         self._Ez = cp.zeros((N, N))
 
         self._Bz = cp.zeros((N, N))
-        self._Bz[...] = 0  # Bz = 0 for now
 
         self._ro_initial = cp.zeros((N, N))
         self._ro = cp.zeros((N, N))

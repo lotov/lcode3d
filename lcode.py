@@ -133,60 +133,32 @@ class DirichletSolver:
 # TODO: do not prettify too much, replace with DCT-2D instead
 
 
-@numba.cuda.jit  # TODO: shorten with cupy
-def calculate_RHS_Ex_Ey_Bx_By_kernel(Ex_avg, Ey_avg, Bx_avg, By_avg,
-                                     beam_ro, ro, jx, jx_prev, jy, jy_prev, jz,
-                                     grid_step_size, xi_step_size,
-                                     avgtraction_trick,
-                                     Ex_dct1_in, Ey_dct1_in,
-                                     Bx_dct1_in, By_dct1_in):
-    N = ro.shape[0]
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, ro.size, stride):
-        i, j = k // N, k % N
+def dx_dy(arr, h2):
+    # NOTE: use gradient instead if available (cupy doesn't have gradient)
+    dx, dy = cp.zeros_like(arr), cp.zeros_like(arr)
+    dx[1:-1, 1:-1] = arr[2:, 1:-1] - arr[:-2, 1:-1]  # we have 0s
+    dy[1:-1, 1:-1] = arr[1:-1, 2:] - arr[1:-1, :-2]  # on the perimeter
+    return dx / h2, dy / h2
 
-        dro_dx = (((+ro[i + 1, j] + beam_ro[i + 1, j]
-                    -ro[i - 1, j] - beam_ro[i - 1, j])
-                  ) / (2 * grid_step_size)  # - ?
-                  if 0 < i < N - 1 else 0)
-        dro_dy = (((+ro[i, j + 1] + beam_ro[i, j + 1]
-                    -ro[i, j - 1] - beam_ro[i, j - 1])
-                  ) / (2 * grid_step_size)  # - ?
-                  if 0 < j < N - 1 else 0)
-        djz_dx = (((+jz[i + 1, j] + beam_ro[i + 1, j]
-                    -jz[i - 1, j] - beam_ro[i - 1, j])
-                  ) / (2 * grid_step_size)  # - ?
-                  if 0 < i < N - 1 else 0)
-        djz_dy = (((+jz[i, j + 1] + beam_ro[i, j + 1]
-                    -jz[i, j - 1] - beam_ro[i, j - 1])
-                  ) / (2 * grid_step_size)  # - ?
-                  if 0 < j < N - 1 else 0)
-        djx_dxi = (jx_prev[i, j] - jx[i, j]) / xi_step_size               # - ?
-        djy_dxi = (jy_prev[i, j] - jy[i, j]) / xi_step_size               # - ?
 
-        Ex_rhs = -((dro_dx - djx_dxi) - Ex_avg[i, j] * avgtraction_trick)
-        Ey_rhs = -((dro_dy - djy_dxi) - Ey_avg[i, j] * avgtraction_trick)
-        Bx_rhs = +((djz_dy - djy_dxi) + Bx_avg[i, j] * avgtraction_trick)
-        By_rhs = -((djz_dx - djx_dxi) - By_avg[i, j] * avgtraction_trick)
-        Ex_dct1_in[j, i] = Ex_rhs
-        Ey_dct1_in[i, j] = Ey_rhs
-        Bx_dct1_in[i, j] = Bx_rhs
-        By_dct1_in[j, i] = By_rhs
-        # symmetrically pad dct1_in to apply DCT-via-FFT later
-        ii = max(i, 1)  # avoid writing to dct_in[:, 2 * N - 2], w/o branching
-        jj = max(j, 1)
-        Ex_dct1_in[j, 2 * N - 2 - ii] = Ex_rhs
-        Ey_dct1_in[i, 2 * N - 2 - jj] = Ey_rhs
-        Bx_dct1_in[i, 2 * N - 2 - jj] = Bx_rhs
-        By_dct1_in[j, 2 * N - 2 - ii] = By_rhs
+def calculate_RHS_Ex_Ey_Bx_By(grid_step_size, xi_step_size,
+                              subtraction_trick,
+                              Ex_avg, Ey_avg, Bx_avg, By_avg,
+                              beam_ro, ro, jx, jy, jz, jx_prev, jy_prev):
+    h2 = grid_step_size * 2
 
-        # applying non-zero boundary conditions to the RHS would be:
-        # for i in range(self.N):
-            # rhs_fixed[i, 0] += top[i] * (2 / self.grid_step_size)
-            # rhs_fixed[i, self.N - 1] += bot[i] * (2 / self.grid_step_size)
-            ## rhs_fixed[0, i] = rhs_fixed[self.N - 1, i] = 0
-            ### changes nothing, as there's a particle-free padding zone?
+    # NOTE: use gradient instead if available (cupy doesn't have gradient)
+    dro_dx, dro_dy = dx_dy(ro + beam_ro, h2)
+    djz_dx, djz_dy = dx_dy(jz + beam_ro, h2)
+    djx_dxi = (jx_prev - jx) / xi_step_size               # - ?
+    djy_dxi = (jy_prev - jy) / xi_step_size               # - ?
+
+    Ex_rhs = -((dro_dx - djx_dxi) - Ex_avg * subtraction_trick)
+    Ey_rhs = -((dro_dy - djy_dxi) - Ey_avg * subtraction_trick)
+    Bx_rhs = +((djz_dy - djy_dxi) + Bx_avg * subtraction_trick)
+    By_rhs = -((djz_dx - djx_dxi) - By_avg * subtraction_trick)
+
+    return Ex_rhs, Ey_rhs, Bx_rhs, By_rhs
 
 
 @numba.cuda.jit
@@ -281,7 +253,19 @@ class MixedSolver:
 
         self.cfg = cfg
 
-    def solve(self):
+    def solve(self, Ex_rhs, Ey_rhs, Bx_rhs, By_rhs):
+        # 0. Symmetrically pad dct1_in to apply DCT-via-FFT later
+        N = Ex_rhs.shape[0]
+        self._Ex_dct1_in[:, :N] = Ex_rhs.T
+        self._Ey_dct1_in[:, :N] = Ey_rhs
+        self._Bx_dct1_in[:, :N] = Bx_rhs
+        self._By_dct1_in[:, :N] = By_rhs.T
+
+        self._Ex_dct1_in[:, N:] = Ex_rhs.T[:, -2:0:-1]  # [1:-1][:, ::-1]
+        self._Ey_dct1_in[:, N:] = Ey_rhs[:, -2:0:-1]
+        self._Bx_dct1_in[:, N:] = Bx_rhs[:, -2:0:-1]
+        self._By_dct1_in[:, N:] = By_rhs.T[:, -2:0:-1]
+
         # 1. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
         # iDCT-1 is just DCT-1 in cuFFT
         self._Ex_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Ex_dct1_in))
@@ -789,29 +773,16 @@ class GPUMonolith:
         # and mul * iDCT(SPECTRAL_MAGIC(DCT(in).T)).T) for Ey/Bx
         # where iDCT is DCT;
         # and DCT is jury-rigged from symmetrically-padded DFT
-        self.calculate_RHS_Ex_Ey_Bx_By()
-        self._Ex[...], self._Ey[...], self._Bx[...], self._By[...] = self.mixed_solver.solve()
-
-
-    def calculate_RHS_Ex_Ey_Bx_By(self):
-        calculate_RHS_Ex_Ey_Bx_By_kernel[self.cfg](self._Ex_avg,
-                                                   self._Ey_avg,
-                                                   self._Bx_avg,
-                                                   self._By_avg,
-                                                   self._beam_ro,
-                                                   self._ro,
-                                                   self._jx,
-                                                   self._jx_prev,
-                                                   self._jy,
-                                                   self._jy_prev,
-                                                   self._jz,
-                                                   self.grid_step_size, self.xi_step_size,
-                                                   self.subtraction_trick,
-                                                   self.mixed_solver._Ex_dct1_in,
-                                                   self.mixed_solver._Ey_dct1_in,
-                                                   self.mixed_solver._Bx_dct1_in,
-                                                   self.mixed_solver._By_dct1_in)
-        numba.cuda.synchronize()
+        Ex_rhs, Ey_rhs, Bx_rhs, By_rhs = \
+            calculate_RHS_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
+                                      self.subtraction_trick,
+                                      self._Ex_avg, self._Ey_avg,
+                                      self._Bx_avg, self._By_avg,
+                                      self._beam_ro, self._ro,
+                                      self._jx, self._jy, self._jz,
+                                      self._jx_prev, self._jy_prev)
+        self._Ex[...], self._Ey[...], self._Bx[...], self._By[...] = \
+            self.mixed_solver.solve(Ex_rhs, Ey_rhs, Bx_rhs, By_rhs)
 
 
     def calculate_Ez(self):

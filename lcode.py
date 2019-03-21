@@ -663,8 +663,6 @@ class GPUMonolith:
         self._jy = cp.zeros((N, N))
         self._jz = cp.zeros((N, N))
 
-        self._beam_ro = cp.zeros((N, N))
-
         self._jx_prev = cp.zeros((N, N))
         self._jy_prev = cp.zeros((N, N))
 
@@ -701,8 +699,6 @@ class GPUMonolith:
 
     def load(self, beam_ro,
              pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz, pl_m, pl_q, jx, jy):
-        self._beam_ro[...] = cp.array(beam_ro)
-
         self._m[...] = cp.array(pl_m)
         self._q[...] = cp.array(pl_q)
         self._x_prev_offt[...] = cp.array(pl_x_offt)
@@ -755,7 +751,8 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
     def step(self, beam_ro, prev):
-        self.reload(beam_ro)
+        beam_ro = cp.asarray(beam_ro)
+        self.reload()
 
         Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
 
@@ -793,7 +790,7 @@ class GPUMonolith:
                                   self.subtraction_trick, self.mixed_solver,
                                   # no halfstep-averaged fields yet
                                   prev.Ex, prev.Ey, prev.Bx, prev.By,
-                                  self._beam_ro, self._ro,
+                                  beam_ro, self._ro,
                                   self._jx, self._jy, self._jz,
                                   self._jx_prev, self._jy_prev)
         Ez = calculate_Ez(self.dirichlet_solver,
@@ -825,7 +822,7 @@ class GPUMonolith:
             calculate_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
                                   self.subtraction_trick, self.mixed_solver,
                                   Ex_avg, Ey_avg, Bx_avg, By_avg,
-                                  self._beam_ro, self._ro,
+                                  beam_ro, self._ro,
                                   self._jx, self._jy, self._jz,
                                   self._jx_prev, self._jy_prev)
         Ez = calculate_Ez(self.dirichlet_solver, self.grid_step_size,
@@ -867,9 +864,7 @@ class GPUMonolith:
 
         return new_state
 
-    def reload(self, beam_ro):
-        self._beam_ro[...] = cp.array(beam_ro)
-
+    def reload(self):
         # TODO: array relabeling instead of copying?..
 
         # Intact: self._m, self._q

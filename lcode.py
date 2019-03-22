@@ -451,18 +451,19 @@ def deposit_kernel(grid_steps, grid_step_size,
 
 
 def deposit(cfg, ro_initial,
-            grid_steps, grid_step_size, fine_grid, x_offt_new, y_offt_new,
+            grid_steps, grid_step_size,
+            x_offt_new, y_offt_new,
             m, q, px_new, py_new, pz_new,
-            A_weights, B_weights, C_weights, D_weights,
-            indices_prev, indices_next, virtplasma_smallness_factor):
+            virt_params, virtplasma_smallness_factor):
     ro = cp.zeros((grid_steps, grid_steps))
     jx = cp.zeros((grid_steps, grid_steps))
     jy = cp.zeros((grid_steps, grid_steps))
     jz = cp.zeros((grid_steps, grid_steps))
-    deposit_kernel[cfg](grid_steps, grid_step_size, fine_grid,
+    deposit_kernel[cfg](grid_steps, grid_step_size, virt_params.fine_grid,
                         x_offt_new, y_offt_new, m, q, px_new, py_new, pz_new,
-                        A_weights, B_weights, C_weights, D_weights,
-                        indices_prev, indices_next,
+                        virt_params.A_weights, virt_params.B_weights,
+                        virt_params.C_weights, virt_params.D_weights,
+                        virt_params.indices_prev, virt_params.indices_next,
                         virtplasma_smallness_factor,
                         ro, jx, jy, jz)
     ro += ro_initial  # Do it last to preserve more float precision
@@ -621,9 +622,7 @@ class GPUMonolith:
     def __init__(self, config,
                  pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
                  pl_px, pl_py, pl_pz, pl_m, pl_q,
-                 A_weights, B_weights, C_weights, D_weights,
-                 fine_grid_init,
-                 indices_prev, indices_next):
+                 virt_params):
         # TODO: compare shapes, not sizes
         self.Nc = Nc = int(sqrt(pl_q.size))
         assert Nc**2 == pl_x_init.size == pl_y_init.size
@@ -650,17 +649,11 @@ class GPUMonolith:
 
         self._x_init = cp.array(pl_x_init)
         self._y_init = cp.array(pl_y_init)
-        self._fine_grid = cp.array(fine_grid_init)
 
         self._m = cp.zeros((Nc, Nc))
         self._q = cp.zeros((Nc, Nc))
 
-        self._A_weights = cp.array(A_weights)
-        self._B_weights = cp.array(B_weights)
-        self._C_weights = cp.array(C_weights)
-        self._D_weights = cp.array(D_weights)
-        self._indices_prev = cp.array(indices_prev)
-        self._indices_next = cp.array(indices_next)
+        self.virt_params = virt_params
 
         self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick, self.cfg)
         self.dirichlet_solver = DirichletSolver(N, self.grid_step_size)
@@ -705,7 +698,7 @@ class GPUMonolith:
 
 
     def initial_deposition(self, pl_x_offt, pl_y_offt,
-                           pl_px, pl_py, pl_pz, pl_m, pl_q):
+                           pl_px, pl_py, pl_pz, pl_m, pl_q, virt_params):
         # Don't allow initial speeds for calculations with background ions
         assert np.array_equiv(pl_px, 0)
         assert np.array_equiv(pl_py, 0)
@@ -714,11 +707,8 @@ class GPUMonolith:
         ro_initial = cp.zeros((self.grid_steps, self.grid_steps))
         ro_electrons_initial, _, _, _ = deposit(
             self.cfg, ro_initial, self.grid_steps, self.grid_step_size,
-            self._fine_grid,
             pl_x_offt, pl_y_offt, pl_m, pl_q, pl_px, pl_py, pl_pz,
-            self._A_weights, self._B_weights, self._C_weights, self._D_weights,
-            self._indices_prev, self._indices_next,
-            self.virtplasma_smallness_factor)
+            virt_params, self.virtplasma_smallness_factor)
 
         self._ro_initial = -ro_electrons_initial  # Right on the GPU, huh
         numba.cuda.synchronize()
@@ -749,10 +739,8 @@ class GPUMonolith:
         )
         ro, jx, jy, jz = deposit(
             self.cfg, self._ro_initial, self.grid_steps, self.grid_step_size,
-            self._fine_grid, x_offt, y_offt, self._m, self._q, px, py, pz,
-            self._A_weights, self._B_weights, self._C_weights, self._D_weights,
-            self._indices_prev, self._indices_next,
-            self.virtplasma_smallness_factor
+            x_offt, y_offt, self._m, self._q, px, py, pz,
+            self.virt_params, self.virtplasma_smallness_factor
         )
 
         Ex, Ey, Bx, By = \
@@ -780,10 +768,8 @@ class GPUMonolith:
         )
         ro, jx, jy, jz = deposit(
             self.cfg, self._ro_initial, self.grid_steps, self.grid_step_size,
-            self._fine_grid, x_offt, y_offt, self._m, self._q, px, py, pz,
-            self._A_weights, self._B_weights, self._C_weights, self._D_weights,
-            self._indices_prev, self._indices_next,
-            self.virtplasma_smallness_factor
+            x_offt, y_offt, self._m, self._q, px, py, pz,
+            self.virt_params, self.virtplasma_smallness_factor
         )
         Ex, Ey, Bx, By = \
             calculate_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
@@ -808,10 +794,8 @@ class GPUMonolith:
         )
         ro, jx, jy, jz = deposit(
             self.cfg, self._ro_initial, self.grid_steps, self.grid_step_size,
-            self._fine_grid, x_offt, y_offt, self._m, self._q, px, py, pz,
-            self._A_weights, self._B_weights, self._C_weights, self._D_weights,
-            self._indices_prev, self._indices_next,
-            self.virtplasma_smallness_factor)
+            x_offt, y_offt, self._m, self._q, px, py, pz,
+            self.virt_params, self.virtplasma_smallness_factor)
 
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
@@ -920,23 +904,28 @@ def plasma_make(steps, cell_size, coarseness=2, fineness=2):
     #          #    +---->
     #  A    B  #         x
 
+    # TODO: get rid of ABCD and go for influence_prev/next?
+
     # A is coarse_plasma[i_prev_in_x, i_prev_in_y], the closest coarse particle
     # in bottom-left quadrant (for each fine particle)
-    A_weights = influence_prev_x * influence_prev_y
-    # B is coarse_plasma[i_next_in_x, i_prev_in_y], same for lower right
-    B_weights = influence_next_x * influence_prev_y
-    # C is coarse_plasma[i_prev_in_x, i_next_in_y], same for upper left
-    C_weights = influence_prev_x * influence_next_y
-    # D is coarse_plasma[i_next_in_x, i_next_in_y], same for upper right
-    D_weights = influence_next_x * influence_next_y
+    virt_params = GPUArrays(
+        A_weights=influence_prev_x * influence_prev_y,
+        # B is coarse_plasma[i_next_in_x, i_prev_in_y], same for lower right
+        B_weights=influence_next_x * influence_prev_y,
+        # C is coarse_plasma[i_prev_in_x, i_next_in_y], same for upper left
+        C_weights=influence_prev_x * influence_next_y,
+        # D is coarse_plasma[i_next_in_x, i_next_in_y], same for upper right
+        D_weights=influence_next_x * influence_next_y,
+        fine_grid=fine_grid,
+        indices_prev=indices_prev,
+        indices_next=indices_next
+    )
 
     # TODO: decide on a flat-or-square plasma
     return (coarse_electrons_x_init, coarse_electrons_y_init,
             coarse_electrons_x_offt, coarse_electrons_y_offt,
             coarse_electrons_px, coarse_electrons_py, coarse_electrons_pz,
-            coarse_electrons_m, coarse_electrons_q,
-            A_weights, B_weights, C_weights, D_weights,
-            fine_grid, indices_prev, indices_next)
+            coarse_electrons_m, coarse_electrons_q, virt_params)
 
 
 max_zn = 0
@@ -995,16 +984,16 @@ def init(config):
             * config.grid_step_size)
     xs, ys = grid[:, None], grid[None, :]
 
-    x_init, y_init, x_offt, y_offt, px, py, pz, m, q, *virt_params = \
+    x_init, y_init, x_offt, y_offt, px, py, pz, m, q, virt_params = \
         plasma_make(config.grid_steps - config.plasma_padding_steps * 2,
                     config.grid_step_size,
                     coarseness=config.plasma_coarseness,
                     fineness=config.plasma_fineness)
 
     gpu = GPUMonolith(config, x_init, y_init, x_offt, y_offt,
-                      px, py, pz, m, q, *virt_params)
+                      px, py, pz, m, q, virt_params)
     gpu.load(m, q)
-    gpu.initial_deposition(x_offt, y_offt, px, py, pz, m, q)
+    gpu.initial_deposition(x_offt, y_offt, px, py, pz, m, q, virt_params)
 
     def zeros():
         return cp.zeros((config.grid_steps, config.grid_steps))

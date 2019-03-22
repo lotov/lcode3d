@@ -342,6 +342,22 @@ def move_estimate_wo_fields_kernel(xi_step_size, reflect_boundary, ms,
         x_offt[k], y_offt[k] = x - x_init[k], y - y_init[k]
 
 
+def move_estimate_wo_fields(cfg, xi_step_size, reflect_boundary,
+                            m, x_init, y_init, x_prev_offt, y_prev_offt,
+                            px_prev, py_prev, pz_prev):
+    x_offt, y_offt, = cp.zeros_like(x_init), cp.zeros_like(y_init)
+    move_estimate_wo_fields_kernel[cfg](xi_step_size, reflect_boundary,
+                                        m.ravel(),
+                                        x_init.ravel(), y_init.ravel(),
+                                        x_prev_offt.ravel(),
+                                        y_prev_offt.ravel(),
+                                        px_prev.ravel(), py_prev.ravel(),
+                                        pz_prev.ravel(),
+                                        x_offt.ravel(), y_offt.ravel())
+    numba.cuda.synchronize()
+    return x_offt, y_offt
+
+
 @numba.jit(inline=True)
 def weights(x, y, grid_steps, grid_step_size):
     x_h, y_h = x / grid_step_size + .5, y / grid_step_size + .5
@@ -692,27 +708,6 @@ class GPUMonolith:
         numba.cuda.synchronize()
 
 
-    def move_estimate_wo_fields(self,
-                                m, x_init, y_init, x_prev_offt, y_prev_offt,
-                                px_prev, py_prev, pz_prev):
-        estimated_x_offt = cp.zeros_like(x_init)
-        estimated_y_offt = cp.zeros_like(y_init)
-        move_estimate_wo_fields_kernel[self.cfg](self.xi_step_size,
-                                                 self.reflect_boundary,
-                                                 m.ravel(),
-                                                 x_init.ravel(),
-                                                 y_init.ravel(),
-                                                 x_prev_offt.ravel(),
-                                                 y_prev_offt.ravel(),
-                                                 px_prev.ravel(),
-                                                 py_prev.ravel(),
-                                                 pz_prev.ravel(),
-                                                 estimated_x_offt.ravel(),
-                                                 estimated_y_offt.ravel())
-        numba.cuda.synchronize()
-        return estimated_x_offt, estimated_y_offt
-
-
     def initial_deposition(self, pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q):
         # Don't allow initial speeds for calculations with background ions
@@ -741,7 +736,8 @@ class GPUMonolith:
         x_init, y_init = self._x_init, self._y_init
 
         # TODO: use regular pusher?
-        x_offt, y_offt = self.move_estimate_wo_fields(
+        x_offt, y_offt = move_estimate_wo_fields(
+            self.cfg, self.xi_step_size, self.reflect_boundary,
             m, x_init, y_init, prev.x_offt, prev.y_offt,
             prev.px, prev.py, prev.pz
         )

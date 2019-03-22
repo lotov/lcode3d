@@ -586,37 +586,33 @@ def move_smart(cfg, xi_step_size, reflect_boundary, grid_step_size, grid_steps,
     return x_offt_new, y_offt_new, px_new, py_new, pz_new
 
 
-# two parts: constants and variables? parametrized the type like namedtuple?
-# TODO: dumb struct-like class, but return a transparent wrapper instead???
+# x = GPUArrays(something=numpy_array, something_else=another_array)
+# will create x with x.something and x.something_else being GPU arrays.
+# Do not add more attributes later, specify them all at construction time.
+class GPUArrays:
+    def __init__(self, **kwargs):
+        for name, array in kwargs.items():
+            setattr(self, name, cp.asarray(array))
+
+
+# view GPUArraysView(gpu_arrays) will make a magical object view
+# Accessing view.something will automatically copy array to host RAM,
+# setting view.something = ... will copy the changes back to GPU RAM.
+# Do not add more attributes later, specify them all at construction time.
 class GPUArraysView:
-    def __init__(self, object_with_arrays):
-        # works like self._obj = object_with_arrays
-        super(GPUArraysView, self).__setattr__('_obj', object_with_arrays)
+    def __init__(self, gpu_arrays):
+        # works like self._arrs = gpu_arrays
+        super(GPUArraysView, self).__setattr__('_arrs', gpu_arrays)
 
     def __dir__(self):
-        return list(dir(self)) + list(self._obj.keys())
+        return list(set(super(GPUArraysView, self).__dir__() +
+                        dir(self._arrs)))
 
     def __getattr__(self, attrname):
-        return getattr(self._obj, attrname).get()  # auto-copies to host RAM
+        return getattr(self._arrs, attrname).get()  # auto-copies to host RAM
 
     def __setattr__(self, attrname, value):
-        getattr(self._obj, attrname)[...] = value  # copies to GPU RAM
-
-
-class State:
-    # TODO: Make a constructor that takes config+kwargs? Or go plain object?
-    # TODO: Think about it, where should we init stuff?
-    def __init__(self, x_offt, y_offt, px, py, pz, Ex, Ey, Ez, Bx, By, Bz,
-                 ro, jx, jy, jz):
-        self.Ex, self.Ey = cp.asarray(Ex), cp.asarray(Ey)
-        self.Ez = cp.asarray(Ez)
-        self.Bx, self.By = cp.asarray(Bx), cp.asarray(By)
-        self.Bz = cp.asarray(Bz)
-        self.ro, self.jz = cp.asarray(ro), cp.asarray(jz)
-        self.jx, self.jy = cp.asarray(jx), cp.asarray(jy)
-        self.x_offt, self.y_offt = cp.asarray(x_offt), cp.asarray(y_offt)
-        self.px, self.py = cp.asarray(px), cp.asarray(py)
-        self.pz = cp.asarray(pz)
+        getattr(self._arrs, attrname)[...] = value  # copies to GPU RAM
 
 
 class GPUMonolith:
@@ -819,10 +815,11 @@ class GPUMonolith:
 
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
-        new_state = State(x_offt, y_offt, px, py, pz,
-                          Ex.copy(), Ey.copy(), Ez.copy(),
-                          Bx.copy(), By.copy(), Bz.copy(),
-                          ro, jx, jy, jz)
+        new_state = GPUArrays(x_offt=x_offt, y_offt=y_offt,
+                              px=px, py=py, pz=pz,
+                              Ex=Ex.copy(), Ey=Ey.copy(), Ez=Ez.copy(),
+                              Bx=Bx.copy(), By=By.copy(), Bz=Bz.copy(),
+                              ro=ro, jx=jx, jy=jy, jz=jz)
 
         return new_state
 
@@ -998,20 +995,24 @@ def init(config):
             * config.grid_step_size)
     xs, ys = grid[:, None], grid[None, :]
 
-    pl_x_init, pl_y_init, pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz, pl_m, pl_q, *virt_params = plasma_make(
-        config.grid_steps - config.plasma_padding_steps * 2,
-        config.grid_step_size,
-        coarseness=config.plasma_coarseness, fineness=config.plasma_fineness
-    )
+    x_init, y_init, x_offt, y_offt, px, py, pz, m, q, *virt_params = \
+        plasma_make(config.grid_steps - config.plasma_padding_steps * 2,
+                    config.grid_step_size,
+                    coarseness=config.plasma_coarseness,
+                    fineness=config.plasma_fineness)
 
-    gpu = GPUMonolith(config,
-                      pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
-                      pl_px, pl_py, pl_pz, pl_m, pl_q, *virt_params)
-    gpu.load(pl_m, pl_q)
-    gpu.initial_deposition(pl_x_offt, pl_y_offt,
-                           pl_px, pl_py, pl_pz, pl_m, pl_q)
-    zs = [cp.zeros((config.grid_steps, config.grid_steps)) for _ in range(10)]
-    state = State(pl_x_offt, pl_y_offt, pl_px, pl_py, pl_pz, *zs)
+    gpu = GPUMonolith(config, x_init, y_init, x_offt, y_offt,
+                      px, py, pz, m, q, *virt_params)
+    gpu.load(m, q)
+    gpu.initial_deposition(x_offt, y_offt, px, py, pz, m, q)
+
+    def zeros():
+        return cp.zeros((config.grid_steps, config.grid_steps))
+
+    state = GPUArrays(x_offt=x_offt, y_offt=y_offt, px=px, py=py, pz=pz,
+                      Ex=zeros(), Ey=zeros(), Ez=zeros(),
+                      Bx=zeros(), By=zeros(), Bz=zeros(),
+                      ro=zeros(), jx=zeros(), jy=zeros(), jz=zeros())
 
     return gpu, xs, ys, state
 
@@ -1026,7 +1027,6 @@ def main():
         beam_ro = config.beam(xi_i, xs, ys)
 
         state = gpu.step(beam_ro, state)
-
         view = GPUArraysView(state)
 
         Ez_00 = view.Ez[config.grid_steps // 2, config.grid_steps // 2]

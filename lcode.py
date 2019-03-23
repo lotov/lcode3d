@@ -47,15 +47,12 @@ ELECTRON_MASS = 1
 
 ### Solving Laplace equation with Dirichlet boundary conditions (Ez)
 
-
 def calculate_RHS_Ez(grid_step_size, jx, jy):
-    h2 = grid_step_size * 2
-
     # NOTE: use gradient instead if available (cupy doesn't have gradient)
-    djx_dx, _ = dx_dy(jx, h2)
-    _, djy_dy = dx_dy(jy, h2)
-
-    return -(djx_dx + djy_dy)
+    # NOTE: the result is smaller and lacks the perimeter cells
+    djx_dx_ = jx[2:, 1:-1] - jx[:-2, 1:-1]
+    djy_dy_ = jy[1:-1, 2:] - jy[1:-1, :-2]
+    return -(djx_dx_ + djy_dy_) / (grid_step_size * 2)
 
 
 def dst2d(a):
@@ -99,14 +96,13 @@ class DirichletSolver:
         #       Or maybe not.
 
         # Solve Laplace x = -RHS for x with Dirichlet boundary conditions.
-        # The perimeter of rhs and out is assumed to be zero.
+        # The perimeter of rhs and out is assumed to be zero and omitted.
         N = self.N
-        assert rhs.shape[0] == rhs.shape[1] == N
-        out = cp.zeros((N, N))
+        assert rhs.shape[0] == rhs.shape[1] == N - 2
 
         # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS
-        #f = scipy.fftpack.dstn(rhs[1:-1, 1:-1].get(), type=1)
-        f = dst2d(rhs[1:-1, 1:-1])
+        #f = scipy.fftpack.dstn(rhs.get(), type=1)
+        f = dst2d(rhs)
 
         # 2. Multiply f by mul
         #f *= self._mul.get()
@@ -114,9 +110,9 @@ class DirichletSolver:
 
         # 3. Apply iDST-Type1-2D (Inverse Discrete Sine Transform Type 1 2D),
         #    which matches DST-Type1-2D to the multiplier.
-        #out[1:-1, 1:-1] = cp.asarray(scipy.fftpack.idstn(f, type=1))
-        out[1:-1, 1:-1] = dst2d(f)
-
+        #out_inner = cp.asarray(scipy.fftpack.idstn(f, type=1))
+        out_inner = dst2d(f)
+        out = cp.pad(out_inner, 1, 'constant', constant_values=0)
         numba.cuda.synchronize()
         return out
 

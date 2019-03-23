@@ -615,17 +615,7 @@ class GPUArraysView:
 class GPUMonolith:
     cfg = (19, 384)  # empirical guess for a GTX 1070 Ti
 
-    def __init__(self, config,
-                 pl_x_init, pl_y_init, pl_x_offt, pl_y_offt,
-                 pl_px, pl_py, pl_pz, pl_m, pl_q,
-                 virt_params):
-        # TODO: compare shapes, not sizes
-        self.Nc = Nc = int(sqrt(pl_q.size))
-        assert Nc**2 == pl_x_init.size == pl_y_init.size
-        assert Nc**2 == pl_x_offt.size == pl_y_offt.size
-        assert Nc**2 == pl_px.size == pl_py.size == pl_pz.size
-        assert Nc**2 == pl_m.size == pl_q.size
-
+    def __init__(self, config, virt_params):
         # virtual particles should not reach the window pre-boundary cells
         assert config.reflect_padding_steps > config.plasma_coarseness + 1
         # the alternative is to reflect after plasma virtualization
@@ -643,22 +633,15 @@ class GPUMonolith:
         self.virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                                 config.plasma_fineness)**2
 
-        self._x_init = cp.array(pl_x_init)
-        self._y_init = cp.array(pl_y_init)
-
-        self._m = cp.zeros((Nc, Nc))
-        self._q = cp.zeros((Nc, Nc))
-
         self.virt_params = virt_params
 
         self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick, self.cfg)
         self.dirichlet_solver = DirichletSolver(N, self.grid_step_size)
-        self._ro_initial = cp.zeros((N, N))
 
         # Allow accessing `gpu_monolith.ro`
         # without typing the whole `gpu_monolith._ro.copy_to_host()`.
         # and setting its value with `gpu_monolith.ro = ...`
-        gpu_array_type = type(self._m)
+        gpu_array_type = type(numba.cuda.device_array(0))
         for attrname in dir(self):
             if attrname.startswith('_'):
                 attrname_unpref = attrname[1:]
@@ -686,13 +669,6 @@ class GPUMonolith:
                     hook_property(type(self), attrname)
 
 
-    def load(self, pl_m, pl_q):
-        self._m[...] = cp.array(pl_m)
-        self._q[...] = cp.array(pl_q)
-
-        numba.cuda.synchronize()
-
-
     def initial_deposition(self, pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q, virt_params):
         # Don't allow initial speeds for calculations with background ions
@@ -706,36 +682,34 @@ class GPUMonolith:
             pl_x_offt, pl_y_offt, pl_m, pl_q, pl_px, pl_py, pl_pz,
             virt_params, self.virtplasma_smallness_factor)
 
-        self._ro_initial = -ro_electrons_initial  # Right on the GPU, huh
+        ro_initial = -ro_electrons_initial  # Right on the GPU, huh
         numba.cuda.synchronize()
+        return ro_initial
 
-    def step(self, beam_ro, prev):
+    def step(self, const, prev, beam_ro):
         beam_ro = cp.asarray(beam_ro)
 
         Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
 
-        m = self._m
-        x_init, y_init = self._x_init, self._y_init
-
         # TODO: use regular pusher?
         x_offt, y_offt = move_estimate_wo_fields(
             self.cfg, self.xi_step_size, self.reflect_boundary,
-            m, x_init, y_init, prev.x_offt, prev.y_offt,
+            const.m, const.x_init, const.y_init, prev.x_offt, prev.y_offt,
             prev.px, prev.py, prev.pz
         )
 
         x_offt, y_offt, px, py, pz = move_smart(
             self.cfg, self.xi_step_size, self.reflect_boundary,
             self.grid_step_size, self.grid_steps,
-            self._m, self._q, self._x_init, self._y_init,
+            const.m, const.q, const.x_init, const.y_init,
             prev.x_offt, prev.y_offt, x_offt, y_offt,
             prev.px, prev.py, prev.pz,
             # no halfstep-averaged fields yet
             prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            self.cfg, self._ro_initial, self.grid_steps, self.grid_step_size,
-            x_offt, y_offt, self._m, self._q, px, py, pz,
+            self.cfg, const.ro_initial, self.grid_steps, self.grid_step_size,
+            x_offt, y_offt, const.m, const.q, px, py, pz,
             self.virt_params, self.virtplasma_smallness_factor
         )
 
@@ -757,14 +731,14 @@ class GPUMonolith:
         x_offt, y_offt, px, py, pz = move_smart(
             self.cfg, self.xi_step_size, self.reflect_boundary,
             self.grid_step_size, self.grid_steps,
-            self._m, self._q, self._x_init, self._y_init,
+            const.m, const.q, const.x_init, const.y_init,
             prev.x_offt, prev.y_offt, x_offt, y_offt,
             prev.px, prev.py, prev.pz,
             Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            self.cfg, self._ro_initial, self.grid_steps, self.grid_step_size,
-            x_offt, y_offt, self._m, self._q, px, py, pz,
+            self.cfg, const.ro_initial, self.grid_steps, self.grid_step_size,
+            x_offt, y_offt, const.m, const.q, px, py, pz,
             self.virt_params, self.virtplasma_smallness_factor
         )
         Ex, Ey, Bx, By = \
@@ -783,14 +757,14 @@ class GPUMonolith:
         x_offt, y_offt, px, py, pz = move_smart(
             self.cfg, self.xi_step_size, self.reflect_boundary,
             self.grid_step_size, self.grid_steps,
-            self._m, self._q, self._x_init, self._y_init,
+            const.m, const.q, const.x_init, const.y_init,
             prev.x_offt, prev.y_offt, x_offt, y_offt,
             prev.px, prev.py, prev.pz,
             Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            self.cfg, self._ro_initial, self.grid_steps, self.grid_step_size,
-            x_offt, y_offt, self._m, self._q, px, py, pz,
+            self.cfg, const.ro_initial, self.grid_steps, self.grid_step_size,
+            x_offt, y_offt, const.m, const.q, px, py, pz,
             self.virt_params, self.virtplasma_smallness_factor)
 
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
@@ -961,13 +935,13 @@ def diags_ro_slice(config, xi_i, xi, ro):
                origin='lower', vmin=-0.1, vmax=0.1, cmap='bwr')
 
 
-def diagnostics(state, config, xi_i, Ez_00_history):
+def diagnostics(view_state, config, xi_i, Ez_00_history):
     xi = -xi_i * config.xi_step_size
 
     Ez_00 = Ez_00_history[-1]
     peak_report = diags_peak_msg(Ez_00_history)
 
-    ro = state.ro
+    ro = view_state.ro
     max_zn = diags_ro_zn(config, ro)
     diags_ro_slice(config, xi_i, xi, ro)
 
@@ -986,10 +960,12 @@ def init(config):
                     coarseness=config.plasma_coarseness,
                     fineness=config.plasma_fineness)
 
-    gpu = GPUMonolith(config, x_init, y_init, x_offt, y_offt,
-                      px, py, pz, m, q, virt_params)
-    gpu.load(m, q)
-    gpu.initial_deposition(x_offt, y_offt, px, py, pz, m, q, virt_params)
+    gpu = GPUMonolith(config, virt_params)
+    ro_initial = gpu.initial_deposition(x_offt, y_offt,
+                                        px, py, pz, m, q, virt_params)
+
+    const = GPUArrays(m=m, q=q, x_init=x_init, y_init=y_init,
+                      ro_initial=ro_initial)
 
     def zeros():
         return cp.zeros((config.grid_steps, config.grid_steps))
@@ -999,28 +975,28 @@ def init(config):
                       Bx=zeros(), By=zeros(), Bz=zeros(),
                       ro=zeros(), jx=zeros(), jy=zeros(), jz=zeros())
 
-    return gpu, xs, ys, state
+    return gpu, xs, ys, const, state
 
 
 # TODO: fold init, load, initial_deposition into GPUMonolith.__init__?
 def main():
     import config
-    gpu, xs, ys, state = init(config)
+    gpu, xs, ys, const, state = init(config)
     Ez_00_history = []
 
     for xi_i in range(config.xi_steps):
         beam_ro = config.beam(xi_i, xs, ys)
 
-        state = gpu.step(beam_ro, state)
-        view = GPUArraysView(state)
+        state = gpu.step(const, state, beam_ro)
+        view_state = GPUArraysView(state)
 
-        Ez_00 = view.Ez[config.grid_steps // 2, config.grid_steps // 2]
+        Ez_00 = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]
         Ez_00_history.append(Ez_00)
 
         time_for_diags = xi_i % config.diagnostics_each_N_steps == 0
         last_step = xi_i == config.xi_steps - 1
         if time_for_diags or last_step:
-            diagnostics(view, config, xi_i, Ez_00_history)
+            diagnostics(view_state, config, xi_i, Ez_00_history)
 
 
 if __name__ == '__main__':

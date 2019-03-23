@@ -638,36 +638,6 @@ class GPUMonolith:
         self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick, self.cfg)
         self.dirichlet_solver = DirichletSolver(N, self.grid_step_size)
 
-        # Allow accessing `gpu_monolith.ro`
-        # without typing the whole `gpu_monolith._ro.copy_to_host()`.
-        # and setting its value with `gpu_monolith.ro = ...`
-        gpu_array_type = type(numba.cuda.device_array(0))
-        for attrname in dir(self):
-            if attrname.startswith('_'):
-                attrname_unpref = attrname[1:]
-                attr = getattr(self, attrname)
-                if isinstance(attr, gpu_array_type):
-                    # a separate func for copying attrname into another closure
-                    def hook_property(cls, attrname):
-                        def getter(self):
-                            return getattr(self, attrname).copy_to_host()
-                        def setter(self, val):
-                            getattr(self, attrname)[...] = val
-                        setattr(cls, attrname_unpref, property(getter, setter))
-                    hook_property(type(self), attrname)
-        # Allow accessing `gpu_monolith.ro`
-        # without typing the whole `gpu_monolith._ro.get()`.
-        # and setting its value with `gpu_monolith.ro = ...`
-                if isinstance(attr, cp.ndarray):
-                    # a separate func for copying attrname into another closure
-                    def hook_property(cls, attrname):
-                        def getter(self):
-                            return getattr(self, attrname).get()
-                        def setter(self, val):
-                            getattr(self, attrname)[...] = val
-                        setattr(cls, attrname_unpref, property(getter, setter))
-                    hook_property(type(self), attrname)
-
 
     def initial_deposition(self, pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q, virt_params):

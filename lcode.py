@@ -314,45 +314,22 @@ def calculate_Ex_Ey_Bx_By(grid_step_size, xi_step_size, subtraction_trick,
 ### Unsorted
 
 
-@numba.cuda.jit
-def move_estimate_wo_fields_kernel(xi_step_size, reflect_boundary, ms,
-                                   x_init, y_init, prev_x_offt, prev_y_offt,
-                                   pxs, pys, pzs,
-                                   x_offt, y_offt):
-    k = numba.cuda.grid(1)
-    if k >= ms.size:
-        return
-    m = ms[k]
-    x, y = x_init[k] + prev_x_offt[k], y_init[k] + prev_y_offt[k]
-    px, py, pz = pxs[k], pys[k], pzs[k]
-
-    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+def move_estimate_wo_fields(xi_step_size, reflect,
+                            m, x_init, y_init, prev_x_offt, prev_y_offt,
+                            px, py, pz):
+    x, y = x_init + prev_x_offt, y_init + prev_y_offt
+    gamma_m = cp.sqrt(m**2 + pz**2 + px**2 + py**2)
 
     x += px / (gamma_m - pz) * xi_step_size
     y += py / (gamma_m - pz) * xi_step_size
 
-    # TODO: avoid branching?
-    x = x if x <= +reflect_boundary else +2 * reflect_boundary - x
-    x = x if x >= -reflect_boundary else -2 * reflect_boundary - x
-    y = y if y <= +reflect_boundary else +2 * reflect_boundary - y
-    y = y if y >= -reflect_boundary else -2 * reflect_boundary - y
+    x[x >= +reflect] = +2 * reflect - x[x >= +reflect]
+    x[x <= -reflect] = -2 * reflect - x[x <= -reflect]
+    y[y >= +reflect] = +2 * reflect - y[y >= +reflect]
+    y[y <= -reflect] = -2 * reflect - y[y <= -reflect]
 
-    x_offt[k], y_offt[k] = x - x_init[k], y - y_init[k]
+    x_offt, y_offt = x - x_init, y - y_init
 
-
-def move_estimate_wo_fields(xi_step_size, reflect_boundary,
-                            m, x_init, y_init, x_prev_offt, y_prev_offt,
-                            px_prev, py_prev, pz_prev):
-    x_offt, y_offt, = cp.zeros_like(x_init), cp.zeros_like(y_init)
-    cfg = int(np.ceil(x_offt.size / WARP_SIZE)), WARP_SIZE
-    move_estimate_wo_fields_kernel[cfg](xi_step_size, reflect_boundary,
-                                        m.ravel(),
-                                        x_init.ravel(), y_init.ravel(),
-                                        x_prev_offt.ravel(),
-                                        y_prev_offt.ravel(),
-                                        px_prev.ravel(), py_prev.ravel(),
-                                        pz_prev.ravel(),
-                                        x_offt.ravel(), y_offt.ravel())
     numba.cuda.synchronize()
     return x_offt, y_offt
 

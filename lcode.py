@@ -289,13 +289,11 @@ class MixedSolver:
         self._Bx_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Bx_dct2_in))
         self._By_dct2_out[...] = cp.fft.rfft(cp.asarray(self._By_dct2_in))
 
-        # 4. Transpose the resulting Ex (TODO: fuse this step into later steps?)
-        unpack_Ex_Ey_Bx_By_fields_kernel[self.cfg](self._Ex_dct2_out,
-                                                   self._Ey_dct2_out,
-                                                   self._Bx_dct2_out,
-                                                   self._By_dct2_out,
-                                                   self._Ex, self._Ey,
-                                                   self._Bx, self._By)
+        # 4. (Unpack and sometimese transpose) the resulting fields.
+        self._Ex[...] = self._Ex_dct2_out[:, :N].real.T
+        self._Ey[...] = self._Ey_dct2_out[:, :N].real
+        self._Bx[...] = self._Bx_dct2_out[:, :N].real
+        self._By[...] = self._By_dct2_out[:, :N].real.T
 
         numba.cuda.synchronize()
 
@@ -321,25 +319,25 @@ def move_estimate_wo_fields_kernel(xi_step_size, reflect_boundary, ms,
                                    x_init, y_init, prev_x_offt, prev_y_offt,
                                    pxs, pys, pzs,
                                    x_offt, y_offt):
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, ms.size, stride):
-        m = ms[k]
-        x, y = x_init[k] + prev_x_offt[k], y_init[k] + prev_y_offt[k]
-        px, py, pz = pxs[k], pys[k], pzs[k]
+    k = numba.cuda.grid(1)
+    if k >= ms.size:
+        return
+    m = ms[k]
+    x, y = x_init[k] + prev_x_offt[k], y_init[k] + prev_y_offt[k]
+    px, py, pz = pxs[k], pys[k], pzs[k]
 
-        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
 
-        x += px / (gamma_m - pz) * xi_step_size
-        y += py / (gamma_m - pz) * xi_step_size
+    x += px / (gamma_m - pz) * xi_step_size
+    y += py / (gamma_m - pz) * xi_step_size
 
-        # TODO: avoid branching?
-        x = x if x <= +reflect_boundary else +2 * reflect_boundary - x
-        x = x if x >= -reflect_boundary else -2 * reflect_boundary - x
-        y = y if y <= +reflect_boundary else +2 * reflect_boundary - y
-        y = y if y >= -reflect_boundary else -2 * reflect_boundary - y
+    # TODO: avoid branching?
+    x = x if x <= +reflect_boundary else +2 * reflect_boundary - x
+    x = x if x >= -reflect_boundary else -2 * reflect_boundary - x
+    y = y if y <= +reflect_boundary else +2 * reflect_boundary - y
+    y = y if y >= -reflect_boundary else -2 * reflect_boundary - y
 
-        x_offt[k], y_offt[k] = x - x_init[k], y - y_init[k]
+    x_offt[k], y_offt[k] = x - x_init[k], y - y_init[k]
 
 
 def move_estimate_wo_fields(xi_step_size, reflect_boundary,
@@ -408,47 +406,53 @@ def deposit_kernel(grid_steps, grid_step_size,
                    A_weights, B_weights, C_weights, D_weights,
                    indices_prev, indices_next, virtplasma_smallness_factor,
                    out_ro, out_jx, out_jy, out_jz):
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for pk in range(index, A_weights.size, stride):
-        pi, pj = pk // A_weights.shape[0], pk % A_weights.shape[0]
+    pk = numba.cuda.grid(1)
+    if pk >= A_weights.size:
+        return
+    pi, pj = pk // A_weights.shape[0], pk % A_weights.shape[0]
 
-        px, nx = indices_prev[pi], indices_next[pi]
-        py, ny = indices_prev[pj], indices_next[pj]
+    px, nx = indices_prev[pi], indices_next[pi]
+    py, ny = indices_prev[pj], indices_next[pj]
 
-        A = A_weights[pi, pj]
-        B = B_weights[pi, pj]
-        C = C_weights[pi, pj]
-        D = D_weights[pi, pj]
+    A = A_weights[pi, pj]
+    B = B_weights[pi, pj]
+    C = C_weights[pi, pj]
+    D = D_weights[pi, pj]
 
-        x_offt = A * c_x_offt[px, py] + B * c_x_offt[nx, py] + C * c_x_offt[px, ny] + D * c_x_offt[nx, ny]
-        y_offt = A * c_y_offt[px, py] + B * c_y_offt[nx, py] + C * c_y_offt[px, ny] + D * c_y_offt[nx, ny]
-        x = fine_grid[pi] + x_offt  # x_fine_init
-        y = fine_grid[pj] + y_offt  # y_fine_init
-        m = A * c_m[px, py] + B * c_m[nx, py] + C * c_m[px, ny] + D * c_m[nx, ny]
-        q = A * c_q[px, py] + B * c_q[nx, py] + C * c_q[px, ny] + D * c_q[nx, ny]
-        p_x = A * c_p_x[px, py] + B * c_p_x[nx, py] + C * c_p_x[px, ny] + D * c_p_x[nx, ny]
-        p_y = A * c_p_y[px, py] + B * c_p_y[nx, py] + C * c_p_y[px, ny] + D * c_p_y[nx, ny]
-        p_z = A * c_p_z[px, py] + B * c_p_z[nx, py] + C * c_p_z[px, ny] + D * c_p_z[nx, ny]
-        m *= virtplasma_smallness_factor
-        q *= virtplasma_smallness_factor
-        p_x *= virtplasma_smallness_factor
-        p_y *= virtplasma_smallness_factor
-        p_z *= virtplasma_smallness_factor
+    # TODO: make a mixing function
+    x_offt = (A * c_x_offt[px, py] + B * c_x_offt[nx, py] +
+              C * c_x_offt[px, ny] + D * c_x_offt[nx, ny])
+    y_offt = (A * c_y_offt[px, py] + B * c_y_offt[nx, py] +
+              C * c_y_offt[px, ny] + D * c_y_offt[nx, ny])
+    x = fine_grid[pi] + x_offt  # x_fine_init
+    y = fine_grid[pj] + y_offt  # y_fine_init
+    m = A * c_m[px, py] + B * c_m[nx, py] + C * c_m[px, ny] + D * c_m[nx, ny]
+    q = A * c_q[px, py] + B * c_q[nx, py] + C * c_q[px, ny] + D * c_q[nx, ny]
+    p_x = (A * c_p_x[px, py] + B * c_p_x[nx, py] +
+           C * c_p_x[px, ny] + D * c_p_x[nx, ny])
+    p_y = (A * c_p_y[px, py] + B * c_p_y[nx, py] +
+           C * c_p_y[px, ny] + D * c_p_y[nx, ny])
+    p_z = (A * c_p_z[px, py] + B * c_p_z[nx, py] +
+           C * c_p_z[px, ny] + D * c_p_z[nx, ny])
+    m *= virtplasma_smallness_factor
+    q *= virtplasma_smallness_factor
+    p_x *= virtplasma_smallness_factor
+    p_y *= virtplasma_smallness_factor
+    p_z *= virtplasma_smallness_factor
 
-        gamma_m = sqrt(m**2 + p_x**2 + p_y**2 + p_z**2)
-        dro = q / (1 - p_z / gamma_m)
-        djx = p_x * (dro / gamma_m)
-        djy = p_y * (dro / gamma_m)
-        djz = p_z * (dro / gamma_m)
+    gamma_m = sqrt(m**2 + p_x**2 + p_y**2 + p_z**2)
+    dro = q / (1 - p_z / gamma_m)
+    djx = p_x * (dro / gamma_m)
+    djy = p_y * (dro / gamma_m)
+    djz = p_z * (dro / gamma_m)
 
-        i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
-            x, y, grid_steps, grid_step_size
-        )
-        deposit9(out_ro, i, j, dro, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        deposit9(out_jx, i, j, djx, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        deposit9(out_jy, i, j, djy, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        deposit9(out_jz, i, j, djz, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
+        x, y, grid_steps, grid_step_size
+    )
+    deposit9(out_ro, i, j, dro, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    deposit9(out_jx, i, j, djx, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    deposit9(out_jy, i, j, djy, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    deposit9(out_jz, i, j, djz, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
 
 
 def deposit(config, ro_initial,
@@ -462,7 +466,7 @@ def deposit(config, ro_initial,
     jx = cp.zeros((grid_steps, grid_steps))
     jy = cp.zeros((grid_steps, grid_steps))
     jz = cp.zeros((grid_steps, grid_steps))
-    cfg = int(np.ceil(grid_steps**2 / WARP_SIZE)), WARP_SIZE
+    cfg = int(np.ceil(virt_params.A_weights.size / WARP_SIZE)), WARP_SIZE
     deposit_kernel[cfg](grid_steps, grid_step_size, virt_params.fine_grid,
                         x_offt_new, y_offt_new, m, q, px_new, py_new, pz_new,
                         virt_params.A_weights, virt_params.B_weights,
@@ -476,21 +480,6 @@ def deposit(config, ro_initial,
 
 
 @numba.cuda.jit
-def unpack_Ex_Ey_Bx_By_fields_kernel(Ex_dct2_out, Ey_dct2_out,
-                                     Bx_dct2_out, By_dct2_out,
-                                     Ex, Ey, Bx, By):
-    N = Ex.shape[0]
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, Ex.size, stride):
-        i, j = k // N, k % N
-        Ex[i, j] = Ex_dct2_out[j, i].real
-        Ey[i, j] = Ey_dct2_out[i, j].real
-        Bx[i, j] = Bx_dct2_out[i, j].real
-        By[i, j] = By_dct2_out[j, i].real
-
-
-@numba.cuda.jit
 def move_smart_kernel(xi_step_size, reflect_boundary,
                       grid_step_size, grid_steps,
                       ms, qs,
@@ -500,72 +489,73 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
                       prev_px, prev_py, prev_pz,
                       Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
                       new_x_offt, new_y_offt, new_px, new_py, new_pz):
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
-    for k in range(index, ms.size, stride):
-        m, q = ms[k], qs[k]
+    k = numba.cuda.grid(1)
+    if k >= ms.size:
+        return
 
-        opx, opy, opz = prev_px[k], prev_py[k], prev_pz[k]
-        px, py, pz = opx, opy, opz
-        x_offt, y_offt = prev_x_offt[k], prev_y_offt[k]
+    m, q = ms[k], qs[k]
 
-        x_halfstep = x_init[k] + (prev_x_offt[k] + estimated_x_offt[k]) / 2
-        y_halfstep = y_init[k] + (prev_y_offt[k] + estimated_y_offt[k]) / 2
-        i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
-            x_halfstep, y_halfstep, grid_steps, grid_step_size
-        )
-        Ex = interp9(Ex_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Ey = interp9(Ey_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Ez = interp9(Ez_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Bx = interp9(Bx_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        By = interp9(By_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-        Bz = 0  # Bz = 0 for now
+    opx, opy, opz = prev_px[k], prev_py[k], prev_pz[k]
+    px, py, pz = opx, opy, opz
+    x_offt, y_offt = prev_x_offt[k], prev_y_offt[k]
 
-        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
-        vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
-        factor_1 = q * xi_step_size / (1 - pz / gamma_m)
-        dpx = factor_1 * (Ex + vy * Bz - vz * By)
-        dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
-        dpz = factor_1 * (Ez + vx * By - vy * Bx)
-        px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
+    x_halfstep = x_init[k] + (prev_x_offt[k] + estimated_x_offt[k]) / 2
+    y_halfstep = y_init[k] + (prev_y_offt[k] + estimated_y_offt[k]) / 2
+    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
+        x_halfstep, y_halfstep, grid_steps, grid_step_size
+    )
+    Ex = interp9(Ex_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    Ey = interp9(Ey_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    Ez = interp9(Ez_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    Bx = interp9(Bx_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    By = interp9(By_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    Bz = 0  # Bz = 0 for now
 
-        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
-        vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
-        factor_1 = q * xi_step_size / (1 - pz / gamma_m)
-        dpx = factor_1 * (Ex + vy * Bz - vz * By)
-        dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
-        dpz = factor_1 * (Ez + vx * By - vy * Bx)
-        px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
+    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+    vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
+    factor_1 = q * xi_step_size / (1 - pz / gamma_m)
+    dpx = factor_1 * (Ex + vy * Bz - vz * By)
+    dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
+    dpz = factor_1 * (Ez + vx * By - vy * Bx)
+    px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
 
-        gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+    vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
+    factor_1 = q * xi_step_size / (1 - pz / gamma_m)
+    dpx = factor_1 * (Ex + vy * Bz - vz * By)
+    dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
+    dpz = factor_1 * (Ez + vx * By - vy * Bx)
+    px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
 
-        x_offt += px / (gamma_m - pz) * xi_step_size  # no mixing with x_init
-        y_offt += py / (gamma_m - pz) * xi_step_size  # no mixing with y_init
+    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
 
-        px, py, pz = opx + dpx, opy + dpy, opz + dpz
+    x_offt += px / (gamma_m - pz) * xi_step_size  # no mixing with x_init
+    y_offt += py / (gamma_m - pz) * xi_step_size  # no mixing with y_init
 
-        # TODO: avoid branching?
-        x = x_init[k] + x_offt
-        y = y_init[k] + y_offt
-        if x > +reflect_boundary:
-            x = +2 * reflect_boundary - x
-            x_offt = x - x_init[k]
-            px = -px
-        if x < -reflect_boundary:
-            x = -2 * reflect_boundary - x
-            x_offt = x - x_init[k]
-            px = -px
-        if y > +reflect_boundary:
-            y = +2 * reflect_boundary - y
-            y_offt = y - y_init[k]
-            py = -py
-        if y < -reflect_boundary:
-            y = -2 * reflect_boundary - y
-            y_offt = y - y_init[k]
-            py = -py
+    px, py, pz = opx + dpx, opy + dpy, opz + dpz
 
-        new_x_offt[k], new_y_offt[k] = x_offt, y_offt  # TODO: get rid of vars
-        new_px[k], new_py[k], new_pz[k] = px, py, pz
+    # TODO: avoid branching?
+    x = x_init[k] + x_offt
+    y = y_init[k] + y_offt
+    if x > +reflect_boundary:
+        x = +2 * reflect_boundary - x
+        x_offt = x - x_init[k]
+        px = -px
+    if x < -reflect_boundary:
+        x = -2 * reflect_boundary - x
+        x_offt = x - x_init[k]
+        px = -px
+    if y > +reflect_boundary:
+        y = +2 * reflect_boundary - y
+        y_offt = y - y_init[k]
+        py = -py
+    if y < -reflect_boundary:
+        y = -2 * reflect_boundary - y
+        y_offt = y - y_init[k]
+        py = -py
+
+    new_x_offt[k], new_y_offt[k] = x_offt, y_offt  # TODO: get rid of vars
+    new_px[k], new_py[k], new_pz[k] = px, py, pz
 
 
 def move_smart(xi_step_size, reflect_boundary, grid_step_size, grid_steps,

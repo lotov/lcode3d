@@ -406,7 +406,7 @@ def deposit_kernel(grid_steps, grid_step_size,
                    fine_grid, c_x_offt, c_y_offt,
                    c_m, c_q, c_p_x, c_p_y, c_p_z,  # coarse
                    A_weights, B_weights, C_weights, D_weights,
-                   indices_prev, indices_next, smallness_factor,
+                   indices_prev, indices_next, virtplasma_smallness_factor,
                    out_ro, out_jx, out_jy, out_jz):
     index = numba.cuda.grid(1)
     stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
@@ -430,11 +430,11 @@ def deposit_kernel(grid_steps, grid_step_size,
         p_x = A * c_p_x[px, py] + B * c_p_x[nx, py] + C * c_p_x[px, ny] + D * c_p_x[nx, ny]
         p_y = A * c_p_y[px, py] + B * c_p_y[nx, py] + C * c_p_y[px, ny] + D * c_p_y[nx, ny]
         p_z = A * c_p_z[px, py] + B * c_p_z[nx, py] + C * c_p_z[px, ny] + D * c_p_z[nx, ny]
-        m *= smallness_factor
-        q *= smallness_factor
-        p_x *= smallness_factor
-        p_y *= smallness_factor
-        p_z *= smallness_factor
+        m *= virtplasma_smallness_factor
+        q *= virtplasma_smallness_factor
+        p_x *= virtplasma_smallness_factor
+        p_y *= virtplasma_smallness_factor
+        p_z *= virtplasma_smallness_factor
 
         gamma_m = sqrt(m**2 + p_x**2 + p_y**2 + p_z**2)
         dro = q / (1 - p_z / gamma_m)
@@ -451,11 +451,13 @@ def deposit_kernel(grid_steps, grid_step_size,
         deposit9(out_jz, i, j, djz, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
 
 
-def deposit(ro_initial,
+def deposit(config, ro_initial,
             grid_steps, grid_step_size,
             x_offt_new, y_offt_new,
             m, q, px_new, py_new, pz_new,
-            virt_params, virtplasma_smallness_factor):
+            virt_params):
+    virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
+                                       config.plasma_fineness)**2
     ro = cp.zeros((grid_steps, grid_steps))
     jx = cp.zeros((grid_steps, grid_steps))
     jy = cp.zeros((grid_steps, grid_steps))
@@ -635,14 +637,11 @@ class GPUMonolith:
             config.grid_steps / 2 - config.reflect_padding_steps
         )
 
-        self.virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
-                                                config.plasma_fineness)**2
-
         self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick)
         self.dirichlet_solver = DirichletSolver(N, self.grid_step_size)
 
 
-    def initial_deposition(self, pl_x_offt, pl_y_offt,
+    def initial_deposition(self, config, pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q, virt_params):
         # Don't allow initial speeds for calculations with background ions
         assert np.array_equiv(pl_px, 0)
@@ -651,15 +650,15 @@ class GPUMonolith:
 
         ro_initial = cp.zeros((self.grid_steps, self.grid_steps))
         ro_electrons_initial, _, _, _ = deposit(
-            ro_initial, self.grid_steps, self.grid_step_size,
+            config, ro_initial, self.grid_steps, self.grid_step_size,
             pl_x_offt, pl_y_offt, pl_m, pl_q, pl_px, pl_py, pl_pz,
-            virt_params, self.virtplasma_smallness_factor)
+            virt_params)
 
         ro_initial = -ro_electrons_initial  # Right on the GPU, huh
         numba.cuda.synchronize()
         return ro_initial
 
-    def step(self, const, virt_params, prev, beam_ro):
+    def step(self, config, const, virt_params, prev, beam_ro):
         beam_ro = cp.asarray(beam_ro)
 
         Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
@@ -681,9 +680,9 @@ class GPUMonolith:
             prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            const.ro_initial, self.grid_steps, self.grid_step_size,
+            config, const.ro_initial, self.grid_steps, self.grid_step_size,
             x_offt, y_offt, const.m, const.q, px, py, pz,
-            virt_params, self.virtplasma_smallness_factor
+            virt_params
         )
 
         Ex, Ey, Bx, By = \
@@ -710,9 +709,9 @@ class GPUMonolith:
             Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            const.ro_initial, self.grid_steps, self.grid_step_size,
+            config, const.ro_initial, self.grid_steps, self.grid_step_size,
             x_offt, y_offt, const.m, const.q, px, py, pz,
-            virt_params, self.virtplasma_smallness_factor
+            virt_params,
         )
         Ex, Ey, Bx, By = \
             calculate_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
@@ -736,9 +735,10 @@ class GPUMonolith:
             Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            const.ro_initial, self.grid_steps, self.grid_step_size,
+            config, const.ro_initial, self.grid_steps, self.grid_step_size,
             x_offt, y_offt, const.m, const.q, px, py, pz,
-            virt_params, self.virtplasma_smallness_factor)
+            virt_params
+        )
 
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
@@ -934,7 +934,7 @@ def init(config):
                     fineness=config.plasma_fineness)
 
     gpu = GPUMonolith(config)
-    ro_initial = gpu.initial_deposition(x_offt, y_offt,
+    ro_initial = gpu.initial_deposition(config, x_offt, y_offt,
                                         px, py, pz, m, q, virt_params)
 
     const = GPUArrays(m=m, q=q, x_init=x_init, y_init=y_init,
@@ -960,7 +960,7 @@ def main():
     for xi_i in range(config.xi_steps):
         beam_ro = config.beam(xi_i, xs, ys)
 
-        state = gpu.step(const, virt_params, state, beam_ro)
+        state = gpu.step(config, const, virt_params, state, beam_ro)
         view_state = GPUArraysView(state)
 
         Ez_00 = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]

@@ -37,6 +37,10 @@ import scipy.signal
 # Prevent all CPU cores waiting for the GPU at 100% utilization (under conda).
 # os.environ['OMP_NUM_THREADS'] = '1'
 
+# Should be detectable with (cupy > 6.0.0b2):
+# WARP_SIZE = cp.cuda.Device(0).attributes['WarpSize']
+# But as of 2019 it's always 32. It's even a hardcode in cupy.
+WARP_SIZE = 32
 
 ELECTRON_CHARGE = -1
 ELECTRON_MASS = 1
@@ -198,7 +202,7 @@ def mid_dct_transform(Ex_dct1_out, Ex_dct2_in,
 
 
 class MixedSolver:
-    def __init__(self, N, h, subtraction_trick, cfg):
+    def __init__(self, N, h, subtraction_trick):
         # Arrays for mixed boundary conditions solver
         # * diagonal matrix elements (used in the next one)
         aa = 2 + 4 * np.sin(np.arange(0, N) * np.pi / (2 * (N - 1)))**2
@@ -246,7 +250,7 @@ class MixedSolver:
         self.mix_mul = h**2
         self.mix_mul /= 2 * N - 2  # don't ask
 
-        self.cfg = cfg
+        self.cfg = int(np.ceil(N / WARP_SIZE)), WARP_SIZE
 
     def solve(self, Ex_rhs, Ey_rhs, Bx_rhs, By_rhs):
         # 0. Symmetrically pad dct1_in to apply DCT-via-FFT later
@@ -338,10 +342,11 @@ def move_estimate_wo_fields_kernel(xi_step_size, reflect_boundary, ms,
         x_offt[k], y_offt[k] = x - x_init[k], y - y_init[k]
 
 
-def move_estimate_wo_fields(cfg, xi_step_size, reflect_boundary,
+def move_estimate_wo_fields(xi_step_size, reflect_boundary,
                             m, x_init, y_init, x_prev_offt, y_prev_offt,
                             px_prev, py_prev, pz_prev):
     x_offt, y_offt, = cp.zeros_like(x_init), cp.zeros_like(y_init)
+    cfg = int(np.ceil(x_offt.size / WARP_SIZE)), WARP_SIZE
     move_estimate_wo_fields_kernel[cfg](xi_step_size, reflect_boundary,
                                         m.ravel(),
                                         x_init.ravel(), y_init.ravel(),
@@ -446,7 +451,7 @@ def deposit_kernel(grid_steps, grid_step_size,
         deposit9(out_jz, i, j, djz, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
 
 
-def deposit(cfg, ro_initial,
+def deposit(ro_initial,
             grid_steps, grid_step_size,
             x_offt_new, y_offt_new,
             m, q, px_new, py_new, pz_new,
@@ -455,6 +460,7 @@ def deposit(cfg, ro_initial,
     jx = cp.zeros((grid_steps, grid_steps))
     jy = cp.zeros((grid_steps, grid_steps))
     jz = cp.zeros((grid_steps, grid_steps))
+    cfg = int(np.ceil(grid_steps**2 / WARP_SIZE)), WARP_SIZE
     deposit_kernel[cfg](grid_steps, grid_step_size, virt_params.fine_grid,
                         x_offt_new, y_offt_new, m, q, px_new, py_new, pz_new,
                         virt_params.A_weights, virt_params.B_weights,
@@ -560,7 +566,7 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
         new_px[k], new_py[k], new_pz[k] = px, py, pz
 
 
-def move_smart(cfg, xi_step_size, reflect_boundary, grid_step_size, grid_steps,
+def move_smart(xi_step_size, reflect_boundary, grid_step_size, grid_steps,
                m, q, x_init, y_init, x_prev_offt, y_prev_offt,
                estimated_x_offt, estimated_y_offt, px_prev, py_prev, pz_prev,
                Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg):
@@ -569,6 +575,7 @@ def move_smart(cfg, xi_step_size, reflect_boundary, grid_step_size, grid_steps,
     px_new = cp.zeros_like(px_prev)
     py_new = cp.zeros_like(py_prev)
     pz_new = cp.zeros_like(pz_prev)
+    cfg = int(np.ceil(x_init.size / WARP_SIZE)), WARP_SIZE
     move_smart_kernel[cfg](xi_step_size, reflect_boundary,
                            grid_step_size, grid_steps,
                            m.ravel(), q.ravel(),
@@ -613,8 +620,6 @@ class GPUArraysView:
 
 
 class GPUMonolith:
-    cfg = (19, 384)  # empirical guess for a GTX 1070 Ti
-
     def __init__(self, config):
         # virtual particles should not reach the window pre-boundary cells
         assert config.reflect_padding_steps > config.plasma_coarseness + 1
@@ -633,7 +638,7 @@ class GPUMonolith:
         self.virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                                 config.plasma_fineness)**2
 
-        self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick, self.cfg)
+        self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick)
         self.dirichlet_solver = DirichletSolver(N, self.grid_step_size)
 
 
@@ -646,7 +651,7 @@ class GPUMonolith:
 
         ro_initial = cp.zeros((self.grid_steps, self.grid_steps))
         ro_electrons_initial, _, _, _ = deposit(
-            self.cfg, ro_initial, self.grid_steps, self.grid_step_size,
+            ro_initial, self.grid_steps, self.grid_step_size,
             pl_x_offt, pl_y_offt, pl_m, pl_q, pl_px, pl_py, pl_pz,
             virt_params, self.virtplasma_smallness_factor)
 
@@ -661,13 +666,13 @@ class GPUMonolith:
 
         # TODO: use regular pusher?
         x_offt, y_offt = move_estimate_wo_fields(
-            self.cfg, self.xi_step_size, self.reflect_boundary,
+            self.xi_step_size, self.reflect_boundary,
             const.m, const.x_init, const.y_init, prev.x_offt, prev.y_offt,
             prev.px, prev.py, prev.pz
         )
 
         x_offt, y_offt, px, py, pz = move_smart(
-            self.cfg, self.xi_step_size, self.reflect_boundary,
+            self.xi_step_size, self.reflect_boundary,
             self.grid_step_size, self.grid_steps,
             const.m, const.q, const.x_init, const.y_init,
             prev.x_offt, prev.y_offt, x_offt, y_offt,
@@ -676,7 +681,7 @@ class GPUMonolith:
             prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            self.cfg, const.ro_initial, self.grid_steps, self.grid_step_size,
+            const.ro_initial, self.grid_steps, self.grid_step_size,
             x_offt, y_offt, const.m, const.q, px, py, pz,
             virt_params, self.virtplasma_smallness_factor
         )
@@ -697,7 +702,7 @@ class GPUMonolith:
         By_avg = (By + prev.By) / 2
 
         x_offt, y_offt, px, py, pz = move_smart(
-            self.cfg, self.xi_step_size, self.reflect_boundary,
+            self.xi_step_size, self.reflect_boundary,
             self.grid_step_size, self.grid_steps,
             const.m, const.q, const.x_init, const.y_init,
             prev.x_offt, prev.y_offt, x_offt, y_offt,
@@ -705,7 +710,7 @@ class GPUMonolith:
             Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            self.cfg, const.ro_initial, self.grid_steps, self.grid_step_size,
+            const.ro_initial, self.grid_steps, self.grid_step_size,
             x_offt, y_offt, const.m, const.q, px, py, pz,
             virt_params, self.virtplasma_smallness_factor
         )
@@ -723,7 +728,7 @@ class GPUMonolith:
         By_avg = (By + prev.By) / 2
 
         x_offt, y_offt, px, py, pz = move_smart(
-            self.cfg, self.xi_step_size, self.reflect_boundary,
+            self.xi_step_size, self.reflect_boundary,
             self.grid_step_size, self.grid_steps,
             const.m, const.q, const.x_init, const.y_init,
             prev.x_offt, prev.y_offt, x_offt, y_offt,
@@ -731,7 +736,7 @@ class GPUMonolith:
             Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            self.cfg, const.ro_initial, self.grid_steps, self.grid_step_size,
+            const.ro_initial, self.grid_steps, self.grid_step_size,
             x_offt, y_offt, const.m, const.q, px, py, pz,
             virt_params, self.virtplasma_smallness_factor)
 

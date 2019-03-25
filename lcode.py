@@ -615,7 +615,7 @@ class GPUArraysView:
 class GPUMonolith:
     cfg = (19, 384)  # empirical guess for a GTX 1070 Ti
 
-    def __init__(self, config, virt_params):
+    def __init__(self, config):
         # virtual particles should not reach the window pre-boundary cells
         assert config.reflect_padding_steps > config.plasma_coarseness + 1
         # the alternative is to reflect after plasma virtualization
@@ -632,8 +632,6 @@ class GPUMonolith:
 
         self.virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                                 config.plasma_fineness)**2
-
-        self.virt_params = virt_params
 
         self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick, self.cfg)
         self.dirichlet_solver = DirichletSolver(N, self.grid_step_size)
@@ -656,7 +654,7 @@ class GPUMonolith:
         numba.cuda.synchronize()
         return ro_initial
 
-    def step(self, const, prev, beam_ro):
+    def step(self, const, virt_params, prev, beam_ro):
         beam_ro = cp.asarray(beam_ro)
 
         Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
@@ -680,7 +678,7 @@ class GPUMonolith:
         ro, jx, jy, jz = deposit(
             self.cfg, const.ro_initial, self.grid_steps, self.grid_step_size,
             x_offt, y_offt, const.m, const.q, px, py, pz,
-            self.virt_params, self.virtplasma_smallness_factor
+            virt_params, self.virtplasma_smallness_factor
         )
 
         Ex, Ey, Bx, By = \
@@ -709,7 +707,7 @@ class GPUMonolith:
         ro, jx, jy, jz = deposit(
             self.cfg, const.ro_initial, self.grid_steps, self.grid_step_size,
             x_offt, y_offt, const.m, const.q, px, py, pz,
-            self.virt_params, self.virtplasma_smallness_factor
+            virt_params, self.virtplasma_smallness_factor
         )
         Ex, Ey, Bx, By = \
             calculate_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
@@ -735,7 +733,7 @@ class GPUMonolith:
         ro, jx, jy, jz = deposit(
             self.cfg, const.ro_initial, self.grid_steps, self.grid_step_size,
             x_offt, y_offt, const.m, const.q, px, py, pz,
-            self.virt_params, self.virtplasma_smallness_factor)
+            virt_params, self.virtplasma_smallness_factor)
 
         # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
@@ -930,7 +928,7 @@ def init(config):
                     coarseness=config.plasma_coarseness,
                     fineness=config.plasma_fineness)
 
-    gpu = GPUMonolith(config, virt_params)
+    gpu = GPUMonolith(config)
     ro_initial = gpu.initial_deposition(x_offt, y_offt,
                                         px, py, pz, m, q, virt_params)
 
@@ -945,19 +943,19 @@ def init(config):
                       Bx=zeros(), By=zeros(), Bz=zeros(),
                       ro=zeros(), jx=zeros(), jy=zeros(), jz=zeros())
 
-    return gpu, xs, ys, const, state
+    return gpu, xs, ys, const, virt_params, state
 
 
 # TODO: fold init, load, initial_deposition into GPUMonolith.__init__?
 def main():
     import config
-    gpu, xs, ys, const, state = init(config)
+    gpu, xs, ys, const, virt_params, state = init(config)
     Ez_00_history = []
 
     for xi_i in range(config.xi_steps):
         beam_ro = config.beam(xi_i, xs, ys)
 
-        state = gpu.step(const, state, beam_ro)
+        state = gpu.step(const, virt_params, state, beam_ro)
         view_state = GPUArraysView(state)
 
         Ez_00 = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]

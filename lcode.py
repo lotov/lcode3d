@@ -51,13 +51,6 @@ ELECTRON_MASS = 1
 
 ### Solving Laplace equation with Dirichlet boundary conditions (Ez)
 
-def calculate_RHS_Ez(grid_step_size, jx, jy):
-    # NOTE: use gradient instead if available (cupy doesn't have gradient)
-    # NOTE: the result is smaller and lacks the perimeter cells
-    djx_dx_ = jx[2:, 1:-1] - jx[:-2, 1:-1]
-    djy_dy_ = jy[1:-1, 2:] - jy[1:-1, :-2]
-    return -(djx_dx_ + djy_dy_) / (grid_step_size * 2)
-
 
 def dst2d(a):
     # DST-Type1-2D, jury-rigged from symmetrically-padded rFFT
@@ -77,53 +70,40 @@ def dst2d(a):
     return -cp.fft.rfft2(p)[1:N+1, 1:N+1].real
 
 
-class DirichletSolver:
-    def __init__(self, N, h):
-        self.N, self.h = N, h
-
-        # Samarskiy-Nikolaev, p. 187
-        k = np.arange(1, N)
-        # 4 / h**2 * sin(k * pi * h / (2 * L2))**2, where L2 = h * (N - 1)
-        lamb = 4 / self.h**2 * np.sin(k * np.pi / (2 * (N - 1)))**2
-        mul = np.zeros((N - 2, N - 2))
-        for i in range(N - 2):
-            for j in range(N - 2):
-                # 1 / (2 * (N - 1))**2 makes up for DST+iDST scaling
-                # 1 / (lamb[i] + lamb[j] is part of the method
-                mul[i, j] = 1 / (2 * (N - 1))**2 / (lamb[i] + lamb[j])
-        self._mul = cp.array(mul)
+@cp.memoize()
+def dirichlet_matrix(grid_steps, grid_step_size):
+    # Samarskiy-Nikolaev, p. 187
+    # mul[i, j] = 1 / (lam[i] + lam[j])
+    # lam[k] = 4 / h**2 * sin(k * pi * h / (2 * L))**2, where L = h * (N - 1)
+    # but offset by 1, 1, as mul only covers the inner part of the window
+    k = cp.arange(1, grid_steps - 1)
+    lam = 4 / grid_step_size**2 * cp.sin(k * cp.pi / (2 * (grid_steps - 1)))**2
+    lam_i, lam_j = lam[:, None], lam[None, :]
+    mul = 1 / (lam_i + lam_j)
+    return mul / (2 * (grid_steps - 1))**2  # additional 2xDST normalization
 
 
-    def solve(self, rhs):
-        # TODO: Try to optimize pad-dst-mul-unpad-pad-dst-unpad-pad
-        #       down to pad-dst-mul-dst-unpad, but carefully.
-        #       Or maybe not.
+def calculate_Ez(config, jx, jy):
+    # 0. Calculate RHS (NOTE: it is smaller by 1 on each side).
+    # NOTE: use gradient instead if available (cupy doesn't have gradient)
+    djx_dx = jx[2:, 1:-1] - jx[:-2, 1:-1]
+    djy_dy = jy[1:-1, 2:] - jy[1:-1, :-2]
+    rhs_inner = -(djx_dx + djy_dy) / (config.grid_step_size * 2)  # -?
 
-        # Solve Laplace x = -RHS for x with Dirichlet boundary conditions.
-        # The perimeter of rhs and out is assumed to be zero and omitted.
-        N = self.N
-        assert rhs.shape[0] == rhs.shape[1] == N - 2
+    # TODO: Try to optimize pad-dst-mul-unpad-pad-dst-unpad-pad
+    #       down to pad-dst-mul-dst-unpad, but carefully.
+    #       Or maybe not.
 
-        # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS
-        #f = scipy.fftpack.dstn(rhs.get(), type=1)
-        f = dst2d(rhs)
+    # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS.
+    f = dst2d(rhs_inner)
 
-        # 2. Multiply f by mul
-        #f *= self._mul.get()
-        f *= self._mul
+    # 2. Multiply f by the special matrix that does the job and normalizes.
+    f *= dirichlet_matrix(config.grid_steps, config.grid_step_size)
 
-        # 3. Apply iDST-Type1-2D (Inverse Discrete Sine Transform Type 1 2D),
-        #    which matches DST-Type1-2D to the multiplier.
-        #out_inner = cp.asarray(scipy.fftpack.idstn(f, type=1))
-        out_inner = dst2d(f)
-        out = cp.pad(out_inner, 1, 'constant', constant_values=0)
-        numba.cuda.synchronize()
-        return out
-
-
-def calculate_Ez(dirichlet_solver, grid_step_size, jx, jy):
-    Ez_rhs = calculate_RHS_Ez(grid_step_size, jx, jy)
-    Ez = dirichlet_solver.solve(Ez_rhs)
+    # 3. Apply iDST-Type1-2D (Inverse Discrete Sine Transform Type 1 2D),
+    #    which matches DST-Type1-2D to the multiplier.
+    Ez_inner = dst2d(f)
+    Ez = cp.pad(Ez_inner, 1, 'constant', constant_values=0)
     numba.cuda.synchronize()
     return Ez
 
@@ -592,8 +572,6 @@ class GPUMonolith:
         self.mixed_solver = MixedSolver(config.grid_steps,
                                         config.grid_step_size,
                                         config.field_solver_subtraction_trick)
-        self.dirichlet_solver = DirichletSolver(config.grid_steps,
-                                                config.grid_step_size)
 
     def initial_deposition(self, config, pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q, virt_params):
@@ -643,7 +621,7 @@ class GPUMonolith:
                                   # no halfstep-averaged fields yet
                                   beam_ro, ro, jx, jy, jz, prev.jx, prev.jy
         )
-        Ez = calculate_Ez(self.dirichlet_solver, config.grid_step_size, jx, jy)
+        Ez = calculate_Ez(config, jx, jy)
         # Bz = 0 for now
         Ex_avg = (Ex + prev.Ex) / 2
         Ey_avg = (Ey + prev.Ey) / 2
@@ -668,7 +646,7 @@ class GPUMonolith:
 
                                   beam_ro, ro, jx, jy, jz, prev.jx, prev.jy
         )
-        Ez = calculate_Ez(self.dirichlet_solver, config.grid_step_size, jx, jy)
+        Ez = calculate_Ez(config, jx, jy)
         # Bz = 0 for now
         Ex_avg = (Ex + prev.Ex) / 2
         Ey_avg = (Ey + prev.Ey) / 2

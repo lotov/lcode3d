@@ -461,113 +461,87 @@ class GPUArraysView:
         getattr(self._arrs, attrname)[...] = value  # copies to GPU RAM
 
 
-class GPUMonolith:
-    def __init__(self, config):
-        # virtual particles should not reach the window pre-boundary cells
-        assert config.reflect_padding_steps > config.plasma_coarseness + 1
-        # the alternative is to reflect after plasma virtualization
+def step(config, const, virt_params, prev, beam_ro):
+    beam_ro = cp.asarray(beam_ro)
 
-        assert config.grid_steps % 2 == 1
+    Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
 
-    def initial_deposition(self, config, pl_x_offt, pl_y_offt,
-                           pl_px, pl_py, pl_pz, pl_m, pl_q, virt_params):
-        # Don't allow initial speeds for calculations with background ions
-        assert np.array_equiv(pl_px, 0)
-        assert np.array_equiv(pl_py, 0)
-        assert np.array_equiv(pl_pz, 0)
+    # TODO: use regular pusher?
+    x_offt, y_offt = move_estimate_wo_fields(config, const.m,
+                                             const.x_init, const.y_init,
+                                             prev.x_offt, prev.y_offt,
+                                             prev.px, prev.py, prev.pz)
 
-        ro_initial = cp.zeros((config.grid_steps, config.grid_steps))
-        ro_electrons_initial, _, _, _ = deposit(
-            config, ro_initial,
-            pl_x_offt, pl_y_offt, pl_m, pl_q, pl_px, pl_py, pl_pz,
-            virt_params)
+    x_offt, y_offt, px, py, pz = move_smart(
+        config, const.m, const.q, const.x_init, const.y_init,
+        prev.x_offt, prev.y_offt, x_offt, y_offt, prev.px, prev.py, prev.pz,
+        # no halfstep-averaged fields yet
+        prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
+    )
+    ro, jx, jy, jz = deposit(
+        config, const.ro_initial, x_offt, y_offt, const.m, const.q, px, py, pz,
+        virt_params
+    )
 
-        ro_initial = -ro_electrons_initial  # Right on the GPU, huh
-        numba.cuda.synchronize()
-        return ro_initial
+    Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
+                                           prev.Ex, prev.Ey, prev.Bx, prev.By,
+                                           # no halfstep-averaged fields yet
+                                           beam_ro, ro, jx, jy, jz,
+                                           prev.jx, prev.jy)
+    Ez = calculate_Ez(config, jx, jy)
+    # Bz = 0 for now
+    Ex_avg = (Ex + prev.Ex) / 2
+    Ey_avg = (Ey + prev.Ey) / 2
+    Ez_avg = (Ez + prev.Ez) / 2
+    Bx_avg = (Bx + prev.Bx) / 2
+    By_avg = (By + prev.By) / 2
 
-    def step(self, config, const, virt_params, prev, beam_ro):
-        beam_ro = cp.asarray(beam_ro)
+    x_offt, y_offt, px, py, pz = move_smart(
+        config, const.m, const.q, const.x_init, const.y_init,
+        prev.x_offt, prev.y_offt, x_offt, y_offt,
+        prev.px, prev.py, prev.pz,
+        Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
+    )
+    ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
+                             const.m, const.q, px, py, pz, virt_params)
+    Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
+                                           Ex_avg, Ey_avg, Bx_avg, By_avg,
+                                           beam_ro, ro, jx, jy, jz,
+                                           prev.jx, prev.jy)
+    Ez = calculate_Ez(config, jx, jy)
+    # Bz = 0 for now
+    Ex_avg = (Ex + prev.Ex) / 2
+    Ey_avg = (Ey + prev.Ey) / 2
+    Ez_avg = (Ez + prev.Ez) / 2
+    Bx_avg = (Bx + prev.Bx) / 2
+    By_avg = (By + prev.By) / 2
 
-        Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
+    x_offt, y_offt, px, py, pz = move_smart(
+        config, const.m, const.q, const.x_init, const.y_init,
+        prev.x_offt, prev.y_offt, x_offt, y_offt,
+        prev.px, prev.py, prev.pz,
+        Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
+    )
+    ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
+                             const.m, const.q, px, py, pz, virt_params)
 
-        # TODO: use regular pusher?
-        x_offt, y_offt = move_estimate_wo_fields(
-            config,
-            const.m, const.x_init, const.y_init, prev.x_offt, prev.y_offt,
-            prev.px, prev.py, prev.pz
-        )
+    # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
-        x_offt, y_offt, px, py, pz = move_smart(
-            config, const.m, const.q, const.x_init, const.y_init,
-            prev.x_offt, prev.y_offt, x_offt, y_offt,
-            prev.px, prev.py, prev.pz,
-            # no halfstep-averaged fields yet
-            prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
-        )
-        ro, jx, jy, jz = deposit(
-            config, const.ro_initial,
-            x_offt, y_offt, const.m, const.q, px, py, pz,
-            virt_params
-        )
+    new_state = GPUArrays(x_offt=x_offt, y_offt=y_offt, px=px, py=py, pz=pz,
+                          Ex=Ex.copy(), Ey=Ey.copy(), Ez=Ez.copy(),
+                          Bx=Bx.copy(), By=By.copy(), Bz=Bz.copy(),
+                          ro=ro, jx=jx, jy=jy, jz=jz)
 
-        Ex, Ey, Bx, By = \
-            calculate_Ex_Ey_Bx_By(config, prev.Ex, prev.Ey, prev.Bx, prev.By,
-                                  # no halfstep-averaged fields yet
-                                  beam_ro, ro, jx, jy, jz, prev.jx, prev.jy
-        )
-        Ez = calculate_Ez(config, jx, jy)
-        # Bz = 0 for now
-        Ex_avg = (Ex + prev.Ex) / 2
-        Ey_avg = (Ey + prev.Ey) / 2
-        Ez_avg = (Ez + prev.Ez) / 2
-        Bx_avg = (Bx + prev.Bx) / 2
-        By_avg = (By + prev.By) / 2
+    return new_state
 
-        x_offt, y_offt, px, py, pz = move_smart(
-            config, const.m, const.q, const.x_init, const.y_init,
-            prev.x_offt, prev.y_offt, x_offt, y_offt,
-            prev.px, prev.py, prev.pz,
-            Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
-        )
-        ro, jx, jy, jz = deposit(
-            config, const.ro_initial,
-            x_offt, y_offt, const.m, const.q, px, py, pz,
-            virt_params,
-        )
-        Ex, Ey, Bx, By = \
-            calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
-                                  beam_ro, ro, jx, jy, jz, prev.jx, prev.jy
-        )
-        Ez = calculate_Ez(config, jx, jy)
-        # Bz = 0 for now
-        Ex_avg = (Ex + prev.Ex) / 2
-        Ey_avg = (Ey + prev.Ey) / 2
-        Ez_avg = (Ez + prev.Ez) / 2
-        Bx_avg = (Bx + prev.Bx) / 2
-        By_avg = (By + prev.By) / 2
 
-        x_offt, y_offt, px, py, pz = move_smart(
-            config, const.m, const.q, const.x_init, const.y_init,
-            prev.x_offt, prev.y_offt, x_offt, y_offt,
-            prev.px, prev.py, prev.pz,
-            Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
-        )
-        ro, jx, jy, jz = deposit(
-            config, const.ro_initial,
-            x_offt, y_offt, const.m, const.q, px, py, pz,
-            virt_params
-        )
+def initial_deposition(config, x_offt, y_offt, px, py, pz, m, q, virt_params):
+    # Don't allow initial speeds for calculations with background ions
+    assert all([np.array_equiv(p, 0) for p in [px, py, pz]])
 
-        # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
-
-        new_state = GPUArrays(x_offt=x_offt, y_offt=y_offt,
-                              px=px, py=py, pz=pz,
-                              Ex=Ex.copy(), Ey=Ey.copy(), Ez=Ez.copy(),
-                              Bx=Bx.copy(), By=By.copy(), Bz=Bz.copy(),
-                              ro=ro, jx=jx, jy=jy, jz=jz)
-
-        return new_state
+    ro_electrons_initial, _, _, _ = deposit(config, 0, x_offt, y_offt,
+                                            m, q, px, py, pz, virt_params)
+    return -ro_electrons_initial  # Right on the GPU, huh
 
 
 def make_coarse_plasma_grid(steps, step_size, coarseness):
@@ -726,6 +700,12 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
 
 
 def init(config):
+    assert config.grid_steps % 2 == 1
+
+    # virtual particles should not reach the window pre-boundary cells
+    assert config.reflect_padding_steps > config.plasma_coarseness + 1
+    # the (costly) alternative is to reflect after plasma virtualization
+
     config.reflect_boundary = config.grid_step_size * (
         config.grid_steps / 2 - config.reflect_padding_steps
     )
@@ -740,9 +720,8 @@ def init(config):
                     coarseness=config.plasma_coarseness,
                     fineness=config.plasma_fineness)
 
-    gpu = GPUMonolith(config)
-    ro_initial = gpu.initial_deposition(config, x_offt, y_offt,
-                                        px, py, pz, m, q, virt_params)
+    ro_initial = initial_deposition(config, x_offt, y_offt,
+                                    px, py, pz, m, q, virt_params)
 
     const = GPUArrays(m=m, q=q, x_init=x_init, y_init=y_init,
                       ro_initial=ro_initial)
@@ -755,19 +734,19 @@ def init(config):
                       Bx=zeros(), By=zeros(), Bz=zeros(),
                       ro=zeros(), jx=zeros(), jy=zeros(), jz=zeros())
 
-    return gpu, xs, ys, const, virt_params, state
+    return xs, ys, const, virt_params, state
 
 
 # TODO: fold init, load, initial_deposition into GPUMonolith.__init__?
 def main():
     import config
-    gpu, xs, ys, const, virt_params, state = init(config)
+    xs, ys, const, virt_params, state = init(config)
     Ez_00_history = []
 
     for xi_i in range(config.xi_steps):
         beam_ro = config.beam(xi_i, xs, ys)
 
-        state = gpu.step(config, const, virt_params, state, beam_ro)
+        state = step(config, const, virt_params, state, beam_ro)
         view_state = GPUArraysView(state)
 
         Ez_00 = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]

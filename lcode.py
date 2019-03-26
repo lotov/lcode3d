@@ -140,18 +140,17 @@ def dx_dy(arr, h2):
     return dx / h2, dy / h2
 
 
-def calculate_RHS_Ex_Ey_Bx_By(grid_step_size, xi_step_size,
-                              subtraction_trick,
-                              Ex_avg, Ey_avg, Bx_avg, By_avg,
+def calculate_RHS_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
                               beam_ro, ro, jx, jy, jz, jx_prev, jy_prev):
-    h2 = grid_step_size * 2
+    h2 = config.grid_step_size * 2
 
     # NOTE: use gradient instead if available (cupy doesn't have gradient)
     dro_dx, dro_dy = dx_dy(ro + beam_ro, h2)
     djz_dx, djz_dy = dx_dy(jz + beam_ro, h2)
-    djx_dxi = (jx_prev - jx) / xi_step_size               # - ?
-    djy_dxi = (jy_prev - jy) / xi_step_size               # - ?
+    djx_dxi = (jx_prev - jx) / config.xi_step_size               # - ?
+    djy_dxi = (jy_prev - jy) / config.xi_step_size               # - ?
 
+    subtraction_trick = config.field_solver_subtraction_trick
     Ex_rhs = -((dro_dx - djx_dxi) - Ex_avg * subtraction_trick)
     Ey_rhs = -((dro_dy - djy_dxi) - Ey_avg * subtraction_trick)
     Bx_rhs = +((djz_dy - djy_dxi) + Bx_avg * subtraction_trick)
@@ -300,13 +299,10 @@ class MixedSolver:
         return self._Ex, self._Ey, self._Bx, self._By
 
 
-def calculate_Ex_Ey_Bx_By(grid_step_size, xi_step_size, subtraction_trick,
-                          mixed_solver, Ex_avg, Ey_avg, Bx_avg, By_avg,
+def calculate_Ex_Ey_Bx_By(config, mixed_solver, Ex_avg, Ey_avg, Bx_avg, By_avg,
                           beam_ro, ro, jx, jy, jz, jx_prev, jy_prev):
     Ex_rhs, Ey_rhs, Bx_rhs, By_rhs = \
-        calculate_RHS_Ex_Ey_Bx_By(grid_step_size, xi_step_size,
-                                  subtraction_trick,
-                                  Ex_avg, Ey_avg, Bx_avg, By_avg,
+        calculate_RHS_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
                                   beam_ro, ro, jx, jy, jz, jx_prev, jy_prev)
     return mixed_solver.solve(Ex_rhs, Ey_rhs, Bx_rhs, By_rhs)
 
@@ -314,15 +310,16 @@ def calculate_Ex_Ey_Bx_By(grid_step_size, xi_step_size, subtraction_trick,
 ### Unsorted
 
 
-def move_estimate_wo_fields(xi_step_size, reflect,
+def move_estimate_wo_fields(config,
                             m, x_init, y_init, prev_x_offt, prev_y_offt,
                             px, py, pz):
     x, y = x_init + prev_x_offt, y_init + prev_y_offt
     gamma_m = cp.sqrt(m**2 + pz**2 + px**2 + py**2)
 
-    x += px / (gamma_m - pz) * xi_step_size
-    y += py / (gamma_m - pz) * xi_step_size
+    x += px / (gamma_m - pz) * config.xi_step_size
+    y += py / (gamma_m - pz) * config.xi_step_size
 
+    reflect = config.reflect_boundary
     x[x >= +reflect] = +2 * reflect - x[x >= +reflect]
     x[x <= -reflect] = -2 * reflect - x[x <= -reflect]
     y[y >= +reflect] = +2 * reflect - y[y >= +reflect]
@@ -432,20 +429,17 @@ def deposit_kernel(grid_steps, grid_step_size,
     deposit9(out_jz, i, j, djz, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
 
 
-def deposit(config, ro_initial,
-            grid_steps, grid_step_size,
-            x_offt_new, y_offt_new,
-            m, q, px_new, py_new, pz_new,
-            virt_params):
+def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
     virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                        config.plasma_fineness)**2
-    ro = cp.zeros((grid_steps, grid_steps))
-    jx = cp.zeros((grid_steps, grid_steps))
-    jy = cp.zeros((grid_steps, grid_steps))
-    jz = cp.zeros((grid_steps, grid_steps))
+    ro = cp.zeros((config.grid_steps, config.grid_steps))
+    jx = cp.zeros((config.grid_steps, config.grid_steps))
+    jy = cp.zeros((config.grid_steps, config.grid_steps))
+    jz = cp.zeros((config.grid_steps, config.grid_steps))
     cfg = int(np.ceil(virt_params.A_weights.size / WARP_SIZE)), WARP_SIZE
-    deposit_kernel[cfg](grid_steps, grid_step_size, virt_params.fine_grid,
-                        x_offt_new, y_offt_new, m, q, px_new, py_new, pz_new,
+    deposit_kernel[cfg](config.grid_steps, config.grid_step_size,
+                        virt_params.fine_grid,
+                        x_offt, y_offt, m, q, px, py, pz,
                         virt_params.A_weights, virt_params.B_weights,
                         virt_params.C_weights, virt_params.D_weights,
                         virt_params.indices_prev, virt_params.indices_next,
@@ -535,7 +529,7 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
     new_px[k], new_py[k], new_pz[k] = px, py, pz
 
 
-def move_smart(xi_step_size, reflect_boundary, grid_step_size, grid_steps,
+def move_smart(config,
                m, q, x_init, y_init, x_prev_offt, y_prev_offt,
                estimated_x_offt, estimated_y_offt, px_prev, py_prev, pz_prev,
                Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg):
@@ -545,8 +539,8 @@ def move_smart(xi_step_size, reflect_boundary, grid_step_size, grid_steps,
     py_new = cp.zeros_like(py_prev)
     pz_new = cp.zeros_like(pz_prev)
     cfg = int(np.ceil(x_init.size / WARP_SIZE)), WARP_SIZE
-    move_smart_kernel[cfg](xi_step_size, reflect_boundary,
-                           grid_step_size, grid_steps,
+    move_smart_kernel[cfg](config.xi_step_size, config.reflect_boundary,
+                           config.grid_step_size, config.grid_steps,
                            m.ravel(), q.ravel(),
                            x_init.ravel(), y_init.ravel(),
                            x_prev_offt.ravel(), y_prev_offt.ravel(),
@@ -594,19 +588,13 @@ class GPUMonolith:
         assert config.reflect_padding_steps > config.plasma_coarseness + 1
         # the alternative is to reflect after plasma virtualization
 
-        self.grid_steps = N = config.grid_steps
-        assert self.grid_steps % 2 == 1
-        self.xi_step_size = config.xi_step_size
-        #self.grid_step_size = config.window_width / (config.grid_steps - 1)
-        self.grid_step_size = config.grid_step_size
-        self.subtraction_trick = config.field_solver_subtraction_trick
-        self.reflect_boundary = self.grid_step_size * (
-            config.grid_steps / 2 - config.reflect_padding_steps
-        )
+        assert config.grid_steps % 2 == 1
 
-        self.mixed_solver = MixedSolver(N, self.grid_step_size, self.subtraction_trick)
-        self.dirichlet_solver = DirichletSolver(N, self.grid_step_size)
-
+        self.mixed_solver = MixedSolver(config.grid_steps,
+                                        config.grid_step_size,
+                                        config.field_solver_subtraction_trick)
+        self.dirichlet_solver = DirichletSolver(config.grid_steps,
+                                                config.grid_step_size)
 
     def initial_deposition(self, config, pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q, virt_params):
@@ -615,9 +603,9 @@ class GPUMonolith:
         assert np.array_equiv(pl_py, 0)
         assert np.array_equiv(pl_pz, 0)
 
-        ro_initial = cp.zeros((self.grid_steps, self.grid_steps))
+        ro_initial = cp.zeros((config.grid_steps, config.grid_steps))
         ro_electrons_initial, _, _, _ = deposit(
-            config, ro_initial, self.grid_steps, self.grid_step_size,
+            config, ro_initial,
             pl_x_offt, pl_y_offt, pl_m, pl_q, pl_px, pl_py, pl_pz,
             virt_params)
 
@@ -632,34 +620,31 @@ class GPUMonolith:
 
         # TODO: use regular pusher?
         x_offt, y_offt = move_estimate_wo_fields(
-            self.xi_step_size, self.reflect_boundary,
+            config,
             const.m, const.x_init, const.y_init, prev.x_offt, prev.y_offt,
             prev.px, prev.py, prev.pz
         )
 
         x_offt, y_offt, px, py, pz = move_smart(
-            self.xi_step_size, self.reflect_boundary,
-            self.grid_step_size, self.grid_steps,
-            const.m, const.q, const.x_init, const.y_init,
+            config, const.m, const.q, const.x_init, const.y_init,
             prev.x_offt, prev.y_offt, x_offt, y_offt,
             prev.px, prev.py, prev.pz,
             # no halfstep-averaged fields yet
             prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            config, const.ro_initial, self.grid_steps, self.grid_step_size,
+            config, const.ro_initial,
             x_offt, y_offt, const.m, const.q, px, py, pz,
             virt_params
         )
 
         Ex, Ey, Bx, By = \
-            calculate_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
-                                  self.subtraction_trick, self.mixed_solver,
-                                  # no halfstep-averaged fields yet
+            calculate_Ex_Ey_Bx_By(config, self.mixed_solver,
                                   prev.Ex, prev.Ey, prev.Bx, prev.By,
-                                  beam_ro, ro, jx, jy, jz, prev.jx, prev.jy)
-        Ez = calculate_Ez(self.dirichlet_solver,
-                          self.grid_step_size, jx, jy)
+                                  # no halfstep-averaged fields yet
+                                  beam_ro, ro, jx, jy, jz, prev.jx, prev.jy
+        )
+        Ez = calculate_Ez(self.dirichlet_solver, config.grid_step_size, jx, jy)
         # Bz = 0 for now
         Ex_avg = (Ex + prev.Ex) / 2
         Ey_avg = (Ey + prev.Ey) / 2
@@ -668,24 +653,23 @@ class GPUMonolith:
         By_avg = (By + prev.By) / 2
 
         x_offt, y_offt, px, py, pz = move_smart(
-            self.xi_step_size, self.reflect_boundary,
-            self.grid_step_size, self.grid_steps,
-            const.m, const.q, const.x_init, const.y_init,
+            config, const.m, const.q, const.x_init, const.y_init,
             prev.x_offt, prev.y_offt, x_offt, y_offt,
             prev.px, prev.py, prev.pz,
             Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            config, const.ro_initial, self.grid_steps, self.grid_step_size,
+            config, const.ro_initial,
             x_offt, y_offt, const.m, const.q, px, py, pz,
             virt_params,
         )
         Ex, Ey, Bx, By = \
-            calculate_Ex_Ey_Bx_By(self.grid_step_size, self.xi_step_size,
-                                  self.subtraction_trick, self.mixed_solver,
+            calculate_Ex_Ey_Bx_By(config, self.mixed_solver,
                                   Ex_avg, Ey_avg, Bx_avg, By_avg,
-                                  beam_ro, ro, jx, jy, jz, prev.jx, prev.jy)
-        Ez = calculate_Ez(self.dirichlet_solver, self.grid_step_size, jx, jy)
+
+                                  beam_ro, ro, jx, jy, jz, prev.jx, prev.jy
+        )
+        Ez = calculate_Ez(self.dirichlet_solver, config.grid_step_size, jx, jy)
         # Bz = 0 for now
         Ex_avg = (Ex + prev.Ex) / 2
         Ey_avg = (Ey + prev.Ey) / 2
@@ -694,15 +678,13 @@ class GPUMonolith:
         By_avg = (By + prev.By) / 2
 
         x_offt, y_offt, px, py, pz = move_smart(
-            self.xi_step_size, self.reflect_boundary,
-            self.grid_step_size, self.grid_steps,
-            const.m, const.q, const.x_init, const.y_init,
+            config, const.m, const.q, const.x_init, const.y_init,
             prev.x_offt, prev.y_offt, x_offt, y_offt,
             prev.px, prev.py, prev.pz,
             Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
         )
         ro, jx, jy, jz = deposit(
-            config, const.ro_initial, self.grid_steps, self.grid_step_size,
+            config, const.ro_initial,
             x_offt, y_offt, const.m, const.q, px, py, pz,
             virt_params
         )
@@ -890,6 +872,10 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
 
 
 def init(config):
+    config.reflect_boundary = config.grid_step_size * (
+        config.grid_steps / 2 - config.reflect_padding_steps
+    )
+
     grid = ((np.arange(config.grid_steps) - config.grid_steps // 2)
             * config.grid_step_size)
     xs, ys = grid[:, None], grid[None, :]

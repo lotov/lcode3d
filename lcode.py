@@ -373,52 +373,52 @@ def deposit9(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     numba.cuda.atomic.add(a, (i + 1, j - 1), val * wPM)
 
 
+@numba.jit(inline=True)
+def mix(coarse, A, B, C, D, pi, ni, pj, nj):
+    return (A * coarse[pi, pj] + B * coarse[pi, nj] +
+            C * coarse[ni, pj] + D * coarse[ni, nj])
+    #return (infl_prev[fi] * (infl_prev[fj] * coarse[pi, pj] +
+    #                              infl_next[fj] * coarse[pi, nj]) +
+    #        infl_next[fi] * (infl_prev[fj] * coarse[ni, pj] +
+    #                              infl_next[fj] * coarse[ni, nj]))
+
+
 @numba.cuda.jit
-def deposit_kernel(grid_steps, grid_step_size,
-                   fine_grid, c_x_offt, c_y_offt,
-                   c_m, c_q, c_p_x, c_p_y, c_p_z,  # coarse
-                   A_weights, B_weights, C_weights, D_weights,
-                   indices_prev, indices_next, virtplasma_smallness_factor,
+def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
+                   c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,  # coarse
+                   fine_grid,
+                   influence_prev, influence_next, indices_prev, indices_next,
                    out_ro, out_jx, out_jy, out_jz):
-    pk = numba.cuda.grid(1)
-    if pk >= A_weights.size:
+    fk = numba.cuda.grid(1)
+    if fk >= fine_grid.size**2:
         return
-    pi, pj = pk // A_weights.shape[0], pk % A_weights.shape[0]
+    fi, fj = fk // fine_grid.size, fk % fine_grid.size
 
-    px, nx = indices_prev[pi], indices_next[pi]
-    py, ny = indices_prev[pj], indices_next[pj]
+    A = influence_prev[fi] * influence_prev[fj]
+    B = influence_prev[fi] * influence_next[fj]
+    C = influence_next[fi] * influence_prev[fj]
+    D = influence_next[fi] * influence_next[fj]
+    pi, ni = indices_prev[fi], indices_next[fi]
+    pj, nj = indices_prev[fj], indices_next[fj]
 
-    A = A_weights[pi, pj]
-    B = B_weights[pi, pj]
-    C = C_weights[pi, pj]
-    D = D_weights[pi, pj]
+    x_offt = mix(c_x_offt, A, B, C, D, pi, ni, pj, nj)
+    y_offt = mix(c_y_offt, A, B, C, D, pi, ni, pj, nj)
+    x = fine_grid[fi] + x_offt  # x_fine_init
+    y = fine_grid[fj] + y_offt  # y_fine_init
 
-    # TODO: make a mixing function
-    x_offt = (A * c_x_offt[px, py] + B * c_x_offt[nx, py] +
-              C * c_x_offt[px, ny] + D * c_x_offt[nx, ny])
-    y_offt = (A * c_y_offt[px, py] + B * c_y_offt[nx, py] +
-              C * c_y_offt[px, ny] + D * c_y_offt[nx, ny])
-    x = fine_grid[pi] + x_offt  # x_fine_init
-    y = fine_grid[pj] + y_offt  # y_fine_init
-    m = A * c_m[px, py] + B * c_m[nx, py] + C * c_m[px, ny] + D * c_m[nx, ny]
-    q = A * c_q[px, py] + B * c_q[nx, py] + C * c_q[px, ny] + D * c_q[nx, ny]
-    p_x = (A * c_p_x[px, py] + B * c_p_x[nx, py] +
-           C * c_p_x[px, ny] + D * c_p_x[nx, ny])
-    p_y = (A * c_p_y[px, py] + B * c_p_y[nx, py] +
-           C * c_p_y[px, ny] + D * c_p_y[nx, ny])
-    p_z = (A * c_p_z[px, py] + B * c_p_z[nx, py] +
-           C * c_p_z[px, ny] + D * c_p_z[nx, ny])
-    m *= virtplasma_smallness_factor
-    q *= virtplasma_smallness_factor
-    p_x *= virtplasma_smallness_factor
-    p_y *= virtplasma_smallness_factor
-    p_z *= virtplasma_smallness_factor
+    # TODO: const m and q
+    m = virtplasma_smallness_factor * mix(c_m, A, B, C, D, pi, ni, pj, nj)
+    q = virtplasma_smallness_factor * mix(c_q, A, B, C, D, pi, ni, pj, nj)
 
-    gamma_m = sqrt(m**2 + p_x**2 + p_y**2 + p_z**2)
-    dro = q / (1 - p_z / gamma_m)
-    djx = p_x * (dro / gamma_m)
-    djy = p_y * (dro / gamma_m)
-    djz = p_z * (dro / gamma_m)
+    px = virtplasma_smallness_factor * mix(c_px, A, B, C, D, pi, ni, pj, nj)
+    py = virtplasma_smallness_factor * mix(c_py, A, B, C, D, pi, ni, pj, nj)
+    pz = virtplasma_smallness_factor * mix(c_pz, A, B, C, D, pi, ni, pj, nj)
+
+    gamma_m = sqrt(m**2 + px**2 + py**2 + pz**2)
+    dro = q / (1 - pz / gamma_m)
+    djx = px * (dro / gamma_m)
+    djy = py * (dro / gamma_m)
+    djz = pz * (dro / gamma_m)
 
     i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
         x, y, grid_steps, grid_step_size
@@ -436,14 +436,13 @@ def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
     jx = cp.zeros((config.grid_steps, config.grid_steps))
     jy = cp.zeros((config.grid_steps, config.grid_steps))
     jz = cp.zeros((config.grid_steps, config.grid_steps))
-    cfg = int(np.ceil(virt_params.A_weights.size / WARP_SIZE)), WARP_SIZE
+    cfg = int(np.ceil(virt_params.fine_grid.size**2 / WARP_SIZE)), WARP_SIZE
     deposit_kernel[cfg](config.grid_steps, config.grid_step_size,
-                        virt_params.fine_grid,
-                        x_offt, y_offt, m, q, px, py, pz,
-                        virt_params.A_weights, virt_params.B_weights,
-                        virt_params.C_weights, virt_params.D_weights,
-                        virt_params.indices_prev, virt_params.indices_next,
                         virtplasma_smallness_factor,
+                        x_offt, y_offt, m, q, px, py, pz,
+                        virt_params.fine_grid,
+                        virt_params.influence_prev, virt_params.influence_next,
+                        virt_params.indices_prev, virt_params.indices_next,
                         ro, jx, jy, jz)
     ro += ro_initial  # Do it last to preserve more float precision
     numba.cuda.synchronize()
@@ -741,11 +740,10 @@ def plasma_make(steps, cell_size, coarseness=2, fineness=2):
     coarse_grid_xs, coarse_grid_ys = coarse_grid[:, None], coarse_grid[None, :]
 
     fine_grid = make_fine_plasma_grid(steps, cell_size, fineness)
-    fine_grid_xs, fine_grid_ys = fine_grid[:, None], fine_grid[None, :]
 
     Nc = len(coarse_grid)
 
-    # Create plasma particles on that grids
+    # Create plasma particles on the coarse grid, the ones that really move
     coarse_electrons_x_init = np.broadcast_to(coarse_grid_xs, (Nc, Nc))
     coarse_electrons_y_init = np.broadcast_to(coarse_grid_ys, (Nc, Nc))
     coarse_electrons_x_offt = np.zeros((Nc, Nc))
@@ -758,62 +756,52 @@ def plasma_make(steps, cell_size, coarseness=2, fineness=2):
 
     # Calculate indices for coarse -> fine bilinear interpolation
 
-    # 1D, same in both x and y direction
-    # Example: [0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4 5 5 5 5 6 6 6]
+    # Neighbour indices array, 1D, same in both x and y direction.
     indices = np.searchsorted(coarse_grid, fine_grid)
-    indices_next = np.clip(indices, 0, Nc - 1)  # [0 0 0 0 0 0 0 0 1 1 ...]
-    indices_prev = np.clip(indices - 1, 0, Nc - 1)  # [... 4 5 5 5 5 5 5 5]
+    # example:
+    #     coarse:  [-2., -1.,  0.,  1.,  2.]
+    #     fine:    [-2.4, -1.8, -1.2, -0.6,  0. ,  0.6,  1.2,  1.8,  2.4]
+    #     indices: [ 0  ,  1  ,  1  ,  2  ,  2  ,  3  ,  4  ,  4  ,  5 ]
+    # There is no coarse particle with index 5, so we clip it to 4:
+    indices_next = np.clip(indices, 0, Nc - 1)  # [0, 1, 1, 2, 2, 3, 4, 4, 4]
+    # Clip to zero for indices of prev particles as well:
+    indices_prev = np.clip(indices - 1, 0, Nc - 1)  # [0, 0, 0, 1 ... 3, 3, 4]
+    # mixed from: [ 0&0 , 0&1 , 0&1 , 1&2 , 1&2 , 2&3 , 3&4 , 3&4, 4&4 ]
 
-    # 2D
-    i_prev_in_x, i_next_in_x = indices_prev[:, None], indices_next[:, None]
-    i_prev_in_y, i_next_in_y = indices_prev[None, :], indices_next[None, :]
-
-    # Calculate weights for coarse -> fine interpolation from initial positions
-
-    # 1D linear interpolation coefficients in 2 directions
+    # Calculate weights for coarse->fine interpolation from initial positions.
     # The further the fine particle is from closest right coarse particles,
     # the more influence the left ones have.
-    influence_prev_x = (coarse_grid[i_next_in_x] - fine_grid_xs) / coarse_step
-    influence_next_x = (fine_grid_xs - coarse_grid[i_prev_in_x]) / coarse_step
-    influence_prev_y = (coarse_grid[i_next_in_y] - fine_grid_ys) / coarse_step
-    influence_next_y = (fine_grid_ys - coarse_grid[i_prev_in_y]) / coarse_step
+    influence_prev = (coarse_grid[indices_next] - fine_grid) / coarse_step
+    influence_next = (fine_grid - coarse_grid[indices_prev]) / coarse_step
+    # Fix for boundary cases of missing cornering particles.
+    influence_prev[indices_next == 0] = 0   # nothing on the left?
+    influence_next[indices_next == 0] = 1   # use right
+    influence_next[indices_prev == Nc - 1] = 0  # nothing on the right?
+    influence_prev[indices_prev == Nc - 1] = 1  # use left
+    # Same arrays are used for interpolating in y-direction.
 
-    # Fix for boundary cases of missing cornering particles
-    influence_prev_x[fine_grid_xs <= coarse_grid[0]] = 0   # nothing on left?
-    influence_next_x[fine_grid_xs <= coarse_grid[0]] = 1   # use right
-    influence_next_x[fine_grid_xs >= coarse_grid[-1]] = 0  # nothing on right?
-    influence_prev_x[fine_grid_xs >= coarse_grid[-1]] = 1  # use left
-    influence_prev_y[fine_grid_ys <= coarse_grid[0]] = 0   # nothing on bottom?
-    influence_next_y[fine_grid_ys <= coarse_grid[0]] = 1   # use top
-    influence_next_y[fine_grid_ys >= coarse_grid[-1]] = 0  # nothing on top?
-    influence_prev_y[fine_grid_ys >= coarse_grid[-1]] = 1  # use bottom
 
-    # Calculate 2D bilinear interpolation coefficients for four initially
-    # cornering coarse plasma particles.
+    # The virtualization formula is thus
+    # influence_prev[pi] * influence_prev[pj] * <bottom-left neighbour value> +
+    # influence_prev[pi] * influence_next[nj] * <top-left neighbour value> +
+    # influence_next[ni] * influence_prev[pj] * <bottom-right neighbour val> +
+    # influence_next[ni] * influence_next[nj] * <top-right neighbour value>
+    # where pi, pj are indices_prev[i], indices_prev[j],
+    #       ni, nj are indices_next[i], indices_next[j] and
+    #       i, j are indices of fine virtual particles
 
-    #  C    D  #  y ^
-    #     .    #    |
-    #          #    +---->
-    #  A    B  #         x
+    # An equivalent formula would be
+    # inf_prev[pi] * (inf_prev[pj] * <bot-left> + inf_next[nj] * <bot-right>) +
+    # inf_next[ni] * (inf_prev[pj] * <top-left> + inf_next[nj] * <top-right>)
 
-    # TODO: get rid of ABCD and go for influence_prev/next?
+    # Values of m, q, px, py, pz should be scaled by 1/(fineness*coarseness)**2
 
-    # A is coarse_plasma[i_prev_in_x, i_prev_in_y], the closest coarse particle
-    # in bottom-left quadrant (for each fine particle)
     virt_params = GPUArrays(
-        A_weights=influence_prev_x * influence_prev_y,
-        # B is coarse_plasma[i_next_in_x, i_prev_in_y], same for lower right
-        B_weights=influence_next_x * influence_prev_y,
-        # C is coarse_plasma[i_prev_in_x, i_next_in_y], same for upper left
-        C_weights=influence_prev_x * influence_next_y,
-        # D is coarse_plasma[i_next_in_x, i_next_in_y], same for upper right
-        D_weights=influence_next_x * influence_next_y,
+        influence_prev=influence_prev, influence_next=influence_next,
+        indices_prev=indices_prev, indices_next=indices_next,
         fine_grid=fine_grid,
-        indices_prev=indices_prev,
-        indices_next=indices_next
     )
 
-    # TODO: decide on a flat-or-square plasma
     return (coarse_electrons_x_init, coarse_electrons_y_init,
             coarse_electrons_x_offt, coarse_electrons_y_offt,
             coarse_electrons_px, coarse_electrons_py, coarse_electrons_pz,

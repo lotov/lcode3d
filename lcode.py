@@ -78,14 +78,14 @@ def dirichlet_matrix(grid_steps, grid_step_size):
     # but offset by 1, 1, as mul only covers the inner part of the window
     k = cp.arange(1, grid_steps - 1)
     lam = 4 / grid_step_size**2 * cp.sin(k * cp.pi / (2 * (grid_steps - 1)))**2
-    lam_i, lam_j = lam[:, None], lam[None, :]
-    mul = 1 / (lam_i + lam_j)
+    lambda_i, lambda_j = lam[:, None], lam[None, :]
+    mul = 1 / (lambda_i + lambda_j)
     return mul / (2 * (grid_steps - 1))**2  # additional 2xDST normalization
 
 
 def calculate_Ez(config, jx, jy):
     # 0. Calculate RHS (NOTE: it is smaller by 1 on each side).
-    # NOTE: use gradient instead if available (cupy doesn't have gradient)
+    # NOTE: use gradient instead if available (cupy doesn't have gradient yet).
     djx_dx = jx[2:, 1:-1] - jx[:-2, 1:-1]
     djy_dy = jy[1:-1, 2:] - jy[1:-1, :-2]
     rhs_inner = -(djx_dx + djy_dy) / (config.grid_step_size * 2)  # -?
@@ -109,182 +109,82 @@ def calculate_Ez(config, jx, jy):
 
 
 ### Solving Laplace or Helmholtz equation with mixed boundary conditions
-# TODO: do not prettify too much, replace with DCT-2D instead
 
 
-def dx_dy(arr, h2):
-    # NOTE: use gradient instead if available (cupy doesn't have gradient)
+def mix2d(a):
+    # DST-DCT-hybrid, jury-rigged from padded rFFT
+    M, N = a.shape
+    #                                  / 0  1  2  0 -2 -1 \      +----> x
+    #  / 1  2 \                       |  0  3  4  0 -4 -3  |     |     (M)
+    #  | 3  4 |  mixed-symmetrically  |  0  5  6  0 -6 -5  |     |
+    #  | 5  6 |       padded to       |  0  7  8  0 -8 -7  |     v
+    #  \ 7  8 /                       |  0 +5 +6  0 -6 -5  |
+    #                                  \ 0 +3 +4  0 -4 -3 /      y (N)
+    p = cp.zeros((2 * M + 2, 2 * N - 2))  # wider than before
+    p[1:M+1, :N] = a
+    p[M+2:2*M+2, :N] = -cp.flipud(a)  # flip to right on drawing above
+    p[1:M+1, N-1:2*N-2] = cp.fliplr(a)[:, :-1]  # flip down on drawing above
+    p[M+2:2*M+2, N-1:2*N-2] = -cp.flipud(cp.fliplr(a))[:, :-1]
+    return -cp.fft.rfft2(p)[:M+2, :N].imag  # FFT, cut, -Im
+
+
+@cp.memoize()
+def mixed_matrix(grid_steps, grid_step_size, subtraction_trick):
+    # Samarskiy-Nikolaev, p. 189 and around
+    # mul[i, j] = 1 / (lam[i] + lam[j])
+    # lam[k] = 4 / h**2 * sin(k * pi * h / (2 * L))**2, where L = h * (N - 1)
+    # but k for lam_i spans from 1..N-2, while k for lam_j covers 0..N-1
+    ki, kj = cp.arange(1, grid_steps - 1), cp.arange(grid_steps)
+    li = 4 / grid_step_size**2 * cp.sin(ki * cp.pi / (2 * (grid_steps - 1)))**2
+    lj = 4 / grid_step_size**2 * cp.sin(kj * cp.pi / (2 * (grid_steps - 1)))**2
+    lambda_i, lambda_j = li[:, None], lj[None, :]
+    mul = 1 / (lambda_i + lambda_j + (1 if subtraction_trick else 0))
+    return mul / (2 * (grid_steps - 1))**2  # additional 2xDST normalization
+
+
+def dx_dy(arr, grid_step_size):
+    # NOTE: use gradient instead if available (cupy doesn't have gradient yet).
     dx, dy = cp.zeros_like(arr), cp.zeros_like(arr)
     dx[1:-1, 1:-1] = arr[2:, 1:-1] - arr[:-2, 1:-1]  # we have 0s
     dy[1:-1, 1:-1] = arr[1:-1, 2:] - arr[1:-1, :-2]  # on the perimeter
-    return dx / h2, dy / h2
+    return dx / (grid_step_size * 2), dy / (grid_step_size * 2)
 
 
-def calculate_RHS_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
-                              beam_ro, ro, jx, jy, jz, jx_prev, jy_prev):
-    h2 = config.grid_step_size * 2
-
-    # NOTE: use gradient instead if available (cupy doesn't have gradient)
-    dro_dx, dro_dy = dx_dy(ro + beam_ro, h2)
-    djz_dx, djz_dy = dx_dy(jz + beam_ro, h2)
-    djx_dxi = (jx_prev - jx) / config.xi_step_size               # - ?
-    djy_dxi = (jy_prev - jy) / config.xi_step_size               # - ?
+def calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
+                          beam_ro, ro, jx, jy, jz, jx_prev, jy_prev):
+    # 0. Calculate gradients and RHS.
+    dro_dx, dro_dy = dx_dy(ro + beam_ro, config.grid_step_size)
+    djz_dx, djz_dy = dx_dy(jz + beam_ro, config.grid_step_size)
+    djx_dxi = (jx_prev - jx) / config.xi_step_size  # - ?
+    djy_dxi = (jy_prev - jy) / config.xi_step_size  # - ?
 
     subtraction_trick = config.field_solver_subtraction_trick
-    Ex_rhs = -((dro_dx - djx_dxi) - Ex_avg * subtraction_trick)
+    Ex_rhs = -((dro_dx - djx_dxi) - Ex_avg * subtraction_trick)  # -?
     Ey_rhs = -((dro_dy - djy_dxi) - Ey_avg * subtraction_trick)
     Bx_rhs = +((djz_dy - djy_dxi) + Bx_avg * subtraction_trick)
     By_rhs = -((djz_dx - djx_dxi) - By_avg * subtraction_trick)
 
-    return Ex_rhs, Ey_rhs, Bx_rhs, By_rhs
+    # Boundary conditions application (for future reference, ours are zero):
+    # rhs[:, 0] -= bound_bottom[:] * (2 / grid_step_size)
+    # rhs[:, -1] += bound_top[:] * (2 / grid_step_size)
 
+    # 1. Apply our mixed DCT-DST transform to RHS.
+    Ey_f = mix2d(Ey_rhs[1:-1, :])[1:-1, :]
 
-@numba.cuda.jit
-def mid_dct_transform(Ex_dct1_out, Ex_dct2_in,
-                      Ey_dct1_out, Ey_dct2_in,
-                      Bx_dct1_out, Bx_dct2_in,
-                      By_dct1_out, By_dct2_in,
-                      Ex_bet, Ey_bet, Bx_bet, By_bet,
-                      alf, mul):
-    N = Ex_dct1_out.shape[0]
-    index = numba.cuda.grid(1)
-    stride = numba.cuda.blockDim.x * numba.cuda.gridDim.x
+    # 2. Multiply f by the magic matrix.
+    mix_mat = mixed_matrix(config.grid_steps, config.grid_step_size,
+                           config.field_solver_subtraction_trick)
+    Ey_f *= mix_mat
 
-    # Solve tridiagonal matrix equation for each spectral column with Thomas method:
-    # A @ tmp_2[k, :] = tmp_1[k, :]
-    # A has -1 on superdiagonal, -1 on subdiagonal and aa[k] at the main diagonal
-    # The edge elements of each column are forced to 0!
-    for i in range(index, N, stride):
-        Ex_bet[i, 0] = Ey_bet[i, 0] = Bx_bet[i, 0] = By_bet[i, 0] = 0
-        for j in range(1, N - 1):
-            # Note the transposition for dct1_out!
-            Ex_bet[i, j + 1] = (mul * Ex_dct1_out[j, i].real + Ex_bet[i, j]) * alf[i, j + 1]
-            Ey_bet[i, j + 1] = (mul * Ey_dct1_out[j, i].real + Ey_bet[i, j]) * alf[i, j + 1]
-            Bx_bet[i, j + 1] = (mul * Bx_dct1_out[j, i].real + Bx_bet[i, j]) * alf[i, j + 1]
-            By_bet[i, j + 1] = (mul * By_dct1_out[j, i].real + By_bet[i, j]) * alf[i, j + 1]
-        # Note the transposition for dct2_in!
-        # TODO: it can be set once only? Maybe we can comment that out then?
-        Ex_dct2_in[N - 1, i] = Ey_dct2_in[N - 1, i] = 0  # Note the forced zero
-        Bx_dct2_in[N - 1, i] = By_dct2_in[N - 1, i] = 0
-        for j in range(N - 2, 0 - 1, -1):
-            Ex_dct2_in[j, i] = alf[i, j + 1] * Ex_dct2_in[j + 1, i] + Ex_bet[i, j + 1]
-            Ey_dct2_in[j, i] = alf[i, j + 1] * Ey_dct2_in[j + 1, i] + Ey_bet[i, j + 1]
-            Bx_dct2_in[j, i] = alf[i, j + 1] * Bx_dct2_in[j + 1, i] + Bx_bet[i, j + 1]
-            By_dct2_in[j, i] = alf[i, j + 1] * By_dct2_in[j + 1, i] + By_bet[i, j + 1]
-            # also symmetrical-fill the array in preparation for a second DCT
-            ii = max(i, 1)  # avoid writing to dct_in[:, 2 * N - 2], w/o branching
-            Ex_dct2_in[j, 2 * N - 2 - ii] = Ex_dct2_in[j, ii]
-            Ey_dct2_in[j, 2 * N - 2 - ii] = Ey_dct2_in[j, ii]
-            Bx_dct2_in[j, 2 * N - 2 - ii] = Bx_dct2_in[j, ii]
-            By_dct2_in[j, 2 * N - 2 - ii] = By_dct2_in[j, ii]
-        # dct2_in[:, 0] == 0  # happens by itself
+    # 3. Apply our mixed DCT-DST transform again.
+    Ey = mix2d(Ey_f)
 
+    # Likewise for other fields:
+    Bx = mix2d(mix_mat * mix2d(Bx_rhs[1:-1, :])[1:-1, :])
+    By = mix2d(mix_mat * mix2d(By_rhs.T[1:-1, :])[1:-1, :]).T
+    Ex = mix2d(mix_mat * mix2d(Ex_rhs.T[1:-1, :])[1:-1, :]).T
 
-class MixedSolver:
-    def __init__(self, N, h, subtraction_trick):
-        # Arrays for mixed boundary conditions solver
-        # * diagonal matrix elements (used in the next one)
-        aa = 2 + 4 * np.sin(np.arange(0, N) * np.pi / (2 * (N - 1)))**2
-        if subtraction_trick:
-            aa += h**2 * subtraction_trick
-        alf = np.zeros((N, N + 1))
-        # * precalculated internal coefficients for tridiagonal solving
-        for i in range(1, N):
-            alf[:, i + 1] = 1 / (aa - alf[:, i])
-        self._mix_alf = cp.array(alf)
-
-        # * scratchpad arrays for mixed boundary conditions solver
-        #self.dct_plan = pyculib.fft.FFTPlan(shape=(2 * N - 2,),
-        #                                    itype=np.float64,
-        #                                    otype=np.complex128,
-        #                                    batch=(4 * N))
-        # (2 * N - 2) // 2 + 1 == (N - 1) + 1 == N
-        self._Ex = cp.zeros((N, N))
-        self._Ey = cp.zeros((N, N))
-        self._Bx = cp.zeros((N, N))
-        self._By = cp.zeros((N, N))
-        self._Ex_dct1_in = cp.zeros((N, 2 * N - 2))
-        self._Ex_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Ex_dct2_in = cp.zeros((N, 2 * N - 2))
-        self._Ex_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Ey_dct1_in = cp.zeros((N, 2 * N - 2))
-        self._Ey_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Ey_dct2_in = cp.zeros((N, 2 * N - 2))
-        self._Ey_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Bx_dct1_in = cp.zeros((N, 2 * N - 2))
-        self._Bx_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Bx_dct2_in = cp.zeros((N, 2 * N - 2))
-        self._Bx_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._By_dct1_in = cp.zeros((N, 2 * N - 2))
-        self._By_dct1_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._By_dct2_in = cp.zeros((N, 2 * N - 2))
-        self._By_dct2_out = cp.zeros((N, N), dtype=cp.complex128)
-        self._Ex_bet = cp.zeros((N, N))
-        self._Ey_bet = cp.zeros((N, N))
-        self._Bx_bet = cp.zeros((N, N))
-        self._By_bet = cp.zeros((N, N))
-
-
-        # total multiplier to compensate for the iDCT+DCT transforms
-        self.mix_mul = h**2
-        self.mix_mul /= 2 * N - 2  # don't ask
-
-        self.cfg = int(np.ceil(N / WARP_SIZE)), WARP_SIZE
-
-    def solve(self, Ex_rhs, Ey_rhs, Bx_rhs, By_rhs):
-        # 0. Symmetrically pad dct1_in to apply DCT-via-FFT later
-        N = Ex_rhs.shape[0]
-        self._Ex_dct1_in[:, :N] = Ex_rhs.T
-        self._Ey_dct1_in[:, :N] = Ey_rhs
-        self._Bx_dct1_in[:, :N] = Bx_rhs
-        self._By_dct1_in[:, :N] = By_rhs.T
-
-        self._Ex_dct1_in[:, N:] = Ex_rhs.T[:, -2:0:-1]  # [1:-1][:, ::-1]
-        self._Ey_dct1_in[:, N:] = Ey_rhs[:, -2:0:-1]
-        self._Bx_dct1_in[:, N:] = Bx_rhs[:, -2:0:-1]
-        self._By_dct1_in[:, N:] = By_rhs.T[:, -2:0:-1]
-
-        # 1. Apply iDCT-1 (Discrete Cosine Transform Type 1) to the RHS
-        # iDCT-1 is just DCT-1 in cuFFT
-        self._Ex_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Ex_dct1_in))
-        self._Ey_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Ey_dct1_in))
-        self._Bx_dct1_out[...] = cp.fft.rfft(cp.asarray(self._Bx_dct1_in))
-        self._By_dct1_out[...] = cp.fft.rfft(cp.asarray(self._By_dct1_in))
-        # This implementation of DCT is real-to-complex, so scrapping the i, j
-        # element of the transposed answer would be dct1_out[j, i].real
-
-        # 2. Solve tridiagonal matrix equation for each spectral column with Thomas method:
-        mid_dct_transform[self.cfg](self._Ex_dct1_out, self._Ex_dct2_in,
-                                    self._Ey_dct1_out, self._Ey_dct2_in,
-                                    self._Bx_dct1_out, self._Bx_dct2_in,
-                                    self._By_dct1_out, self._By_dct2_in,
-                                    self._Ex_bet, self._Ey_bet,
-                                    self._Bx_bet, self._By_bet,
-                                    self._mix_alf, self.mix_mul)
-
-        # 3. Apply DCT-1 (Discrete Cosine Transform Type 1) to the transformed spectra
-        self._Ex_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Ex_dct2_in))
-        self._Ey_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Ey_dct2_in))
-        self._Bx_dct2_out[...] = cp.fft.rfft(cp.asarray(self._Bx_dct2_in))
-        self._By_dct2_out[...] = cp.fft.rfft(cp.asarray(self._By_dct2_in))
-
-        # 4. (Unpack and sometimese transpose) the resulting fields.
-        self._Ex[...] = self._Ex_dct2_out[:, :N].real.T
-        self._Ey[...] = self._Ey_dct2_out[:, :N].real
-        self._Bx[...] = self._Bx_dct2_out[:, :N].real
-        self._By[...] = self._By_dct2_out[:, :N].real.T
-
-        numba.cuda.synchronize()
-
-        return self._Ex, self._Ey, self._Bx, self._By
-
-
-def calculate_Ex_Ey_Bx_By(config, mixed_solver, Ex_avg, Ey_avg, Bx_avg, By_avg,
-                          beam_ro, ro, jx, jy, jz, jx_prev, jy_prev):
-    Ex_rhs, Ey_rhs, Bx_rhs, By_rhs = \
-        calculate_RHS_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
-                                  beam_ro, ro, jx, jy, jz, jx_prev, jy_prev)
-    return mixed_solver.solve(Ex_rhs, Ey_rhs, Bx_rhs, By_rhs)
+    return Ex, Ey, Bx, By
 
 
 ### Unsorted
@@ -569,10 +469,6 @@ class GPUMonolith:
 
         assert config.grid_steps % 2 == 1
 
-        self.mixed_solver = MixedSolver(config.grid_steps,
-                                        config.grid_step_size,
-                                        config.field_solver_subtraction_trick)
-
     def initial_deposition(self, config, pl_x_offt, pl_y_offt,
                            pl_px, pl_py, pl_pz, pl_m, pl_q, virt_params):
         # Don't allow initial speeds for calculations with background ions
@@ -616,8 +512,7 @@ class GPUMonolith:
         )
 
         Ex, Ey, Bx, By = \
-            calculate_Ex_Ey_Bx_By(config, self.mixed_solver,
-                                  prev.Ex, prev.Ey, prev.Bx, prev.By,
+            calculate_Ex_Ey_Bx_By(config, prev.Ex, prev.Ey, prev.Bx, prev.By,
                                   # no halfstep-averaged fields yet
                                   beam_ro, ro, jx, jy, jz, prev.jx, prev.jy
         )
@@ -641,9 +536,7 @@ class GPUMonolith:
             virt_params,
         )
         Ex, Ey, Bx, By = \
-            calculate_Ex_Ey_Bx_By(config, self.mixed_solver,
-                                  Ex_avg, Ey_avg, Bx_avg, By_avg,
-
+            calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
                                   beam_ro, ro, jx, jy, jz, prev.jx, prev.jy
         )
         Ez = calculate_Ez(config, jx, jy)
@@ -675,11 +568,6 @@ class GPUMonolith:
                               ro=ro, jx=jx, jy=jy, jz=jz)
 
         return new_state
-
-
-# TODO: try local arrays for bet (on larger grid sizes)?
-# TODO: specialize for specific grid sizes?
-# TODO: try going syncless
 
 
 def make_coarse_plasma_grid(steps, step_size, coarseness):

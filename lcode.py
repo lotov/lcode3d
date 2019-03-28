@@ -483,11 +483,17 @@ def step(config, const, virt_params, prev, beam_ro):
         virt_params
     )
 
+    ro_in = ro if not config.field_solver_variant_A else (ro + prev.ro) / 2
+    jz_in = jz if not config.field_solver_variant_A else (jz + prev.jz) / 2
     Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
                                            prev.Ex, prev.Ey, prev.Bx, prev.By,
                                            # no halfstep-averaged fields yet
-                                           beam_ro, ro, jx, jy, jz,
+                                           beam_ro, ro_in, jx, jy, jz_in,
                                            prev.jx, prev.jy)
+    if config.field_solver_variant_A:
+        Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
+        Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
+
     Ez = calculate_Ez(config, jx, jy)
     # Bz = 0 for now
     Ex_avg = (Ex + prev.Ex) / 2
@@ -504,10 +510,17 @@ def step(config, const, virt_params, prev, beam_ro):
     )
     ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
                              const.m, const.q, px, py, pz, virt_params)
+
+    ro_in = ro if not config.field_solver_variant_A else (ro + prev.ro) / 2
+    jz_in = jz if not config.field_solver_variant_A else (jz + prev.jz) / 2
     Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
                                            Ex_avg, Ey_avg, Bx_avg, By_avg,
-                                           beam_ro, ro, jx, jy, jz,
+                                           beam_ro, ro_in, jx, jy, jz_in,
                                            prev.jx, prev.jy)
+    if config.field_solver_variant_A:
+        Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
+        Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
+
     Ez = calculate_Ez(config, jx, jy)
     # Bz = 0 for now
     Ex_avg = (Ex + prev.Ex) / 2

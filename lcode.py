@@ -37,45 +37,46 @@ import scipy.signal
 # Prevent all CPU cores waiting for the GPU at 100% utilization (under conda).
 # os.environ['OMP_NUM_THREADS'] = '1'
 
-# Should be detectable with (cupy > 6.0.0b2):
+# Should be detectable with newer cupy (>6.0.0b2) as
 # WARP_SIZE = cp.cuda.Device(0).attributes['WarpSize']
-# But as of 2019 it's always 32. It's even a hardcode in cupy.
+# But as of 2019 it's always 32. It's even a hardcoded value in cupy.
 WARP_SIZE = 32
 
 ELECTRON_CHARGE = -1
 ELECTRON_MASS = 1
 
 
-# TODO: macrosity
-
-
-### Solving Laplace equation with Dirichlet boundary conditions (Ez)
-
+# Solving Laplace equation with Dirichlet boundary conditions (Ez) #
 
 def dst2d(a):
-    # DST-Type1-2D, jury-rigged from symmetrically-padded rFFT
+    """
+    Calculate DST-Type1-2D, jury-rigged from anti-symmetrically-padded rFFT.
+    """
     assert a.shape[0] == a.shape[1]
     N = a.shape[0]
-    #                                 / 0  0  0  0  0  0 \
-    #                                |  0  1  2  0 -2 -1  |
-    #  / 1  2 \  anti-symmetrically  |  0  3  4  0 -4 -3  |
-    #  \ 3  4 /      padded to       |  0  0  0  0  0  0  |
-    #                                |  0 -3 -4  0 +4 +3  |
-    #                                 \ 0 -1 -2  0 +2 +1 /
+    #                                    / 0  0  0  0  0  0 \
+    #  0  0  0  0                       |  0 /1  2\ 0 -2 -1  |
+    #  0 /1  2\ 0   anti-symmetrically  |  0 \3  4/ 0 -4 -3  |
+    #  0 \3  4/ 0       padded to       |  0  0  0  0  0  0  |
+    #  0  0  0  0                       |  0 -3 -4  0 +4 +3  |
+    #                                    \ 0 -1 -2  0 +2 +1 /
     p = cp.zeros((2 * N + 2, 2 * N + 2))
     p[1:N+1, 1:N+1], p[1:N+1, N+2:] = a,             -cp.fliplr(a)
     p[N+2:,  1:N+1], p[N+2:,  N+2:] = -cp.flipud(a), +cp.fliplr(cp.flipud(a))
 
-    # rFFT-2D, cut out the top-left corner, take -Re
+    # after padding: rFFT-2D, cut out the top-left segment, take -real part
     return -cp.fft.rfft2(p)[1:N+1, 1:N+1].real
 
 
 @cp.memoize()
 def dirichlet_matrix(grid_steps, grid_step_size):
-    # Samarskiy-Nikolaev, p. 187
+    """
+    Calculate a magical matrix that solves the Laplace equation
+    if you elementwise-multiply the RHS by it "in DST-space".
+    See Samarskiy-Nikolaev, p. 187.
+    """
     # mul[i, j] = 1 / (lam[i] + lam[j])
     # lam[k] = 4 / h**2 * sin(k * pi * h / (2 * L))**2, where L = h * (N - 1)
-    # but offset by 1, 1, as mul only covers the inner part of the window
     k = cp.arange(1, grid_steps - 1)
     lam = 4 / grid_step_size**2 * cp.sin(k * cp.pi / (2 * (grid_steps - 1)))**2
     lambda_i, lambda_j = lam[:, None], lam[None, :]
@@ -84,15 +85,14 @@ def dirichlet_matrix(grid_steps, grid_step_size):
 
 
 def calculate_Ez(config, jx, jy):
+    """
+    Calculate Ez as iDST2D(dirichlet_matrix * DST2D(djx/dx + djy/dy)).
+    """
     # 0. Calculate RHS (NOTE: it is smaller by 1 on each side).
     # NOTE: use gradient instead if available (cupy doesn't have gradient yet).
     djx_dx = jx[2:, 1:-1] - jx[:-2, 1:-1]
     djy_dy = jy[1:-1, 2:] - jy[1:-1, :-2]
     rhs_inner = -(djx_dx + djy_dy) / (config.grid_step_size * 2)  # -?
-
-    # TODO: Try to optimize pad-dst-mul-unpad-pad-dst-unpad-pad
-    #       down to pad-dst-mul-dst-unpad, but carefully.
-    #       Or maybe not.
 
     # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS.
     f = dst2d(rhs_inner)
@@ -108,16 +108,22 @@ def calculate_Ez(config, jx, jy):
     return Ez
 
 
-### Solving Laplace or Helmholtz equation with mixed boundary conditions
+# Solving Laplace or Helmholtz equation with mixed boundary conditions #
 
-
+# jury-rigged from padded rFFT
 def mix2d(a):
-    # DST-DCT-hybrid, jury-rigged from padded rFFT
+    """
+    Calculate a DST-DCT-hybrid transform
+    (DST in first direction, DCT in second one),
+    jury-rigged from padded rFFT
+    (anti-symmetrically in first direction, symmetrically in second direction).
+    """
+    # NOTE: LCODE 3D uses x as the first direction, thus the confision below.
     M, N = a.shape
-    #                                  / 0  1  2  0 -2 -1 \      +----> x
-    #  / 1  2 \                       |  0  3  4  0 -4 -3  |     |     (M)
-    #  | 3  4 |  mixed-symmetrically  |  0  5  6  0 -6 -5  |     |
-    #  | 5  6 |       padded to       |  0  7  8  0 -8 -7  |     v
+    #                                  /(0  1  2  0)-2 -1 \      +---->  x
+    #  / 1  2 \                       | (0  3  4  0)-4 -3  |     |      (M)
+    #  | 3  4 |  mixed-symmetrically  | (0  5  6  0)-6 -5  |     |
+    #  | 5  6 |       padded to       | (0  7  8  0)-8 -7  |     v
     #  \ 7  8 /                       |  0 +5 +6  0 -6 -5  |
     #                                  \ 0 +3 +4  0 -4 -3 /      y (N)
     p = cp.zeros((2 * M + 2, 2 * N - 2))  # wider than before
@@ -125,12 +131,19 @@ def mix2d(a):
     p[M+2:2*M+2, :N] = -cp.flipud(a)  # flip to right on drawing above
     p[1:M+1, N-1:2*N-2] = cp.fliplr(a)[:, :-1]  # flip down on drawing above
     p[M+2:2*M+2, N-1:2*N-2] = -cp.flipud(cp.fliplr(a))[:, :-1]
-    return -cp.fft.rfft2(p)[:M+2, :N].imag  # FFT, cut, -Im
+    # Note: the returned array is wider than the input array, it is padded
+    # with zeroes (depicted above as a square region marked with round braces).
+    return -cp.fft.rfft2(p)[:M+2, :N].imag  # FFT, cut a corner with 0s, -imag
 
 
 @cp.memoize()
 def mixed_matrix(grid_steps, grid_step_size, subtraction_trick):
-    # Samarskiy-Nikolaev, p. 189 and around
+    """
+    Calculate a magical matrix that solves the Laplace or Helmholtz equation
+    (subtraction_trick=True and subtraction_trick=False correspondingly)
+    if you elementwise-multiply the RHS by it "in DST-DCT-transformed-space".
+    See Samarskiy-Nikolaev, p. 189 and around.
+    """
     # mul[i, j] = 1 / (lam[i] + lam[j])
     # lam[k] = 4 / h**2 * sin(k * pi * h / (2 * L))**2, where L = h * (N - 1)
     # but k for lam_i spans from 1..N-2, while k for lam_j covers 0..N-1
@@ -143,21 +156,34 @@ def mixed_matrix(grid_steps, grid_step_size, subtraction_trick):
 
 
 def dx_dy(arr, grid_step_size):
-    # NOTE: use gradient instead if available (cupy doesn't have gradient yet).
+    """
+    Calculate x and y derivatives simultaneously (like np.gradient does).
+    NOTE: use gradient instead if available (cupy doesn't have gradient yet).
+    NOTE: arrays are assumed to have zeros on the perimeter.
+    """
     dx, dy = cp.zeros_like(arr), cp.zeros_like(arr)
-    dx[1:-1, 1:-1] = arr[2:, 1:-1] - arr[:-2, 1:-1]  # we have 0s
+    dx[1:-1, 1:-1] = arr[2:, 1:-1] - arr[:-2, 1:-1]  # arrays have 0s
     dy[1:-1, 1:-1] = arr[1:-1, 2:] - arr[1:-1, :-2]  # on the perimeter
     return dx / (grid_step_size * 2), dy / (grid_step_size * 2)
 
 
 def calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
                           beam_ro, ro, jx, jy, jz, jx_prev, jy_prev):
+    """
+    Calculate transverse fields as iDST-DCT(mixed_matrix * DST-DCT(RHS.T)).T,
+    with and without transposition depending on the field component.
+    NOTE: density and currents are assumed to be zero on the perimeter
+          (no plasma particles must reach the wall, so the reflection boundary
+           must be closer to the center than the simulation window boundary
+           minus the coarse plasma particle cloud width).
+    """
     # 0. Calculate gradients and RHS.
     dro_dx, dro_dy = dx_dy(ro + beam_ro, config.grid_step_size)
     djz_dx, djz_dy = dx_dy(jz + beam_ro, config.grid_step_size)
     djx_dxi = (jx_prev - jx) / config.xi_step_size  # - ?
     djy_dxi = (jy_prev - jy) / config.xi_step_size  # - ?
 
+    # Are we solving a Laplace equation or a Helmholtz one?
     subtraction_trick = config.field_solver_subtraction_trick
     Ex_rhs = -((dro_dx - djx_dxi) - Ex_avg * subtraction_trick)  # -?
     Ey_rhs = -((dro_dy - djy_dxi) - Ey_avg * subtraction_trick)
@@ -187,12 +213,16 @@ def calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
     return Ex, Ey, Bx, By
 
 
-### Unsorted
+# Pushing particles without any fields (used for initial halfstep estimation) #
 
 
 def move_estimate_wo_fields(config,
                             m, x_init, y_init, prev_x_offt, prev_y_offt,
                             px, py, pz):
+    """
+    Move coarse plasma particles as if there were no fields.
+    Also reflect the particles from `+-reflect_boundary`.
+    """
     x, y = x_init + prev_x_offt, y_init + prev_y_offt
     gamma_m = cp.sqrt(m**2 + pz**2 + px**2 + py**2)
 
@@ -211,8 +241,17 @@ def move_estimate_wo_fields(config,
     return x_offt, y_offt
 
 
+# Deposition and interpolation helper functions #
+
+
 @numba.jit(inline=True)
 def weights(x, y, grid_steps, grid_step_size):
+    """
+    Calculate the indices of a cell corresponding to the coordinates,
+    and the coefficients of interpolation and deposition for this cell
+    and 8 surrounding cells.
+    The weights correspond to 2D triangluar shaped cloud (TSC2D).
+    """
     x_h, y_h = x / grid_step_size + .5, y / grid_step_size + .5
     i, j = int(floor(x_h) + grid_steps // 2), int(floor(y_h) + grid_steps // 2)
     x_loc, y_loc = x_h - floor(x_h) - .5, y_h - floor(y_h) - .5
@@ -232,6 +271,9 @@ def weights(x, y, grid_steps, grid_step_size):
 
 @numba.jit(inline=True)
 def interp9(a, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
+    """
+    Collect value from a cell and 8 surrounding cells (using `weights` output).
+    """
     return (
         a[i - 1, j + 1] * wMP + a[i + 0, j + 1] * w0P + a[i + 1, j + 1] * wPP +
         a[i - 1, j + 0] * wM0 + a[i + 0, j + 0] * w00 + a[i + 1, j + 0] * wP0 +
@@ -241,7 +283,12 @@ def interp9(a, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
 
 @numba.jit(inline=True)
 def deposit9(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
-    # atomic +=, thread-safe
+    """
+    Deposit value into a cell and 8 surrounding cells (using `weights` output).
+    """
+    # This is like a[i - 1, j + 1] += val * wMP, except it is atomic
+    # and incrementing the same cell by several threads will add up correctly.
+    # CUDA Compute Capability 6.0+ is recommended for hardware atomics support.
     numba.cuda.atomic.add(a, (i - 1, j + 1), val * wMP)
     numba.cuda.atomic.add(a, (i + 0, j + 1), val * w0P)
     numba.cuda.atomic.add(a, (i + 1, j + 1), val * wPP)
@@ -253,34 +300,50 @@ def deposit9(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     numba.cuda.atomic.add(a, (i + 1, j - 1), val * wPM)
 
 
+# Deposition #
+
 @numba.jit(inline=True)
 def mix(coarse, A, B, C, D, pi, ni, pj, nj):
+    """
+    Bilinearly interpolate fine plasma properties from four
+    historically-neighbouring plasma particle property values.
+     B    D  #  y ^         A - bottom-left  neighbour, indices: pi, pj
+        .    #    |         B - top-left     neighbour, indices: pi, nj
+             #    +---->    C - bottom-right neighbour, indices: ni, pj
+     A    C  #         x    D - top-right    neighbour, indices: ni, nj
+    See the rest of the deposition and plasma creation for more info.
+    """
     return (A * coarse[pi, pj] + B * coarse[pi, nj] +
             C * coarse[ni, pj] + D * coarse[ni, nj])
-    #return (infl_prev[fi] * (infl_prev[fj] * coarse[pi, pj] +
-    #                              infl_next[fj] * coarse[pi, nj]) +
-    #        infl_next[fi] * (infl_prev[fj] * coarse[ni, pj] +
-    #                              infl_next[fj] * coarse[ni, nj]))
 
 
+# TODO: try to get rid of the CUDA kernel
 @numba.cuda.jit
 def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
                    c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,  # coarse
                    fine_grid,
                    influence_prev, influence_next, indices_prev, indices_next,
                    out_ro, out_jx, out_jy, out_jz):
+    """
+    Interpolate coarse plasma into fine plasma and deposit it on the
+    charge density and current grids.
+    """
+    # Do nothing if our thread does not have a fine particle to deposit.
     fk = numba.cuda.grid(1)
     if fk >= fine_grid.size**2:
         return
     fi, fj = fk // fine_grid.size, fk % fine_grid.size
 
+    # Calculate the weights of the historically-neighbouring coarse particles
     A = influence_prev[fi] * influence_prev[fj]
     B = influence_prev[fi] * influence_next[fj]
     C = influence_next[fi] * influence_prev[fj]
     D = influence_next[fi] * influence_next[fj]
+    # and retrieve their indices.
     pi, ni = indices_prev[fi], indices_next[fi]
     pj, nj = indices_prev[fj], indices_next[fj]
 
+    # Now we're ready to mix the fine particle characteristics
     x_offt = mix(c_x_offt, A, B, C, D, pi, ni, pj, nj)
     y_offt = mix(c_y_offt, A, B, C, D, pi, ni, pj, nj)
     x = fine_grid[fi] + x_offt  # x_fine_init
@@ -294,6 +357,7 @@ def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
     py = virtplasma_smallness_factor * mix(c_py, A, B, C, D, pi, ni, pj, nj)
     pz = virtplasma_smallness_factor * mix(c_pz, A, B, C, D, pi, ni, pj, nj)
 
+    # and deposit the resulting fine particle on ro/j grids.
     gamma_m = sqrt(m**2 + px**2 + py**2 + pz**2)
     dro = q / (1 - pz / gamma_m)
     djx = px * (dro / gamma_m)
@@ -310,6 +374,11 @@ def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
 
 
 def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
+    """
+    Interpolate coarse plasma into fine plasma and deposit it on the
+    charge density and current grids.
+    This is a convenience wrapper around the `deposit_kernel` CUDA kernel.
+    """
     virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                        config.plasma_fineness)**2
     ro = cp.zeros((config.grid_steps, config.grid_steps))
@@ -324,11 +393,16 @@ def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
                         virt_params.influence_prev, virt_params.influence_next,
                         virt_params.indices_prev, virt_params.indices_next,
                         ro, jx, jy, jz)
+    # Also add the background ion charge density.
     ro += ro_initial  # Do it last to preserve more float precision
     numba.cuda.synchronize()
     return ro, jx, jy, jz
 
 
+# Field interpolation and particle movement (fused) #
+
+
+# TODO: try to get rid of the kernel
 @numba.cuda.jit
 def move_smart_kernel(xi_step_size, reflect_boundary,
                       grid_step_size, grid_steps,
@@ -339,6 +413,13 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
                       prev_px, prev_py, prev_pz,
                       Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
                       new_x_offt, new_y_offt, new_px, new_py, new_pz):
+    """
+    Update plasma particle coordinates and momenta according to the field
+    values interpolated halfway between the previous plasma particle location
+    and the the best estimation of its next location currently available to us.
+    Also reflect the particles from `+-reflect_boundary`.
+    """
+    # Do nothing if our thread does not have a coarse particle to move.
     k = numba.cuda.grid(1)
     if k >= ms.size:
         return
@@ -349,6 +430,7 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
     px, py, pz = opx, opy, opz
     x_offt, y_offt = prev_x_offt[k], prev_y_offt[k]
 
+    # Calculate midstep positions and fields in them.
     x_halfstep = x_init[k] + (prev_x_offt[k] + estimated_x_offt[k]) / 2
     y_halfstep = y_init[k] + (prev_y_offt[k] + estimated_y_offt[k]) / 2
     i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
@@ -361,6 +443,7 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
     By = interp9(By_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
     Bz = 0  # Bz = 0 for now
 
+    # Move the particles according the the fields
     gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
     vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
     factor_1 = q * xi_step_size / (1 - pz / gamma_m)
@@ -369,6 +452,7 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
     dpz = factor_1 * (Ez + vx * By - vy * Bx)
     px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
 
+    # Move the particles according the the fields again using updated momenta
     gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
     vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
     factor_1 = q * xi_step_size / (1 - pz / gamma_m)
@@ -377,6 +461,7 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
     dpz = factor_1 * (Ez + vx * By - vy * Bx)
     px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
 
+    # Apply the coordinate and momenta increments
     gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
 
     x_offt += px / (gamma_m - pz) * xi_step_size  # no mixing with x_init
@@ -384,6 +469,7 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
 
     px, py, pz = opx + dpx, opy + dpy, opz + dpz
 
+    # Reflect the particles from `+-reflect_boundary`.
     # TODO: avoid branching?
     x = x_init[k] + x_offt
     y = y_init[k] + y_offt
@@ -404,7 +490,8 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
         y_offt = y - y_init[k]
         py = -py
 
-    new_x_offt[k], new_y_offt[k] = x_offt, y_offt  # TODO: get rid of vars
+    # Save the results into the output arrays  # TODO: get rid of that
+    new_x_offt[k], new_y_offt[k] = x_offt, y_offt
     new_px[k], new_py[k], new_pz[k] = px, py, pz
 
 
@@ -412,6 +499,12 @@ def move_smart(config,
                m, q, x_init, y_init, x_prev_offt, y_prev_offt,
                estimated_x_offt, estimated_y_offt, px_prev, py_prev, pz_prev,
                Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg):
+    """
+    Update plasma particle coordinates and momenta according to the field
+    values interpolated halfway between the previous plasma particle location
+    and the the best estimation of its next location currently available to us.
+    This is a convenience wrapper around the `move_smart_kernel` CUDA kernel.
+    """
     x_offt_new = cp.zeros_like(x_prev_offt)
     y_offt_new = cp.zeros_like(y_prev_offt)
     px_new = cp.zeros_like(px_prev)
@@ -432,57 +525,103 @@ def move_smart(config,
     return x_offt_new, y_offt_new, px_new, py_new, pz_new
 
 
-# x = GPUArrays(something=numpy_array, something_else=another_array)
-# will create x with x.something and x.something_else being GPU arrays.
-# Do not add more attributes later, specify them all at construction time.
 class GPUArrays:
+    """
+    A convenient way to group several GPU arrays and access them with a dot.
+    `x = GPUArrays(something=numpy_array, something_else=another_array)`
+    will create `x` with `x.something` and `x.something_else` being GPU arrays.
+    Do not add more attributes later, specify them all at construction time.
+    """
     def __init__(self, **kwargs):
+        """
+        Convert the keyword arguments to `cupy` arrays and assign them
+        to the object attributes.
+        Amounts to, e.g., `self.something = cp.asarray(numpy_array)`,
+        and `self.something_else = cp.asarray(another_array)`,
+        see class doctring.
+        """
         for name, array in kwargs.items():
             setattr(self, name, cp.asarray(array))
 
 
-# view GPUArraysView(gpu_arrays) will make a magical object view
-# Accessing view.something will automatically copy array to host RAM,
-# setting view.something = ... will copy the changes back to GPU RAM.
-# Do not add more attributes later, specify them all at construction time.
 class GPUArraysView:
+    """
+    This is a magical wrapper around GPUArrays that handles GPU-RAM data
+    transfer transparently.
+    Accessing `view.something` will automatically copy array to host RAM,
+    setting `view.something = ...` will copy the changes back to GPU RAM.
+    Usage: `view = GPUArraysView(gpu_arrays); view.something`
+    Do not add more attributes later, specify them all at construction time.
+    NOTE: repeatedly accessing an attribute will result in repeated copying!
+    """
     def __init__(self, gpu_arrays):
-        # works like self._arrs = gpu_arrays
+        """
+        Wrap `gpu_arrays` and transparently copy data to/from GPU.
+        """
+        # Could've been written as `self._arrs = gpu_arrays`
+        # if only `__setattr__` was not overwritten!
+        # `super(GPUArraysView) is the proper way to obtain the parent class
+        # (`object`), which has a regular boring `__setattr__` that we can use.
         super(GPUArraysView, self).__setattr__('_arrs', gpu_arrays)
 
     def __dir__(self):
+        """
+        Make `dir()` also show the wrapped `gpu_arrays` attributes.
+        """
+        # See `GPUArraysView.__init__` for the explanation how we access the
+        # parent's plain `__dir__()` implementation (and avoid recursion).
         return list(set(super(GPUArraysView, self).__dir__() +
                         dir(self._arrs)))
 
     def __getattr__(self, attrname):
+        """
+        Intercept access to (missing) attributes, access the wrapped object
+        attributes instead and copy the arrays from GPU to RAM.
+        """
         return getattr(self._arrs, attrname).get()  # auto-copies to host RAM
 
     def __setattr__(self, attrname, value):
+        """
+        Intercept setting attributes, access the wrapped object attributes
+        instead and reassign their contents, copying the arrays from RAM
+        to GPU in the process.
+        """
         getattr(self._arrs, attrname)[...] = value  # copies to GPU RAM
+        # TODO: just copy+reassign it without preserving identity and shape?
 
 
 def step(config, const, virt_params, prev, beam_ro):
-    beam_ro = cp.asarray(beam_ro)
+    """
+    Calculate the next iteration of plasma evolution and response.
+    Returns the new state with the following attributes:
+    `x_offt, y_offt, px, py, pz, Ex, Ey, Ez, Bx, By, Bz, ro, jx, jy, jz`.
+    Pass the returned value as `prev` for the next iteration.
+    """
+    beam_ro = cp.asarray(beam_ro)  # copy the array is on GPU if it's not there
 
     Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
 
-    # TODO: use regular pusher?
+    # Estimate the midpoint particle position without knowing the fields yet
+    # TODO: use regular pusher and pass zero fields? previous fields?
     x_offt, y_offt = move_estimate_wo_fields(config, const.m,
                                              const.x_init, const.y_init,
                                              prev.x_offt, prev.y_offt,
                                              prev.px, prev.py, prev.pz)
 
+    # Interpolate fields in midpoint and move particles with previous fields.
     x_offt, y_offt, px, py, pz = move_smart(
         config, const.m, const.q, const.x_init, const.y_init,
         prev.x_offt, prev.y_offt, x_offt, y_offt, prev.px, prev.py, prev.pz,
         # no halfstep-averaged fields yet
         prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
     )
+    # Recalculate the plasma density and currents.
     ro, jx, jy, jz = deposit(
         config, const.ro_initial, x_offt, y_offt, const.m, const.q, px, py, pz,
         virt_params
     )
 
+    # Calculate the fields.
     ro_in = ro if not config.field_solver_variant_A else (ro + prev.ro) / 2
     jz_in = jz if not config.field_solver_variant_A else (jz + prev.jz) / 2
     Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
@@ -502,6 +641,7 @@ def step(config, const, virt_params, prev, beam_ro):
     Bx_avg = (Bx + prev.Bx) / 2
     By_avg = (By + prev.By) / 2
 
+    # Repeat the previous procedure using averaged fields.
     x_offt, y_offt, px, py, pz = move_smart(
         config, const.m, const.q, const.x_init, const.y_init,
         prev.x_offt, prev.y_offt, x_offt, y_offt,
@@ -529,6 +669,7 @@ def step(config, const, virt_params, prev, beam_ro):
     Bx_avg = (Bx + prev.Bx) / 2
     By_avg = (By + prev.By) / 2
 
+    # Repeat the previous procedure using averaged fields once again.
     x_offt, y_offt, px, py, pz = move_smart(
         config, const.m, const.q, const.x_init, const.y_init,
         prev.x_offt, prev.y_offt, x_offt, y_offt,
@@ -540,6 +681,7 @@ def step(config, const, virt_params, prev, beam_ro):
 
     # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
 
+    # Return the array collection that would serve as `prev` for the next step.
     new_state = GPUArrays(x_offt=x_offt, y_offt=y_offt, px=px, py=py, pz=pz,
                           Ex=Ex.copy(), Ey=Ey.copy(), Ez=Ez.copy(),
                           Bx=Bx.copy(), By=By.copy(), Bz=Bz.copy(),
@@ -549,6 +691,10 @@ def step(config, const, virt_params, prev, beam_ro):
 
 
 def initial_deposition(config, x_offt, y_offt, px, py, pz, m, q, virt_params):
+    """
+    Determine the background ion charge density by depositing the electrons
+    with their initial parameters and negating the result.
+    """
     # Don't allow initial speeds for calculations with background ions
     assert all([np.array_equiv(p, 0) for p in [px, py, pz]])
 
@@ -558,7 +704,11 @@ def initial_deposition(config, x_offt, y_offt, px, py, pz, m, q, virt_params):
 
 
 def make_coarse_plasma_grid(steps, step_size, coarseness):
-    assert coarseness == int(coarseness)
+    """
+    Create initial coarse plasma particles coordinates
+    (a single 1D grid for both x and y).
+    """
+    assert coarseness == int(coarseness)  # TODO: why?
     plasma_step = step_size * coarseness
     right_half = np.arange(steps // (coarseness * 2)) * plasma_step
     left_half = -right_half[:0:-1]  # invert, reverse, drop zero
@@ -568,6 +718,25 @@ def make_coarse_plasma_grid(steps, step_size, coarseness):
 
 
 def make_fine_plasma_grid(steps, step_size, fineness):
+    """
+    Create initial fine plasma particles coordinates
+    (a single 1D grid for both x and y).
+    Avoids positioning particles at the cell edges and boundaries, example:
+    `fineness=3` (and `coarseness=2`):
+        +-----------+-----------+-----------+-----------+
+        | .   .   . | .   .   . | .   .   . | .   .   . |
+        |           |           |           |           |   . - fine particle
+        | .   .   . | .   *   . | .   .   . | .   *   . |
+        |           |           |           |           |   * - coarse particle
+        | .   .   . | .   .   . | .   .   . | .   .   . |
+        +-----------+-----------+-----------+-----------+
+    `fineness=2` (and `coarseness=2`):
+        +-------+-------+-------+-------+-------+
+        | .   . | .   . | .   . | .   . | .   . |           . - fine particle
+        |       |   *   |       |   *   |       |
+        | .   . | .   . | .   . | .   . | .   . |           * - coarse particle
+        +-------+-------+-------+-------+-------+
+    """
     assert fineness == int(fineness)
     plasma_step = step_size / fineness
     if fineness % 2:  # some on zero axes, none on cell corners
@@ -583,6 +752,13 @@ def make_fine_plasma_grid(steps, step_size, fineness):
 
 
 def plasma_make(steps, cell_size, coarseness=2, fineness=2):
+    """
+    Make coarse plasma initial state arrays and the arrays needed to intepolate
+    coarse plasma into fine plasma (`virt_params`).
+    Coarse is the one that will evolve and fine is the one to be bilinearly
+    interpolated from the coarse one based on the initial positions
+    (using 1 to 4 coarse plasma particles that initially were the closest).
+    """
     coarse_step = cell_size * coarseness
 
     # Make two initial grids of plasma particles, coarse and fine.
@@ -615,7 +791,7 @@ def plasma_make(steps, cell_size, coarseness=2, fineness=2):
     #     coarse:  [-2., -1.,  0.,  1.,  2.]
     #     fine:    [-2.4, -1.8, -1.2, -0.6,  0. ,  0.6,  1.2,  1.8,  2.4]
     #     indices: [ 0  ,  1  ,  1  ,  2  ,  2  ,  3  ,  4  ,  4  ,  5 ]
-    # There is no coarse particle with index 5, so we clip it to 4:
+    # There is no coarse particle with index 5, so clip it to 4:
     indices_next = np.clip(indices, 0, Nc - 1)  # [0, 1, 1, 2, 2, 3, 4, 4, 4]
     # Clip to zero for indices of prev particles as well:
     indices_prev = np.clip(indices - 1, 0, Nc - 1)  # [0, 0, 0, 1 ... 3, 3, 4]
@@ -633,7 +809,6 @@ def plasma_make(steps, cell_size, coarseness=2, fineness=2):
     influence_prev[indices_prev == Nc - 1] = 1  # use left
     # Same arrays are used for interpolating in y-direction.
 
-
     # The virtualization formula is thus
     # influence_prev[pi] * influence_prev[pj] * <bottom-left neighbour value> +
     # influence_prev[pi] * influence_next[nj] * <top-left neighbour value> +
@@ -642,6 +817,8 @@ def plasma_make(steps, cell_size, coarseness=2, fineness=2):
     # where pi, pj are indices_prev[i], indices_prev[j],
     #       ni, nj are indices_next[i], indices_next[j] and
     #       i, j are indices of fine virtual particles
+
+    # This is what is employed inside mix() and deposit_kernel().
 
     # An equivalent formula would be
     # inf_prev[pi] * (inf_prev[pj] * <bot-left> + inf_next[nj] * <bot-right>) +
@@ -682,7 +859,6 @@ def diags_peak_msg(Ez_00_history):
         rel_deviations_perc = 100 * (peak_values / peak_values[0] - 1)
         return (f'{peak_values[-1]:0.4e} '
                 f'{rel_deviations_perc[-1]:+0.2f}%')
-                #f' ±{rel_deviations_perc.ptp() / 2:0.2f}%')
     else:
         return '...'
 
@@ -713,6 +889,10 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
 
 
 def init(config):
+    """
+    Initialize all the arrays needed for `step` and `config.beam`.
+    """
+
     assert config.grid_steps % 2 == 1
 
     # virtual particles should not reach the window pre-boundary cells
@@ -750,7 +930,6 @@ def init(config):
     return xs, ys, const, virt_params, state
 
 
-# TODO: fold init, load, initial_deposition into GPUMonolith.__init__?
 def main():
     import config
     xs, ys, const, virt_params, state = init(config)

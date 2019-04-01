@@ -46,6 +46,74 @@ ELECTRON_CHARGE = -1
 ELECTRON_MASS = 1
 
 
+# Grouping GPU arrays, with optional transparent RAM<->GPU copying #
+
+class GPUArrays:
+    """
+    A convenient way to group several GPU arrays and access them with a dot.
+    `x = GPUArrays(something=numpy_array, something_else=another_array)`
+    will create `x` with `x.something` and `x.something_else` being GPU arrays.
+    Do not add more attributes later, specify them all at construction time.
+    """
+    def __init__(self, **kwargs):
+        """
+        Convert the keyword arguments to `cupy` arrays and assign them
+        to the object attributes.
+        Amounts to, e.g., `self.something = cp.asarray(numpy_array)`,
+        and `self.something_else = cp.asarray(another_array)`,
+        see class doctring.
+        """
+        for name, array in kwargs.items():
+            setattr(self, name, cp.asarray(array))
+
+
+# NOTE: The implementation may be complicated, but the usage is simple.
+class GPUArraysView:
+    """
+    This is a magical wrapper around GPUArrays that handles GPU-RAM data
+    transfer transparently.
+    Accessing `view.something` will automatically copy array to host RAM,
+    setting `view.something = ...` will copy the changes back to GPU RAM.
+    Usage: `view = GPUArraysView(gpu_arrays); view.something`
+    Do not add more attributes later, specify them all at construction time.
+    NOTE: repeatedly accessing an attribute will result in repeated copying!
+    """
+    def __init__(self, gpu_arrays):
+        """
+        Wrap `gpu_arrays` and transparently copy data to/from GPU.
+        """
+        # Could've been written as `self._arrs = gpu_arrays`
+        # if only `__setattr__` was not overwritten!
+        # `super(GPUArraysView) is the proper way to obtain the parent class
+        # (`object`), which has a regular boring `__setattr__` that we can use.
+        super(GPUArraysView, self).__setattr__('_arrs', gpu_arrays)
+
+    def __dir__(self):
+        """
+        Make `dir()` also show the wrapped `gpu_arrays` attributes.
+        """
+        # See `GPUArraysView.__init__` for the explanation how we access the
+        # parent's plain `__dir__()` implementation (and avoid recursion).
+        return list(set(super(GPUArraysView, self).__dir__() +
+                        dir(self._arrs)))
+
+    def __getattr__(self, attrname):
+        """
+        Intercept access to (missing) attributes, access the wrapped object
+        attributes instead and copy the arrays from GPU to RAM.
+        """
+        return getattr(self._arrs, attrname).get()  # auto-copies to host RAM
+
+    def __setattr__(self, attrname, value):
+        """
+        Intercept setting attributes, access the wrapped object attributes
+        instead and reassign their contents, copying the arrays from RAM
+        to GPU in the process.
+        """
+        getattr(self._arrs, attrname)[...] = value  # copies to GPU RAM
+        # TODO: just copy+reassign it without preserving identity and shape?
+
+
 # Solving Laplace equation with Dirichlet boundary conditions (Ez) #
 
 def dst2d(a):
@@ -243,7 +311,6 @@ def move_estimate_wo_fields(config,
 
 # Deposition and interpolation helper functions #
 
-
 @numba.jit(inline=True)
 def weights(x, y, grid_steps, grid_step_size):
     """
@@ -300,408 +367,7 @@ def deposit9(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
     numba.cuda.atomic.add(a, (i + 1, j - 1), val * wPM)
 
 
-# Deposition #
-
-@numba.jit(inline=True)
-def mix(coarse, A, B, C, D, pi, ni, pj, nj):
-    """
-    Bilinearly interpolate fine plasma properties from four
-    historically-neighbouring plasma particle property values.
-     B    D  #  y ^         A - bottom-left  neighbour, indices: pi, pj
-        .    #    |         B - top-left     neighbour, indices: pi, nj
-             #    +---->    C - bottom-right neighbour, indices: ni, pj
-     A    C  #         x    D - top-right    neighbour, indices: ni, nj
-    See the rest of the deposition and plasma creation for more info.
-    """
-    return (A * coarse[pi, pj] + B * coarse[pi, nj] +
-            C * coarse[ni, pj] + D * coarse[ni, nj])
-
-
-# TODO: try to get rid of the CUDA kernel
-@numba.cuda.jit
-def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
-                   c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,  # coarse
-                   fine_grid,
-                   influence_prev, influence_next, indices_prev, indices_next,
-                   out_ro, out_jx, out_jy, out_jz):
-    """
-    Interpolate coarse plasma into fine plasma and deposit it on the
-    charge density and current grids.
-    """
-    # Do nothing if our thread does not have a fine particle to deposit.
-    fk = numba.cuda.grid(1)
-    if fk >= fine_grid.size**2:
-        return
-    fi, fj = fk // fine_grid.size, fk % fine_grid.size
-
-    # Calculate the weights of the historically-neighbouring coarse particles
-    A = influence_prev[fi] * influence_prev[fj]
-    B = influence_prev[fi] * influence_next[fj]
-    C = influence_next[fi] * influence_prev[fj]
-    D = influence_next[fi] * influence_next[fj]
-    # and retrieve their indices.
-    pi, ni = indices_prev[fi], indices_next[fi]
-    pj, nj = indices_prev[fj], indices_next[fj]
-
-    # Now we're ready to mix the fine particle characteristics
-    x_offt = mix(c_x_offt, A, B, C, D, pi, ni, pj, nj)
-    y_offt = mix(c_y_offt, A, B, C, D, pi, ni, pj, nj)
-    x = fine_grid[fi] + x_offt  # x_fine_init
-    y = fine_grid[fj] + y_offt  # y_fine_init
-
-    # TODO: const m and q
-    m = virtplasma_smallness_factor * mix(c_m, A, B, C, D, pi, ni, pj, nj)
-    q = virtplasma_smallness_factor * mix(c_q, A, B, C, D, pi, ni, pj, nj)
-
-    px = virtplasma_smallness_factor * mix(c_px, A, B, C, D, pi, ni, pj, nj)
-    py = virtplasma_smallness_factor * mix(c_py, A, B, C, D, pi, ni, pj, nj)
-    pz = virtplasma_smallness_factor * mix(c_pz, A, B, C, D, pi, ni, pj, nj)
-
-    # and deposit the resulting fine particle on ro/j grids.
-    gamma_m = sqrt(m**2 + px**2 + py**2 + pz**2)
-    dro = q / (1 - pz / gamma_m)
-    djx = px * (dro / gamma_m)
-    djy = py * (dro / gamma_m)
-    djz = pz * (dro / gamma_m)
-
-    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
-        x, y, grid_steps, grid_step_size
-    )
-    deposit9(out_ro, i, j, dro, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    deposit9(out_jx, i, j, djx, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    deposit9(out_jy, i, j, djy, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    deposit9(out_jz, i, j, djz, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-
-
-def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
-    """
-    Interpolate coarse plasma into fine plasma and deposit it on the
-    charge density and current grids.
-    This is a convenience wrapper around the `deposit_kernel` CUDA kernel.
-    """
-    virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
-                                       config.plasma_fineness)**2
-    ro = cp.zeros((config.grid_steps, config.grid_steps))
-    jx = cp.zeros((config.grid_steps, config.grid_steps))
-    jy = cp.zeros((config.grid_steps, config.grid_steps))
-    jz = cp.zeros((config.grid_steps, config.grid_steps))
-    cfg = int(np.ceil(virt_params.fine_grid.size**2 / WARP_SIZE)), WARP_SIZE
-    deposit_kernel[cfg](config.grid_steps, config.grid_step_size,
-                        virtplasma_smallness_factor,
-                        x_offt, y_offt, m, q, px, py, pz,
-                        virt_params.fine_grid,
-                        virt_params.influence_prev, virt_params.influence_next,
-                        virt_params.indices_prev, virt_params.indices_next,
-                        ro, jx, jy, jz)
-    # Also add the background ion charge density.
-    ro += ro_initial  # Do it last to preserve more float precision
-    numba.cuda.synchronize()
-    return ro, jx, jy, jz
-
-
-# Field interpolation and particle movement (fused) #
-
-
-# TODO: try to get rid of the kernel
-@numba.cuda.jit
-def move_smart_kernel(xi_step_size, reflect_boundary,
-                      grid_step_size, grid_steps,
-                      ms, qs,
-                      x_init, y_init,
-                      prev_x_offt, prev_y_offt,
-                      estimated_x_offt, estimated_y_offt,
-                      prev_px, prev_py, prev_pz,
-                      Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
-                      new_x_offt, new_y_offt, new_px, new_py, new_pz):
-    """
-    Update plasma particle coordinates and momenta according to the field
-    values interpolated halfway between the previous plasma particle location
-    and the the best estimation of its next location currently available to us.
-    Also reflect the particles from `+-reflect_boundary`.
-    """
-    # Do nothing if our thread does not have a coarse particle to move.
-    k = numba.cuda.grid(1)
-    if k >= ms.size:
-        return
-
-    m, q = ms[k], qs[k]
-
-    opx, opy, opz = prev_px[k], prev_py[k], prev_pz[k]
-    px, py, pz = opx, opy, opz
-    x_offt, y_offt = prev_x_offt[k], prev_y_offt[k]
-
-    # Calculate midstep positions and fields in them.
-    x_halfstep = x_init[k] + (prev_x_offt[k] + estimated_x_offt[k]) / 2
-    y_halfstep = y_init[k] + (prev_y_offt[k] + estimated_y_offt[k]) / 2
-    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
-        x_halfstep, y_halfstep, grid_steps, grid_step_size
-    )
-    Ex = interp9(Ex_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    Ey = interp9(Ey_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    Ez = interp9(Ez_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    Bx = interp9(Bx_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    By = interp9(By_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    Bz = 0  # Bz = 0 for now
-
-    # Move the particles according the the fields
-    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
-    vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
-    factor_1 = q * xi_step_size / (1 - pz / gamma_m)
-    dpx = factor_1 * (Ex + vy * Bz - vz * By)
-    dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
-    dpz = factor_1 * (Ez + vx * By - vy * Bx)
-    px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
-
-    # Move the particles according the the fields again using updated momenta
-    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
-    vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
-    factor_1 = q * xi_step_size / (1 - pz / gamma_m)
-    dpx = factor_1 * (Ex + vy * Bz - vz * By)
-    dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
-    dpz = factor_1 * (Ez + vx * By - vy * Bx)
-    px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
-
-    # Apply the coordinate and momenta increments
-    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
-
-    x_offt += px / (gamma_m - pz) * xi_step_size  # no mixing with x_init
-    y_offt += py / (gamma_m - pz) * xi_step_size  # no mixing with y_init
-
-    px, py, pz = opx + dpx, opy + dpy, opz + dpz
-
-    # Reflect the particles from `+-reflect_boundary`.
-    # TODO: avoid branching?
-    x = x_init[k] + x_offt
-    y = y_init[k] + y_offt
-    if x > +reflect_boundary:
-        x = +2 * reflect_boundary - x
-        x_offt = x - x_init[k]
-        px = -px
-    if x < -reflect_boundary:
-        x = -2 * reflect_boundary - x
-        x_offt = x - x_init[k]
-        px = -px
-    if y > +reflect_boundary:
-        y = +2 * reflect_boundary - y
-        y_offt = y - y_init[k]
-        py = -py
-    if y < -reflect_boundary:
-        y = -2 * reflect_boundary - y
-        y_offt = y - y_init[k]
-        py = -py
-
-    # Save the results into the output arrays  # TODO: get rid of that
-    new_x_offt[k], new_y_offt[k] = x_offt, y_offt
-    new_px[k], new_py[k], new_pz[k] = px, py, pz
-
-
-def move_smart(config,
-               m, q, x_init, y_init, x_prev_offt, y_prev_offt,
-               estimated_x_offt, estimated_y_offt, px_prev, py_prev, pz_prev,
-               Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg):
-    """
-    Update plasma particle coordinates and momenta according to the field
-    values interpolated halfway between the previous plasma particle location
-    and the the best estimation of its next location currently available to us.
-    This is a convenience wrapper around the `move_smart_kernel` CUDA kernel.
-    """
-    x_offt_new = cp.zeros_like(x_prev_offt)
-    y_offt_new = cp.zeros_like(y_prev_offt)
-    px_new = cp.zeros_like(px_prev)
-    py_new = cp.zeros_like(py_prev)
-    pz_new = cp.zeros_like(pz_prev)
-    cfg = int(np.ceil(x_init.size / WARP_SIZE)), WARP_SIZE
-    move_smart_kernel[cfg](config.xi_step_size, config.reflect_boundary,
-                           config.grid_step_size, config.grid_steps,
-                           m.ravel(), q.ravel(),
-                           x_init.ravel(), y_init.ravel(),
-                           x_prev_offt.ravel(), y_prev_offt.ravel(),
-                           estimated_x_offt.ravel(), estimated_y_offt.ravel(),
-                           px_prev.ravel(), py_prev.ravel(), pz_prev.ravel(),
-                           Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
-                           x_offt_new.ravel(), y_offt_new.ravel(),
-                           px_new.ravel(), py_new.ravel(), pz_new.ravel())
-    numba.cuda.synchronize()
-    return x_offt_new, y_offt_new, px_new, py_new, pz_new
-
-
-class GPUArrays:
-    """
-    A convenient way to group several GPU arrays and access them with a dot.
-    `x = GPUArrays(something=numpy_array, something_else=another_array)`
-    will create `x` with `x.something` and `x.something_else` being GPU arrays.
-    Do not add more attributes later, specify them all at construction time.
-    """
-    def __init__(self, **kwargs):
-        """
-        Convert the keyword arguments to `cupy` arrays and assign them
-        to the object attributes.
-        Amounts to, e.g., `self.something = cp.asarray(numpy_array)`,
-        and `self.something_else = cp.asarray(another_array)`,
-        see class doctring.
-        """
-        for name, array in kwargs.items():
-            setattr(self, name, cp.asarray(array))
-
-
-class GPUArraysView:
-    """
-    This is a magical wrapper around GPUArrays that handles GPU-RAM data
-    transfer transparently.
-    Accessing `view.something` will automatically copy array to host RAM,
-    setting `view.something = ...` will copy the changes back to GPU RAM.
-    Usage: `view = GPUArraysView(gpu_arrays); view.something`
-    Do not add more attributes later, specify them all at construction time.
-    NOTE: repeatedly accessing an attribute will result in repeated copying!
-    """
-    def __init__(self, gpu_arrays):
-        """
-        Wrap `gpu_arrays` and transparently copy data to/from GPU.
-        """
-        # Could've been written as `self._arrs = gpu_arrays`
-        # if only `__setattr__` was not overwritten!
-        # `super(GPUArraysView) is the proper way to obtain the parent class
-        # (`object`), which has a regular boring `__setattr__` that we can use.
-        super(GPUArraysView, self).__setattr__('_arrs', gpu_arrays)
-
-    def __dir__(self):
-        """
-        Make `dir()` also show the wrapped `gpu_arrays` attributes.
-        """
-        # See `GPUArraysView.__init__` for the explanation how we access the
-        # parent's plain `__dir__()` implementation (and avoid recursion).
-        return list(set(super(GPUArraysView, self).__dir__() +
-                        dir(self._arrs)))
-
-    def __getattr__(self, attrname):
-        """
-        Intercept access to (missing) attributes, access the wrapped object
-        attributes instead and copy the arrays from GPU to RAM.
-        """
-        return getattr(self._arrs, attrname).get()  # auto-copies to host RAM
-
-    def __setattr__(self, attrname, value):
-        """
-        Intercept setting attributes, access the wrapped object attributes
-        instead and reassign their contents, copying the arrays from RAM
-        to GPU in the process.
-        """
-        getattr(self._arrs, attrname)[...] = value  # copies to GPU RAM
-        # TODO: just copy+reassign it without preserving identity and shape?
-
-
-def step(config, const, virt_params, prev, beam_ro):
-    """
-    Calculate the next iteration of plasma evolution and response.
-    Returns the new state with the following attributes:
-    `x_offt, y_offt, px, py, pz, Ex, Ey, Ez, Bx, By, Bz, ro, jx, jy, jz`.
-    Pass the returned value as `prev` for the next iteration.
-    """
-    beam_ro = cp.asarray(beam_ro)  # copy the array is on GPU if it's not there
-
-    Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
-
-    # Estimate the midpoint particle position without knowing the fields yet
-    # TODO: use regular pusher and pass zero fields? previous fields?
-    x_offt, y_offt = move_estimate_wo_fields(config, const.m,
-                                             const.x_init, const.y_init,
-                                             prev.x_offt, prev.y_offt,
-                                             prev.px, prev.py, prev.pz)
-
-    # Interpolate fields in midpoint and move particles with previous fields.
-    x_offt, y_offt, px, py, pz = move_smart(
-        config, const.m, const.q, const.x_init, const.y_init,
-        prev.x_offt, prev.y_offt, x_offt, y_offt, prev.px, prev.py, prev.pz,
-        # no halfstep-averaged fields yet
-        prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
-    )
-    # Recalculate the plasma density and currents.
-    ro, jx, jy, jz = deposit(
-        config, const.ro_initial, x_offt, y_offt, const.m, const.q, px, py, pz,
-        virt_params
-    )
-
-    # Calculate the fields.
-    ro_in = ro if not config.field_solver_variant_A else (ro + prev.ro) / 2
-    jz_in = jz if not config.field_solver_variant_A else (jz + prev.jz) / 2
-    Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
-                                           prev.Ex, prev.Ey, prev.Bx, prev.By,
-                                           # no halfstep-averaged fields yet
-                                           beam_ro, ro_in, jx, jy, jz_in,
-                                           prev.jx, prev.jy)
-    if config.field_solver_variant_A:
-        Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
-        Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
-
-    Ez = calculate_Ez(config, jx, jy)
-    # Bz = 0 for now
-    Ex_avg = (Ex + prev.Ex) / 2
-    Ey_avg = (Ey + prev.Ey) / 2
-    Ez_avg = (Ez + prev.Ez) / 2
-    Bx_avg = (Bx + prev.Bx) / 2
-    By_avg = (By + prev.By) / 2
-
-    # Repeat the previous procedure using averaged fields.
-    x_offt, y_offt, px, py, pz = move_smart(
-        config, const.m, const.q, const.x_init, const.y_init,
-        prev.x_offt, prev.y_offt, x_offt, y_offt,
-        prev.px, prev.py, prev.pz,
-        Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
-    )
-    ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
-                             const.m, const.q, px, py, pz, virt_params)
-
-    ro_in = ro if not config.field_solver_variant_A else (ro + prev.ro) / 2
-    jz_in = jz if not config.field_solver_variant_A else (jz + prev.jz) / 2
-    Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
-                                           Ex_avg, Ey_avg, Bx_avg, By_avg,
-                                           beam_ro, ro_in, jx, jy, jz_in,
-                                           prev.jx, prev.jy)
-    if config.field_solver_variant_A:
-        Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
-        Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
-
-    Ez = calculate_Ez(config, jx, jy)
-    # Bz = 0 for now
-    Ex_avg = (Ex + prev.Ex) / 2
-    Ey_avg = (Ey + prev.Ey) / 2
-    Ez_avg = (Ez + prev.Ez) / 2
-    Bx_avg = (Bx + prev.Bx) / 2
-    By_avg = (By + prev.By) / 2
-
-    # Repeat the previous procedure using averaged fields once again.
-    x_offt, y_offt, px, py, pz = move_smart(
-        config, const.m, const.q, const.x_init, const.y_init,
-        prev.x_offt, prev.y_offt, x_offt, y_offt,
-        prev.px, prev.py, prev.pz,
-        Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
-    )
-    ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
-                             const.m, const.q, px, py, pz, virt_params)
-
-    # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
-
-    # Return the array collection that would serve as `prev` for the next step.
-    new_state = GPUArrays(x_offt=x_offt, y_offt=y_offt, px=px, py=py, pz=pz,
-                          Ex=Ex.copy(), Ey=Ey.copy(), Ez=Ez.copy(),
-                          Bx=Bx.copy(), By=By.copy(), Bz=Bz.copy(),
-                          ro=ro, jx=jx, jy=jy, jz=jz)
-
-    return new_state
-
-
-def initial_deposition(config, x_offt, y_offt, px, py, pz, m, q, virt_params):
-    """
-    Determine the background ion charge density by depositing the electrons
-    with their initial parameters and negating the result.
-    """
-    # Don't allow initial speeds for calculations with background ions
-    assert all([np.array_equiv(p, 0) for p in [px, py, pz]])
-
-    ro_electrons_initial, _, _, _ = deposit(config, 0, x_offt, y_offt,
-                                            m, q, px, py, pz, virt_params)
-    return -ro_electrons_initial  # Right on the GPU, huh
-
+# Coarse and fine plasma initialization #
 
 def make_coarse_plasma_grid(steps, step_size, coarseness):
     """
@@ -838,6 +504,392 @@ def plasma_make(steps, cell_size, coarseness=2, fineness=2):
             coarse_electrons_m, coarse_electrons_q, virt_params)
 
 
+@numba.jit(inline=True)
+def mix(coarse, A, B, C, D, pi, ni, pj, nj):
+    """
+    Bilinearly interpolate fine plasma properties from four
+    historically-neighbouring plasma particle property values.
+     B    D  #  y ^         A - bottom-left  neighbour, indices: pi, pj
+        .    #    |         B - top-left     neighbour, indices: pi, nj
+             #    +---->    C - bottom-right neighbour, indices: ni, pj
+     A    C  #         x    D - top-right    neighbour, indices: ni, nj
+    See the rest of the deposition and plasma creation for more info.
+    """
+    return (A * coarse[pi, pj] + B * coarse[pi, nj] +
+            C * coarse[ni, pj] + D * coarse[ni, nj])
+
+
+# Deposition #
+
+# TODO: try to get rid of the CUDA kernel
+@numba.cuda.jit
+def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
+                   c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,  # coarse
+                   fine_grid,
+                   influence_prev, influence_next, indices_prev, indices_next,
+                   out_ro, out_jx, out_jy, out_jz):
+    """
+    Interpolate coarse plasma into fine plasma and deposit it on the
+    charge density and current grids.
+    """
+    # Do nothing if our thread does not have a fine particle to deposit.
+    fk = numba.cuda.grid(1)
+    if fk >= fine_grid.size**2:
+        return
+    fi, fj = fk // fine_grid.size, fk % fine_grid.size
+
+    # Calculate the weights of the historically-neighbouring coarse particles
+    A = influence_prev[fi] * influence_prev[fj]
+    B = influence_prev[fi] * influence_next[fj]
+    C = influence_next[fi] * influence_prev[fj]
+    D = influence_next[fi] * influence_next[fj]
+    # and retrieve their indices.
+    pi, ni = indices_prev[fi], indices_next[fi]
+    pj, nj = indices_prev[fj], indices_next[fj]
+
+    # Now we're ready to mix the fine particle characteristics
+    x_offt = mix(c_x_offt, A, B, C, D, pi, ni, pj, nj)
+    y_offt = mix(c_y_offt, A, B, C, D, pi, ni, pj, nj)
+    x = fine_grid[fi] + x_offt  # x_fine_init
+    y = fine_grid[fj] + y_offt  # y_fine_init
+
+    # TODO: const m and q
+    m = virtplasma_smallness_factor * mix(c_m, A, B, C, D, pi, ni, pj, nj)
+    q = virtplasma_smallness_factor * mix(c_q, A, B, C, D, pi, ni, pj, nj)
+
+    px = virtplasma_smallness_factor * mix(c_px, A, B, C, D, pi, ni, pj, nj)
+    py = virtplasma_smallness_factor * mix(c_py, A, B, C, D, pi, ni, pj, nj)
+    pz = virtplasma_smallness_factor * mix(c_pz, A, B, C, D, pi, ni, pj, nj)
+
+    # and deposit the resulting fine particle on ro/j grids.
+    gamma_m = sqrt(m**2 + px**2 + py**2 + pz**2)
+    dro = q / (1 - pz / gamma_m)
+    djx = px * (dro / gamma_m)
+    djy = py * (dro / gamma_m)
+    djz = pz * (dro / gamma_m)
+
+    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
+        x, y, grid_steps, grid_step_size
+    )
+    deposit9(out_ro, i, j, dro, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    deposit9(out_jx, i, j, djx, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    deposit9(out_jy, i, j, djy, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    deposit9(out_jz, i, j, djz, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+
+
+def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
+    """
+    Interpolate coarse plasma into fine plasma and deposit it on the
+    charge density and current grids.
+    This is a convenience wrapper around the `deposit_kernel` CUDA kernel.
+    """
+    virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
+                                       config.plasma_fineness)**2
+    ro = cp.zeros((config.grid_steps, config.grid_steps))
+    jx = cp.zeros((config.grid_steps, config.grid_steps))
+    jy = cp.zeros((config.grid_steps, config.grid_steps))
+    jz = cp.zeros((config.grid_steps, config.grid_steps))
+    cfg = int(np.ceil(virt_params.fine_grid.size**2 / WARP_SIZE)), WARP_SIZE
+    deposit_kernel[cfg](config.grid_steps, config.grid_step_size,
+                        virtplasma_smallness_factor,
+                        x_offt, y_offt, m, q, px, py, pz,
+                        virt_params.fine_grid,
+                        virt_params.influence_prev, virt_params.influence_next,
+                        virt_params.indices_prev, virt_params.indices_next,
+                        ro, jx, jy, jz)
+    # Also add the background ion charge density.
+    ro += ro_initial  # Do it last to preserve more float precision
+    numba.cuda.synchronize()
+    return ro, jx, jy, jz
+
+
+def initial_deposition(config, x_offt, y_offt, px, py, pz, m, q, virt_params):
+    """
+    Determine the background ion charge density by depositing the electrons
+    with their initial parameters and negating the result.
+    """
+    # Don't allow initial speeds for calculations with background ions
+    assert all([np.array_equiv(p, 0) for p in [px, py, pz]])
+
+    ro_electrons_initial, _, _, _ = deposit(config, 0, x_offt, y_offt,
+                                            m, q, px, py, pz, virt_params)
+    return -ro_electrons_initial  # Right on the GPU, huh
+
+
+# Field interpolation and particle movement (fused) #
+
+# TODO: try to get rid of the kernel
+@numba.cuda.jit
+def move_smart_kernel(xi_step_size, reflect_boundary,
+                      grid_step_size, grid_steps,
+                      ms, qs,
+                      x_init, y_init,
+                      prev_x_offt, prev_y_offt,
+                      estimated_x_offt, estimated_y_offt,
+                      prev_px, prev_py, prev_pz,
+                      Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
+                      new_x_offt, new_y_offt, new_px, new_py, new_pz):
+    """
+    Update plasma particle coordinates and momenta according to the field
+    values interpolated halfway between the previous plasma particle location
+    and the the best estimation of its next location currently available to us.
+    Also reflect the particles from `+-reflect_boundary`.
+    """
+    # Do nothing if our thread does not have a coarse particle to move.
+    k = numba.cuda.grid(1)
+    if k >= ms.size:
+        return
+
+    m, q = ms[k], qs[k]
+
+    opx, opy, opz = prev_px[k], prev_py[k], prev_pz[k]
+    px, py, pz = opx, opy, opz
+    x_offt, y_offt = prev_x_offt[k], prev_y_offt[k]
+
+    # Calculate midstep positions and fields in them.
+    x_halfstep = x_init[k] + (prev_x_offt[k] + estimated_x_offt[k]) / 2
+    y_halfstep = y_init[k] + (prev_y_offt[k] + estimated_y_offt[k]) / 2
+    i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM = weights(
+        x_halfstep, y_halfstep, grid_steps, grid_step_size
+    )
+    Ex = interp9(Ex_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    Ey = interp9(Ey_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    Ez = interp9(Ez_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    Bx = interp9(Bx_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    By = interp9(By_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
+    Bz = 0  # Bz = 0 for now
+
+    # Move the particles according the the fields
+    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+    vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
+    factor_1 = q * xi_step_size / (1 - pz / gamma_m)
+    dpx = factor_1 * (Ex + vy * Bz - vz * By)
+    dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
+    dpz = factor_1 * (Ez + vx * By - vy * Bx)
+    px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
+
+    # Move the particles according the the fields again using updated momenta
+    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+    vx, vy, vz = px / gamma_m, py / gamma_m, pz / gamma_m
+    factor_1 = q * xi_step_size / (1 - pz / gamma_m)
+    dpx = factor_1 * (Ex + vy * Bz - vz * By)
+    dpy = factor_1 * (Ey - vx * Bz + vz * Bx)
+    dpz = factor_1 * (Ez + vx * By - vy * Bx)
+    px, py, pz = opx + dpx / 2, opy + dpy / 2, opz + dpz / 2
+
+    # Apply the coordinate and momenta increments
+    gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
+
+    x_offt += px / (gamma_m - pz) * xi_step_size  # no mixing with x_init
+    y_offt += py / (gamma_m - pz) * xi_step_size  # no mixing with y_init
+
+    px, py, pz = opx + dpx, opy + dpy, opz + dpz
+
+    # Reflect the particles from `+-reflect_boundary`.
+    # TODO: avoid branching?
+    x = x_init[k] + x_offt
+    y = y_init[k] + y_offt
+    if x > +reflect_boundary:
+        x = +2 * reflect_boundary - x
+        x_offt = x - x_init[k]
+        px = -px
+    if x < -reflect_boundary:
+        x = -2 * reflect_boundary - x
+        x_offt = x - x_init[k]
+        px = -px
+    if y > +reflect_boundary:
+        y = +2 * reflect_boundary - y
+        y_offt = y - y_init[k]
+        py = -py
+    if y < -reflect_boundary:
+        y = -2 * reflect_boundary - y
+        y_offt = y - y_init[k]
+        py = -py
+
+    # Save the results into the output arrays  # TODO: get rid of that
+    new_x_offt[k], new_y_offt[k] = x_offt, y_offt
+    new_px[k], new_py[k], new_pz[k] = px, py, pz
+
+
+def move_smart(config,
+               m, q, x_init, y_init, x_prev_offt, y_prev_offt,
+               estimated_x_offt, estimated_y_offt, px_prev, py_prev, pz_prev,
+               Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg):
+    """
+    Update plasma particle coordinates and momenta according to the field
+    values interpolated halfway between the previous plasma particle location
+    and the the best estimation of its next location currently available to us.
+    This is a convenience wrapper around the `move_smart_kernel` CUDA kernel.
+    """
+    x_offt_new = cp.zeros_like(x_prev_offt)
+    y_offt_new = cp.zeros_like(y_prev_offt)
+    px_new = cp.zeros_like(px_prev)
+    py_new = cp.zeros_like(py_prev)
+    pz_new = cp.zeros_like(pz_prev)
+    cfg = int(np.ceil(x_init.size / WARP_SIZE)), WARP_SIZE
+    move_smart_kernel[cfg](config.xi_step_size, config.reflect_boundary,
+                           config.grid_step_size, config.grid_steps,
+                           m.ravel(), q.ravel(),
+                           x_init.ravel(), y_init.ravel(),
+                           x_prev_offt.ravel(), y_prev_offt.ravel(),
+                           estimated_x_offt.ravel(), estimated_y_offt.ravel(),
+                           px_prev.ravel(), py_prev.ravel(), pz_prev.ravel(),
+                           Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg,
+                           x_offt_new.ravel(), y_offt_new.ravel(),
+                           px_new.ravel(), py_new.ravel(), pz_new.ravel())
+    numba.cuda.synchronize()
+    return x_offt_new, y_offt_new, px_new, py_new, pz_new
+
+
+# The scheme of a single step in xi #
+
+def step(config, const, virt_params, prev, beam_ro):
+    """
+    Calculate the next iteration of plasma evolution and response.
+    Returns the new state with the following attributes:
+    `x_offt, y_offt, px, py, pz, Ex, Ey, Ez, Bx, By, Bz, ro, jx, jy, jz`.
+    Pass the returned value as `prev` for the next iteration.
+    """
+    beam_ro = cp.asarray(beam_ro)  # copy the array is on GPU if it's not there
+
+    Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
+
+    # Estimate the midpoint particle position without knowing the fields yet
+    # TODO: use regular pusher and pass zero fields? previous fields?
+    x_offt, y_offt = move_estimate_wo_fields(config, const.m,
+                                             const.x_init, const.y_init,
+                                             prev.x_offt, prev.y_offt,
+                                             prev.px, prev.py, prev.pz)
+
+    # Interpolate fields in midpoint and move particles with previous fields.
+    x_offt, y_offt, px, py, pz = move_smart(
+        config, const.m, const.q, const.x_init, const.y_init,
+        prev.x_offt, prev.y_offt, x_offt, y_offt, prev.px, prev.py, prev.pz,
+        # no halfstep-averaged fields yet
+        prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
+    )
+    # Recalculate the plasma density and currents.
+    ro, jx, jy, jz = deposit(
+        config, const.ro_initial, x_offt, y_offt, const.m, const.q, px, py, pz,
+        virt_params
+    )
+
+    # Calculate the fields.
+    ro_in = ro if not config.field_solver_variant_A else (ro + prev.ro) / 2
+    jz_in = jz if not config.field_solver_variant_A else (jz + prev.jz) / 2
+    Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
+                                           prev.Ex, prev.Ey, prev.Bx, prev.By,
+                                           # no halfstep-averaged fields yet
+                                           beam_ro, ro_in, jx, jy, jz_in,
+                                           prev.jx, prev.jy)
+    if config.field_solver_variant_A:
+        Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
+        Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
+
+    Ez = calculate_Ez(config, jx, jy)
+    # Bz = 0 for now
+    Ex_avg = (Ex + prev.Ex) / 2
+    Ey_avg = (Ey + prev.Ey) / 2
+    Ez_avg = (Ez + prev.Ez) / 2
+    Bx_avg = (Bx + prev.Bx) / 2
+    By_avg = (By + prev.By) / 2
+
+    # Repeat the previous procedure using averaged fields.
+    x_offt, y_offt, px, py, pz = move_smart(
+        config, const.m, const.q, const.x_init, const.y_init,
+        prev.x_offt, prev.y_offt, x_offt, y_offt,
+        prev.px, prev.py, prev.pz,
+        Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
+    )
+    ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
+                             const.m, const.q, px, py, pz, virt_params)
+
+    ro_in = ro if not config.field_solver_variant_A else (ro + prev.ro) / 2
+    jz_in = jz if not config.field_solver_variant_A else (jz + prev.jz) / 2
+    Ex, Ey, Bx, By = calculate_Ex_Ey_Bx_By(config,
+                                           Ex_avg, Ey_avg, Bx_avg, By_avg,
+                                           beam_ro, ro_in, jx, jy, jz_in,
+                                           prev.jx, prev.jy)
+    if config.field_solver_variant_A:
+        Ex, Ey = 2 * Ex - prev.Ex, 2 * Ey - prev.Ey
+        Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
+
+    Ez = calculate_Ez(config, jx, jy)
+    # Bz = 0 for now
+    Ex_avg = (Ex + prev.Ex) / 2
+    Ey_avg = (Ey + prev.Ey) / 2
+    Ez_avg = (Ez + prev.Ez) / 2
+    Bx_avg = (Bx + prev.Bx) / 2
+    By_avg = (By + prev.By) / 2
+
+    # Repeat the previous procedure using averaged fields once again.
+    x_offt, y_offt, px, py, pz = move_smart(
+        config, const.m, const.q, const.x_init, const.y_init,
+        prev.x_offt, prev.y_offt, x_offt, y_offt,
+        prev.px, prev.py, prev.pz,
+        Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
+    )
+    ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
+                             const.m, const.q, px, py, pz, virt_params)
+
+    # TODO: what do we need that roj_new for, jx_prev/jy_prev only?
+
+    # Return the array collection that would serve as `prev` for the next step.
+    new_state = GPUArrays(x_offt=x_offt, y_offt=y_offt, px=px, py=py, pz=pz,
+                          Ex=Ex.copy(), Ey=Ey.copy(), Ez=Ez.copy(),
+                          Bx=Bx.copy(), By=By.copy(), Bz=Bz.copy(),
+                          ro=ro, jx=jx, jy=jy, jz=jz)
+
+    return new_state
+
+
+# Array initialization #
+
+def init(config):
+    """
+    Initialize all the arrays needed for `step` and `config.beam`.
+    """
+
+    assert config.grid_steps % 2 == 1
+
+    # virtual particles should not reach the window pre-boundary cells
+    assert config.reflect_padding_steps > config.plasma_coarseness + 1
+    # the (costly) alternative is to reflect after plasma virtualization
+
+    config.reflect_boundary = config.grid_step_size * (
+        config.grid_steps / 2 - config.reflect_padding_steps
+    )
+
+    grid = ((np.arange(config.grid_steps) - config.grid_steps // 2)
+            * config.grid_step_size)
+    xs, ys = grid[:, None], grid[None, :]
+
+    x_init, y_init, x_offt, y_offt, px, py, pz, m, q, virt_params = \
+        plasma_make(config.grid_steps - config.plasma_padding_steps * 2,
+                    config.grid_step_size,
+                    coarseness=config.plasma_coarseness,
+                    fineness=config.plasma_fineness)
+
+    ro_initial = initial_deposition(config, x_offt, y_offt,
+                                    px, py, pz, m, q, virt_params)
+
+    const = GPUArrays(m=m, q=q, x_init=x_init, y_init=y_init,
+                      ro_initial=ro_initial)
+
+    def zeros():
+        return cp.zeros((config.grid_steps, config.grid_steps))
+
+    state = GPUArrays(x_offt=x_offt, y_offt=y_offt, px=px, py=py, pz=pz,
+                      Ex=zeros(), Ey=zeros(), Ez=zeros(),
+                      Bx=zeros(), By=zeros(), Bz=zeros(),
+                      ro=zeros(), jx=zeros(), jy=zeros(), jz=zeros())
+
+    return xs, ys, const, virt_params, state
+
+
+
+# Some really sloppy diagnostics #
+
 max_zn = 0
 def diags_ro_zn(config, ro):
     global max_zn
@@ -888,47 +940,7 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
     sys.stdout.flush()
 
 
-def init(config):
-    """
-    Initialize all the arrays needed for `step` and `config.beam`.
-    """
-
-    assert config.grid_steps % 2 == 1
-
-    # virtual particles should not reach the window pre-boundary cells
-    assert config.reflect_padding_steps > config.plasma_coarseness + 1
-    # the (costly) alternative is to reflect after plasma virtualization
-
-    config.reflect_boundary = config.grid_step_size * (
-        config.grid_steps / 2 - config.reflect_padding_steps
-    )
-
-    grid = ((np.arange(config.grid_steps) - config.grid_steps // 2)
-            * config.grid_step_size)
-    xs, ys = grid[:, None], grid[None, :]
-
-    x_init, y_init, x_offt, y_offt, px, py, pz, m, q, virt_params = \
-        plasma_make(config.grid_steps - config.plasma_padding_steps * 2,
-                    config.grid_step_size,
-                    coarseness=config.plasma_coarseness,
-                    fineness=config.plasma_fineness)
-
-    ro_initial = initial_deposition(config, x_offt, y_offt,
-                                    px, py, pz, m, q, virt_params)
-
-    const = GPUArrays(m=m, q=q, x_init=x_init, y_init=y_init,
-                      ro_initial=ro_initial)
-
-    def zeros():
-        return cp.zeros((config.grid_steps, config.grid_steps))
-
-    state = GPUArrays(x_offt=x_offt, y_offt=y_offt, px=px, py=py, pz=pz,
-                      Ex=zeros(), Ey=zeros(), Ez=zeros(),
-                      Bx=zeros(), By=zeros(), Bz=zeros(),
-                      ro=zeros(), jx=zeros(), jy=zeros(), jz=zeros())
-
-    return xs, ys, const, virt_params, state
-
+# Main loop #
 
 def main():
     import config

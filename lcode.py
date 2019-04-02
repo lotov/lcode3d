@@ -419,7 +419,7 @@ def make_fine_plasma_grid(steps, step_size, fineness):
     return plasma_grid
 
 
-def plasma_make(steps, cell_size, coarseness=2, fineness=2):
+def make_plasma(steps, cell_size, coarseness=2, fineness=2):
     """
     Make coarse plasma initial state arrays and the arrays needed to intepolate
     coarse plasma into fine plasma (`virt_params`).
@@ -440,16 +440,16 @@ def plasma_make(steps, cell_size, coarseness=2, fineness=2):
 
     Nc = len(coarse_grid)
 
-    # Create plasma particles on the coarse grid, the ones that really move
-    coarse_electrons_x_init = np.broadcast_to(coarse_grid_xs, (Nc, Nc))
-    coarse_electrons_y_init = np.broadcast_to(coarse_grid_ys, (Nc, Nc))
-    coarse_electrons_x_offt = np.zeros((Nc, Nc))
-    coarse_electrons_y_offt = np.zeros((Nc, Nc))
-    coarse_electrons_px = np.zeros((Nc, Nc))
-    coarse_electrons_py = np.zeros((Nc, Nc))
-    coarse_electrons_pz = np.zeros((Nc, Nc))
-    coarse_electrons_m = np.ones((Nc, Nc)) * ELECTRON_MASS * coarseness**2
-    coarse_electrons_q = np.ones((Nc, Nc)) * ELECTRON_CHARGE * coarseness**2
+    # Create plasma electrons on the coarse grid, the ones that really move
+    coarse_x_init = cp.broadcast_to(cp.asarray(coarse_grid_xs), (Nc, Nc))
+    coarse_y_init = cp.broadcast_to(cp.asarray(coarse_grid_ys), (Nc, Nc))
+    coarse_x_offt = cp.zeros((Nc, Nc))
+    coarse_y_offt = cp.zeros((Nc, Nc))
+    coarse_px = cp.zeros((Nc, Nc))
+    coarse_py = cp.zeros((Nc, Nc))
+    coarse_pz = cp.zeros((Nc, Nc))
+    coarse_m = cp.ones((Nc, Nc)) * ELECTRON_MASS * coarseness**2
+    coarse_q = cp.ones((Nc, Nc)) * ELECTRON_CHARGE * coarseness**2
 
     # Calculate indices for coarse -> fine bilinear interpolation
 
@@ -500,10 +500,8 @@ def plasma_make(steps, cell_size, coarseness=2, fineness=2):
         fine_grid=fine_grid,
     )
 
-    return (coarse_electrons_x_init, coarse_electrons_y_init,
-            coarse_electrons_x_offt, coarse_electrons_y_offt,
-            coarse_electrons_px, coarse_electrons_py, coarse_electrons_pz,
-            coarse_electrons_m, coarse_electrons_q, virt_params)
+    return (coarse_x_init, coarse_y_init, coarse_x_offt, coarse_y_offt,
+            coarse_px, coarse_py, coarse_pz, coarse_m, coarse_q, virt_params)
 
 
 @numba.jit(inline=True)
@@ -610,9 +608,6 @@ def initial_deposition(config, x_offt, y_offt, px, py, pz, m, q, virt_params):
     Determine the background ion charge density by depositing the electrons
     with their initial parameters and negating the result.
     """
-    # Don't allow initial speeds for calculations with background ions
-    assert all([np.array_equiv(p, 0) for p in [px, py, pz]])
-
     ro_electrons_initial, _, _, _ = deposit(config, 0, x_offt, y_offt,
                                             m, q, px, py, pz, virt_params)
     return -ro_electrons_initial  # Right on the GPU, huh
@@ -867,7 +862,7 @@ def init(config):
     xs, ys = grid[:, None], grid[None, :]
 
     x_init, y_init, x_offt, y_offt, px, py, pz, m, q, virt_params = \
-        plasma_make(config.grid_steps - config.plasma_padding_steps * 2,
+        make_plasma(config.grid_steps - config.plasma_padding_steps * 2,
                     config.grid_step_size,
                     coarseness=config.plasma_coarseness,
                     fineness=config.plasma_fineness)
@@ -887,7 +882,6 @@ def init(config):
                       ro=zeros(), jx=zeros(), jy=zeros(), jz=zeros())
 
     return xs, ys, const, virt_params, state
-
 
 
 # Some really sloppy diagnostics #

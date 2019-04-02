@@ -168,8 +168,11 @@ def calculate_Ez(config, jx, jy):
     # 2. Multiply f by the special matrix that does the job and normalizes.
     f *= dirichlet_matrix(config.grid_steps, config.grid_step_size)
 
-    # 3. Apply iDST-Type1-2D (Inverse Discrete Sine Transform Type 1 2D),
-    #    which matches DST-Type1-2D to the multiplier.
+    # 3. Apply iDST-Type1-2D (Inverse Discrete Sine Transform Type 1 2D).
+    #    We don't have to define a separate iDST function, because
+    #    unnormalized DST-Type1 is its own inverse, up to a factor 2(N+1)
+    #    and we take all scaling matters into account with a single factor
+    #    hidden inside dirichlet_matrix.
     Ez_inner = dst2d(f)
     Ez = cp.pad(Ez_inner, 1, 'constant', constant_values=0)
     numba.cuda.synchronize()
@@ -408,11 +411,10 @@ def make_fine_plasma_grid(steps, step_size, fineness):
     if fineness % 2:  # some on zero axes, none on cell corners
         right_half = np.arange(steps // 2 * fineness) * plasma_step
         left_half = -right_half[:0:-1]  # invert, reverse, drop zero
-        plasma_grid = np.concatenate([left_half, right_half])
     else:  # none on zero axes, none on cell corners
         right_half = (.5 + np.arange(steps // 2 * fineness)) * plasma_step
         left_half = -right_half[::-1]  # invert, reverse
-        plasma_grid = np.concatenate([left_half, right_half])
+    plasma_grid = np.concatenate([left_half, right_half])
     assert(np.array_equal(plasma_grid, -plasma_grid[::-1]))
     return plasma_grid
 

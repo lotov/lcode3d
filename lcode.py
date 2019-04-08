@@ -519,25 +519,14 @@ def mix(coarse, A, B, C, D, pi, ni, pj, nj):
             C * coarse[ni, pj] + D * coarse[ni, nj])
 
 
-# Deposition #
-
-# TODO: try to get rid of the CUDA kernel
-@numba.cuda.jit
-def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
-                   c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,  # coarse
-                   fine_grid,
-                   influence_prev, influence_next, indices_prev, indices_next,
-                   out_ro, out_jx, out_jy, out_jz):
+@numba.jit(inline=True)
+def coarse_to_fine(fi, fj, c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,
+                   virtplasma_smallness_factor, fine_grid,
+                   influence_prev, influence_next, indices_prev, indices_next):
     """
-    Interpolate coarse plasma into fine plasma and deposit it on the
-    charge density and current grids.
+    Bilinearly interpolate fine plasma properties from four
+    historically-neighbouring plasma particle property values.
     """
-    # Do nothing if our thread does not have a fine particle to deposit.
-    fk = numba.cuda.grid(1)
-    if fk >= fine_grid.size**2:
-        return
-    fi, fj = fk // fine_grid.size, fk % fine_grid.size
-
     # Calculate the weights of the historically-neighbouring coarse particles
     A = influence_prev[fi] * influence_prev[fj]
     B = influence_prev[fi] * influence_next[fj]
@@ -560,8 +549,36 @@ def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
     px = virtplasma_smallness_factor * mix(c_px, A, B, C, D, pi, ni, pj, nj)
     py = virtplasma_smallness_factor * mix(c_py, A, B, C, D, pi, ni, pj, nj)
     pz = virtplasma_smallness_factor * mix(c_pz, A, B, C, D, pi, ni, pj, nj)
+    return x, y, m, q, px, py, pz
 
-    # and deposit the resulting fine particle on ro/j grids.
+
+# Deposition #
+
+@numba.cuda.jit
+def deposit_kernel(grid_steps, grid_step_size, virtplasma_smallness_factor,
+                   c_x_offt, c_y_offt, c_m, c_q, c_px, c_py, c_pz,  # coarse
+                   fine_grid,
+                   influence_prev, influence_next, indices_prev, indices_next,
+                   out_ro, out_jx, out_jy, out_jz):
+    """
+    Interpolate coarse plasma into fine plasma and deposit it on the
+    charge density and current grids.
+    """
+    # Do nothing if our thread does not have a fine particle to deposit.
+    fk = numba.cuda.grid(1)
+    if fk >= fine_grid.size**2:
+        return
+    fi, fj = fk // fine_grid.size, fk % fine_grid.size
+
+    # Interpolate fine plasma particle from coarse particle characteristics
+    x, y, m, q, px, py, pz = coarse_to_fine(fi, fj, c_x_offt, c_y_offt,
+                                            c_m, c_q, c_px, c_py, c_pz,
+                                            virtplasma_smallness_factor,
+                                            fine_grid,
+                                            influence_prev, influence_next,
+                                            indices_prev, indices_next)
+
+    # Deposit the resulting fine particle on ro/j grids.
     gamma_m = sqrt(m**2 + px**2 + py**2 + pz**2)
     dro = q / (1 - pz / gamma_m)
     djx = px * (dro / gamma_m)
@@ -615,7 +632,6 @@ def initial_deposition(config, x_offt, y_offt, px, py, pz, m, q, virt_params):
 
 # Field interpolation and particle movement (fused) #
 
-# TODO: try to get rid of the kernel
 @numba.cuda.jit
 def move_smart_kernel(xi_step_size, reflect_boundary,
                       grid_step_size, grid_steps,

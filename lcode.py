@@ -956,22 +956,24 @@ def diagnostics(view_state, config, xi_i, Ez_00_history):
 
 def main():
     import config
-    xs, ys, const, virt_params, state = init(config)
-    Ez_00_history = []
+    with cp.cuda.Device(config.gpu_index):
 
-    for xi_i in range(config.xi_steps):
-        beam_ro = config.beam(xi_i, xs, ys)
+        xs, ys, const, virt_params, state = init(config)
+        Ez_00_history = []
 
-        state = step(config, const, virt_params, state, beam_ro)
-        view_state = GPUArraysView(state)
+        for xi_i in range(config.xi_steps):
+            beam_ro = config.beam(xi_i, xs, ys)
 
-        Ez_00 = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]
-        Ez_00_history.append(Ez_00)
+            state = step(config, const, virt_params, state, beam_ro)
+            view_state = GPUArraysView(state)
 
-        time_for_diags = xi_i % config.diagnostics_each_N_steps == 0
-        last_step = xi_i == config.xi_steps - 1
-        if time_for_diags or last_step:
-            diagnostics(view_state, config, xi_i, Ez_00_history)
+            ez = view_state.Ez[config.grid_steps // 2, config.grid_steps // 2]
+            Ez_00_history.append(ez)
+
+            time_for_diags = xi_i % config.diagnostics_each_N_steps == 0
+            last_step = xi_i == config.xi_steps - 1
+            if time_for_diags or last_step:
+                diagnostics(view_state, config, xi_i, Ez_00_history)
 
 
 if __name__ == '__main__':

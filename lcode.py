@@ -210,7 +210,7 @@ def mix2d(a):
 @cp.memoize()
 def mixed_matrix(grid_steps, grid_step_size, subtraction_trick):
     """
-    Calculate a magical matrix that solves the Laplace or Helmholtz equation
+    Calculate a magical matrix that solves the Helmholtz or Laplace equation
     (subtraction_trick=True and subtraction_trick=False correspondingly)
     if you elementwise-multiply the RHS by it "in DST-DCT-transformed-space".
     See Samarskiy-Nikolaev, p. 189 and around.

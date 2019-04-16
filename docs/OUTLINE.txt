@@ -1,0 +1,67 @@
+Trickery: quasistatic, coarse/fine, helmholtz, variantA, reflect_boundary
+
+SPLIT
+=====
+
+What:
+  Physics: Terms, Beam, Plasma, Fields, Trickery, Units
+  Simulation window and grids: fields and ro, reflection boundary, plasma boundary, two plasma grids
+  Ez
+  Ex,Ey,Bx,By: base equation
+  Plasma movement: equations of motion, reflection
+
+Usage:
+  Installation
+  Configuration
+  Execution
+
+How:
+  General code structure
+  Ez: dst2d
+  Ex,Ey,Bx,By: dstdct2d
+  Plasma movement
+  Coarse/fine plasma
+  Deposition
+  ...
+
+Why:
+  ...
+
+
+SINGLE (reorder the code to match!)
+======
+Overview:
+  Problem and Physics: General, Beam, Plasma, Fields
+  Problem domain trickery index: quasistatic, coarse/fine, helmholtz, variantA, reflect_boundary
+  Simulation window and grids: fields and ro, reflection boundary, plasma boundary, two plasma grids
+  Units
+
+A tour of the simulations:
+  Ez: problem and RHS, method, dst2d
+  Ex,Ey,Bx,By: problem and RHS, method, variant A, dstdct2d
+  Bz: TODO
+  Plasma movement (w/o fields): equations, reflection, implementation
+  Plasma movement with fields: equations, reflection, implementation
+  TSC2D plasma shape: weights, interp9, deposit9
+  Coarse and fine plasma: what, how
+  Deposition
+  Beam model
+  Xi step: move-deposit-fields-move-deposit-fields-move-deposit
+
+Technicalities:
+  GPU calculations: cupy (and its limitations), numba kernels, my overly smart classes
+  Initialization
+  Optimal transverse grid sizes
+  Design decisions:
+    Codebase size
+    Memory considerations
+    Offset-coordinate separation
+    Zero special boundary treatment
+    Integer xi steps
+
+Usage:
+  Installation
+  Configuration
+  Running and embedding
+
+Contributing

@@ -445,7 +445,7 @@ def deposit9(a, i, j, val, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM):
 
 # Coarse and fine plasma initialization #
 
-def make_coarse_plasma_grid(steps, step_size, coarseness):
+def make_coarse_plasma_grid(steps, step_size, coarseness=3):
     """
     Create initial coarse plasma particles coordinates
     (a single 1D grid for both x and y).
@@ -459,25 +459,14 @@ def make_coarse_plasma_grid(steps, step_size, coarseness):
     return plasma_grid
 
 
-def make_fine_plasma_grid(steps, step_size, fineness):
+def make_fine_plasma_grid(steps, step_size, fineness=2):
     """
     Create initial fine plasma particles coordinates
     (a single 1D grid for both x and y).
-    Avoids positioning particles at the cell edges and boundaries, example:
-    `fineness=3` (and `coarseness=2`):
-        +-----------+-----------+-----------+-----------+
-        | .   .   . | .   .   . | .   .   . | .   .   . |
-        |           |           |           |           |   . - fine particle
-        | .   .   . | .   *   . | .   .   . | .   *   . |
-        |           |           |           |           |   * - coarse particle
-        | .   .   . | .   .   . | .   .   . | .   .   . |
-        +-----------+-----------+-----------+-----------+
-    `fineness=2` (and `coarseness=2`):
-        +-------+-------+-------+-------+-------+
-        | .   . | .   . | .   . | .   . | .   . |           . - fine particle
-        |       |   *   |       |   *   |       |
-        | .   . | .   . | .   . | .   . | .   . |           * - coarse particle
-        +-------+-------+-------+-------+-------+
+
+    Avoids positioning particles at the cell edges and boundaries.
+
+    .. See docs/how/fine_and_coarse_plasma for illustrations.
     """
     assert fineness == int(fineness)
     plasma_step = step_size / fineness
@@ -492,10 +481,11 @@ def make_fine_plasma_grid(steps, step_size, fineness):
     return plasma_grid
 
 
-def make_plasma(steps, cell_size, coarseness=2, fineness=2):
+def make_plasma(steps, cell_size, coarseness=3, fineness=2):
     """
     Make coarse plasma initial state arrays and the arrays needed to intepolate
     coarse plasma into fine plasma (`virt_params`).
+
     Coarse is the one that will evolve and fine is the one to be bilinearly
     interpolated from the coarse one based on the initial positions
     (using 1 to 4 coarse plasma particles that initially were the closest).

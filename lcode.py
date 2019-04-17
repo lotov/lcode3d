@@ -284,8 +284,81 @@ def calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
     return Ex, Ey, Bx, By
 
 
-# Pushing particles without any fields (used for initial halfstep estimation) #
+# Solving Laplace equation with Neumann boundary conditions (Bz) #
 
+def dct2d(a):
+    """
+    Calculate DCT-Type1-2D, jury-rigged from symmetrically-padded rFFT.
+    """
+    assert a.shape[0] == a.shape[1]
+    N = a.shape[0]
+    #                                    //1  2  3  4\ 3  2 \
+    # /1  2  3  4\                      | |5  6  7  8| 7  6  |
+    # |5  6  7  8|     symmetrically    | |9  A  B  C| B  A  |
+    # |9  A  B  C|      padded to       | \D  E  F  G/ F  E  |
+    # \D  E  F  G/                      |  9  A  B  C  B  A  |
+    #                                    \ 5  6  7  8  7  6 /
+    p = cp.zeros((2 * N - 2, 2 * N - 2))
+    p[:N, :N] = a
+    p[N:, :N] = cp.flipud(a)[1:-1, :]  # flip to right on drawing above
+    p[:N, N:] = cp.fliplr(a)[:, 1:-1]  # flip down on drawing above
+    p[N:, N:] = cp.flipud(cp.fliplr(a))[1:-1, 1:-1]  # bottom-right corner
+    # after padding: rFFT-2D, cut out the top-left segment, take -real part
+    return -cp.fft.rfft2(p)[:N, :N].real
+
+
+@cp.memoize()
+def neumann_matrix(grid_steps, grid_step_size):
+    """
+    Calculate a magical matrix that solves the Laplace equation
+    if you elementwise-multiply the RHS by it "in DST-space".
+    See Samarskiy-Nikolaev, p. 187.
+    """
+    # mul[i, j] = 1 / (lam[i] + lam[j])
+    # lam[k] = 4 / h**2 * sin(k * pi * h / (2 * L))**2, where L = h * (N - 1)
+    k = cp.arange(0, grid_steps)
+    lam = 4 / grid_step_size**2 * cp.sin(k * cp.pi / (2 * (grid_steps - 1)))**2
+    lambda_i, lambda_j = lam[:, None], lam[None, :]
+    mul = 1 / (lambda_i + lambda_j)  # WARNING: zero division in mul[0, 0]!
+    mul[0, 0] = 0  # doesn't matter anyway, just defines constant shift
+    return mul / (2 * (grid_steps - 1))**2  # additional 2xDST normalization
+
+
+def calculate_Bz(config, jx, jy):
+    """
+    Calculate Bz as iDCT2D(dirichlet_matrix * DCT2D(djx/dy - djy/dx)).
+    """
+    # 0. Calculate RHS.
+    # NOTE: use gradient instead if available (cupy doesn't have gradient yet).
+    djx_dy = jx[1:-1, 2:] - jx[1:-1, :-2]
+    djy_dx = jy[2:, 1:-1] - jy[:-2, 1:-1]
+    djx_dy = cp.pad(djx_dy, 1, 'constant', constant_values=0)
+    djy_dx = cp.pad(djy_dx, 1, 'constant', constant_values=0)
+    rhs = -(djx_dy - djy_dx) / (config.grid_step_size * 2)  # -?
+
+    # As usual, the boundary conditions are zero
+    # (otherwise add them to boundary cells, divided by grid_step_size/2
+
+    # 1. Apply DST-Type1-2D (Discrete Sine Transform Type 1 2D) to the RHS.
+    f = dct2d(rhs)
+
+    # 2. Multiply f by the special matrix that does the job and normalizes.
+    f *= neumann_matrix(config.grid_steps, config.grid_step_size)
+
+    # 3. Apply iDCT-Type1-2D (Inverse Discrete Cosine Transform Type 1 2D).
+    #    We don't have to define a separate iDCT function, because
+    #    unnormalized DCT-Type1 is its own inverse, up to a factor 2(N+1)
+    #    and we take all scaling matters into account with a single factor
+    #    hidden inside neumann_matrix.
+    Bz = dct2d(f)
+    numba.cuda.synchronize()
+
+    Bz -= Bz.mean()  # Integral over Bz must be 0.
+
+    return Bz
+
+
+# Pushing particles without any fields (used for initial halfstep estimation) #
 
 def move_estimate_wo_fields(config,
                             m, x_init, y_init, prev_x_offt, prev_y_offt,
@@ -670,7 +743,7 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
     Ez = interp9(Ez_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
     Bx = interp9(Bx_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
     By = interp9(By_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
-    Bz = 0  # Bz = 0 for now
+    Bz = interp9(Bz_avg, i, j, wMP, w0P, wPP, wM0, w00, wP0, wMM, w0M, wPM)
 
     # Move the particles according the the fields
     gamma_m = sqrt(m**2 + pz**2 + px**2 + py**2)
@@ -765,8 +838,6 @@ def step(config, const, virt_params, prev, beam_ro):
     """
     beam_ro = cp.asarray(beam_ro)  # copy the array is on GPU if it's not there
 
-    Bz = cp.zeros_like(prev.Bz)  # Bz = 0 for now
-
     # Estimate the midpoint particle position without knowing the fields yet
     # TODO: use regular pusher and pass zero fields? previous fields?
     x_offt, y_offt = move_estimate_wo_fields(config, const.m,
@@ -779,7 +850,7 @@ def step(config, const, virt_params, prev, beam_ro):
         config, const.m, const.q, const.x_init, const.y_init,
         prev.x_offt, prev.y_offt, x_offt, y_offt, prev.px, prev.py, prev.pz,
         # no halfstep-averaged fields yet
-        prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, Bz_avg=0
+        prev.Ex, prev.Ey, prev.Ez, prev.Bx, prev.By, prev.Bz
     )
     # Recalculate the plasma density and currents.
     ro, jx, jy, jz = deposit(
@@ -800,19 +871,21 @@ def step(config, const, virt_params, prev, beam_ro):
         Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
 
     Ez = calculate_Ez(config, jx, jy)
-    # Bz = 0 for now
+    Bz = calculate_Bz(config, jx, jy)
+
     Ex_avg = (Ex + prev.Ex) / 2
     Ey_avg = (Ey + prev.Ey) / 2
     Ez_avg = (Ez + prev.Ez) / 2
     Bx_avg = (Bx + prev.Bx) / 2
     By_avg = (By + prev.By) / 2
+    Bz_avg = (Bz + prev.Bz) / 2
 
     # Repeat the previous procedure using averaged fields.
     x_offt, y_offt, px, py, pz = move_smart(
         config, const.m, const.q, const.x_init, const.y_init,
         prev.x_offt, prev.y_offt, x_offt, y_offt,
         prev.px, prev.py, prev.pz,
-        Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
+        Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg
     )
     ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
                              const.m, const.q, px, py, pz, virt_params)
@@ -828,19 +901,21 @@ def step(config, const, virt_params, prev, beam_ro):
         Bx, By = 2 * Bx - prev.Bx, 2 * By - prev.By
 
     Ez = calculate_Ez(config, jx, jy)
-    # Bz = 0 for now
+    Bz = calculate_Bz(config, jx, jy)
+
     Ex_avg = (Ex + prev.Ex) / 2
     Ey_avg = (Ey + prev.Ey) / 2
     Ez_avg = (Ez + prev.Ez) / 2
     Bx_avg = (Bx + prev.Bx) / 2
     By_avg = (By + prev.By) / 2
+    Bz_avg = (Bz + prev.Bz) / 2
 
     # Repeat the previous procedure using averaged fields once again.
     x_offt, y_offt, px, py, pz = move_smart(
         config, const.m, const.q, const.x_init, const.y_init,
         prev.x_offt, prev.y_offt, x_offt, y_offt,
         prev.px, prev.py, prev.pz,
-        Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg=0
+        Ex_avg, Ey_avg, Ez_avg, Bx_avg, By_avg, Bz_avg
     )
     ro, jx, jy, jz = deposit(config, const.ro_initial, x_offt, y_offt,
                              const.m, const.q, px, py, pz, virt_params)

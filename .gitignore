@@ -26,3 +26,4 @@
 /result_*.dat
 /transverse*/
 __pycache__/
+/docs/index.rst

@@ -19,7 +19,7 @@ glance over the first chapter and then
 dive straight into the source code,
 switching back and forth using [source] and [docs] cross-links
 (available only in HTML version).
-Trust me, at 500 lines of code it's even shorter than the docs,
+Trust us, at 500 lines of code it's even shorter than the docs,
 and if you get stuck, you'll always have a link back to the explanations.
 
 
@@ -35,3 +35,14 @@ Overview
 Tour of the simulations
 =======================
 .. include:: toc-tour.rst
+
+
+Technicalities
+==============
+.. include:: toc-technicalities.rst
+
+
+Usage:
+======
+.. include:: toc-usage.rst
+

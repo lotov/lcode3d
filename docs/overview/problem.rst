@@ -32,7 +32,7 @@ The problem geometry is thus :math:`\xi, x, y`.
 Beam
 ----
 The beam is currently simulated as a charge density function :math:`\rho_b(\xi, x, y)`,
-not with particles
+and not with particles
 [:doc:`../tour/beam`].
 
 

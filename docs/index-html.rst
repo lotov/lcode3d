@@ -8,7 +8,7 @@ the recommended procedure is to
 glance over the first chapter and then
 `dive straight into the source code <../html/_modules/lcode.html#dst2d>`_
 switching back and forth using [source] and [docs] cross-links.
-Trust me, at 500 lines of code it's even shorter than the docs,
+Trust us, at 500 lines of code it's even shorter than the docs,
 and if you get stuck, you always have a link back to the explanations.
 
 
@@ -16,9 +16,14 @@ and if you get stuck, you always have a link back to the explanations.
 
 .. include:: toc-tour.rst
 
+.. include:: toc-technicalities.rst
+
+.. include:: toc-usage.rst
+
 .. toctree::
    :maxdepth: 1
    :caption: Extras
 
    example-config
+   contributing
    useful-links

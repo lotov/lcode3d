@@ -14,7 +14,7 @@ diagnostics_each_N_steps = int(1 / xi_step_size)
 #diagnostics_each_N_steps = 1
 
 field_solver_subtraction_trick = 1
-field_solver_variant_A = True
+field_solver_variant_A = True  #: Use Variant A or Variant B for Ex, Ey, Bx, By
 
 reflect_padding_steps = 5
 plasma_padding_steps = 10

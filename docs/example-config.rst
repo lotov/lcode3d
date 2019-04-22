@@ -1,5 +1,5 @@
 Example configuration file
 ==========================
 
-.. literalinclude:: ../config.example.py
+.. literalinclude:: ../config_example.py
    :language: python

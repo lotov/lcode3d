@@ -12,17 +12,17 @@ Geometry
 Numerical stability
 -------------------
 
-* :doc:`Helmholtz equation <../tour/ExEyBxBy>`
+* :ref:`Helmholtz equation <helmholtz>`
   increases numerical stability, optional.
 
-* :doc:`'Variant A' <../tour/ExEyBxBy>`
+* :ref:`'Variant A' <variant_A>`
   increases numerical stability, optional.
 
 * :doc:`Coarse/fine plasma approach <../tour/coarse_and_fine_plasma>`
   increases numerical stability, optional.
 
 * :doc:`Offset-coordinate separation <../technicalities/offsets>`
-  (probably) probably helps with float precision.
+  (probably) helps with float precision.
 
 
 Simplifications

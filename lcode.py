@@ -243,11 +243,12 @@ def calculate_Ex_Ey_Bx_By(config, Ex_avg, Ey_avg, Bx_avg, By_avg,
     """
     Calculate transverse fields as iDST-DCT(mixed_matrix * DST-DCT(RHS.T)).T,
     with and without transposition depending on the field component.
-    NOTE: density and currents are assumed to be zero on the perimeter
-          (no plasma particles must reach the wall, so the reflection boundary
-           must be closer to the center than the simulation window boundary
-           minus the coarse plasma particle cloud width).
     """
+    # NOTE: density and currents are assumed to be zero on the perimeter
+    # (no plasma particles must reach the wall, so the reflection boundary
+    #  must be closer to the center than the simulation window boundary
+    #  minus the coarse plasma particle cloud width).
+
     # 0. Calculate gradients and RHS.
     dro_dx, dro_dy = dx_dy(ro + beam_ro, config.grid_step_size)
     djz_dx, djz_dy = dx_dy(jz + beam_ro, config.grid_step_size)

@@ -1,6 +1,37 @@
 Coarse and fine plasma
 ======================
 
+.. figure:: ../illustrations/virtplasma.png
+
+   Positioning of the coarse and fine particles in dual-plasma approach.
+
+
+.. autofunction:: lcode.make_coarse_plasma_grid
+
+.. autofunction:: lcode.make_fine_plasma_grid
+
+   * ``fineness=3`` (and ``coarseness=2``)::
+
+       +-----------+-----------+-----------+-----------+
+       | .   .   . | .   .   . | .   .   . | .   .   . |
+       |           |           |           |           |   . - fine particle
+       | .   .   . | .   *   . | .   .   . | .   *   . |
+       |           |           |           |           |   * - coarse particle
+       | .   .   . | .   .   . | .   .   . | .   .   . |
+       +-----------+-----------+-----------+-----------+
+
+   * ``fineness=2`` (and ``coarseness=2``)::
+
+       +-------+-------+-------+-------+-------+
+       | .   . | .   . | .   . | .   . | .   . |           . - fine particle
+       |       |   *   |       |   *   |       |
+       | .   . | .   . | .   . | .   . | .   . |           * - coarse particle
+       +-------+-------+-------+-------+-------+
+
+
+Alternative illustration
+------------------------
+
 .. plot::
 
    import numpy as np
@@ -53,26 +84,3 @@ Coarse and fine plasma
    plt.ylim(-LIM, LIM)
    plt.axes().set_aspect('equal')
    plt.show()
-
-
-.. autofunction:: lcode.make_coarse_plasma_grid
-
-.. autofunction:: lcode.make_fine_plasma_grid
-
-   * ``fineness=3`` (and ``coarseness=2``)::
-
-       +-----------+-----------+-----------+-----------+
-       | .   .   . | .   .   . | .   .   . | .   .   . |
-       |           |           |           |           |   . - fine particle
-       | .   .   . | .   *   . | .   .   . | .   *   . |
-       |           |           |           |           |   * - coarse particle
-       | .   .   . | .   .   . | .   .   . | .   .   . |
-       +-----------+-----------+-----------+-----------+
-
-   * ``fineness=2`` (and ``coarseness=2``)::
-
-       +-------+-------+-------+-------+-------+
-       | .   . | .   . | .   . | .   . | .   . |           . - fine particle
-       |       |   *   |       |   *   |       |
-       | .   . | .   . | .   . | .   . | .   . |           * - coarse particle
-       +-------+-------+-------+-------+-------+

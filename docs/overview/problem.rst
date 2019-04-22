@@ -85,12 +85,15 @@ where indices :math:`e, i, b` represent electrons, ions and beam respectively.
 
    In reality, things are not that simple.
 
-   :math:`E_z` calculation is relatively straightforward and
-   boils down to solving the Laplace equation with Dirichlet boundary conditions,
-   while the transverse fields are actually obtained
+   :math:`E_z` and :math:`B_z` calculations is relatively straightforward and
+   boils down to solving
+   the Laplace and Neumann equation with Dirichlet boundary conditions
+   respectively.
+
+   The transverse fields are actually obtained
    by solving the Helmholtz equation with mixed boundary conditions,
    and :math:`B_z` is currently not calculated at all
-   (so see :doc:`../tour/Ez`, :doc:`../tour/ExEyBxBy` and :doc:`../tour/Bz`
+   (so refer to :doc:`../tour/Ez`, :doc:`../tour/ExEyBxBy` and :doc:`../tour/Bz`
    for the equations that we *really* solve).
 
 

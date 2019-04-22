@@ -28,5 +28,5 @@ Numerical stability
 Simplifications
 ---------------
 
-* :doc:`Reflection boundary <../overview/window_and_grids>`
+* :ref:`Reflection boundary <reflect_and_plasma_boundaries>`
   is closer than the field calculation boundary to simplify boundary handling.

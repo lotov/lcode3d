@@ -63,17 +63,19 @@ The fields are calculated from their derivatives. Theoretically, the equations a
 
 .. math::
 
-   \Delta E_z = \frac{\partial j_x}{\partial x} - \frac{\partial j_y}{\partial y}
+   \Delta_\perp E_z = \frac{\partial j_x}{\partial x} - \frac{\partial j_y}{\partial y}
 
-   \Delta B_z = \frac{\partial j_x}{\partial y} - \frac{\partial j_y}{\partial x}
+   \Delta_\perp B_z = \frac{\partial j_x}{\partial y} - \frac{\partial j_y}{\partial x}
 
-   \Delta E_x = \frac{\partial \rho}{\partial x} - \frac{\partial j_x}{\partial \xi}
+   \Delta_\perp E_x = \frac{\partial \rho}{\partial x} - \frac{\partial j_x}{\partial \xi}
 
-   \Delta E_y = \frac{\partial \rho}{\partial y} - \frac{\partial j_y}{\partial \xi}
+   \Delta_\perp E_y = \frac{\partial \rho}{\partial y} - \frac{\partial j_y}{\partial \xi}
 
-   \Delta B_x = \frac{\partial j_y}{\partial \xi} - \frac{\partial j_z}{\partial y}
+   \Delta_\perp B_x = \frac{\partial j_y}{\partial \xi} - \frac{\partial j_z}{\partial y}
 
-   \Delta B_y = \frac{\partial j_z}{\partial x} - \frac{\partial j_x}{\partial \xi}
+   \Delta_\perp B_y = \frac{\partial j_z}{\partial x} - \frac{\partial j_x}{\partial \xi}
+
+   \Delta_\perp = \frac{\partial^2}{\partial x^2} + \frac{\partial^2}{\partial y^2}
 
    \rho = \rho_e + \rho_i + \rho_b
 

@@ -7,13 +7,13 @@ We want to solve
 
 .. math::
 
-   \Delta E_x = \frac{\partial \rho}{\partial x} - \frac{\partial j_x}{\partial \xi}
+   \Delta_\perp E_x = \frac{\partial \rho}{\partial x} - \frac{\partial j_x}{\partial \xi}
 
-   \Delta E_y = \frac{\partial \rho}{\partial y} - \frac{\partial j_y}{\partial \xi}
+   \Delta_\perp E_y = \frac{\partial \rho}{\partial y} - \frac{\partial j_y}{\partial \xi}
 
-   \Delta B_x = \frac{\partial j_y}{\partial \xi} - \frac{\partial j_z}{\partial y}
+   \Delta_\perp B_x = \frac{\partial j_y}{\partial \xi} - \frac{\partial j_z}{\partial y}
 
-   \Delta B_y = \frac{\partial j_z}{\partial x} - \frac{\partial j_x}{\partial \xi}
+   \Delta_\perp B_y = \frac{\partial j_z}{\partial x} - \frac{\partial j_x}{\partial \xi}
 
 
 with mixed boundary conditions.
@@ -32,13 +32,13 @@ these Helmholtz equations instead:
 
 .. math::
 
-   \Delta E_x - E_x = \frac{\partial \rho}{\partial x} - \frac{\partial j_x}{\partial \xi} - E_x
+   \Delta_\perp E_x - E_x = \frac{\partial \rho}{\partial x} - \frac{\partial j_x}{\partial \xi} - E_x
 
-   \Delta E_y - E_y = \frac{\partial \rho}{\partial y} - \frac{\partial j_y}{\partial \xi} - E_y
+   \Delta_\perp E_y - E_y = \frac{\partial \rho}{\partial y} - \frac{\partial j_y}{\partial \xi} - E_y
 
-   \Delta B_x - B_x = \frac{\partial j_y}{\partial \xi} - \frac{\partial j_z}{\partial y} - B_x
+   \Delta_\perp B_x - B_x = \frac{\partial j_y}{\partial \xi} - \frac{\partial j_z}{\partial y} - B_x
 
-   \Delta B_y - B_y = \frac{\partial j_z}{\partial x} - \frac{\partial j_x}{\partial \xi} - B_y
+   \Delta_\perp B_y - B_y = \frac{\partial j_z}{\partial x} - \frac{\partial j_x}{\partial \xi} - B_y
 
 
 .. note::
@@ -87,7 +87,7 @@ Variant B
 ---------
 But wait, the complications don't stop here.
 
-While we do have a succesfully implemented :math:`(\Delta - 1)` inverse operator,
+While we do have a succesfully implemented :math:`(\Delta_\perp - 1)` inverse operator,
 there's still an open question of supplying an unknown value to the RHS.
 
 The naive version (internally known as 'Variant B')
@@ -100,13 +100,13 @@ or taken from the previous layer if not available.
 
 .. math::
 
-   (\Delta - 1) E_x^{next} = \frac{\partial \rho^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - E_x^{avg}
+   (\Delta_\perp - 1) E_x^{next} = \frac{\partial \rho^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - E_x^{avg}
 
-   (\Delta - 1) E_y^{next} = \frac{\partial \rho^{prev}}{\partial y} - \frac{\partial j_y^{avg}}{\partial \xi} - E_y^{avg}
+   (\Delta_\perp - 1) E_y^{next} = \frac{\partial \rho^{prev}}{\partial y} - \frac{\partial j_y^{avg}}{\partial \xi} - E_y^{avg}
 
-   (\Delta - 1) B_x^{next} = \frac{\partial j_y^{avg}}{\partial \xi} - \frac{\partial j_z^{prev}}{\partial y} - B_x^{avg}
+   (\Delta_\perp - 1) B_x^{next} = \frac{\partial j_y^{avg}}{\partial \xi} - \frac{\partial j_z^{prev}}{\partial y} - B_x^{avg}
 
-   (\Delta - 1) B_y^{next} = \frac{\partial j_z^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - B_y^{avg}
+   (\Delta_\perp - 1) B_y^{next} = \frac{\partial j_z^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - B_y^{avg}
 
 
 Variant A
@@ -117,13 +117,13 @@ mutates the equations once again to take everything at half-steps:
 
 .. math::
 
-   (\Delta - 1) (2 E_x^{avg} - E_x^{avg}) = \frac{\partial \rho^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - E_x^{avg}
+   (\Delta_\perp - 1) (2 E_x^{avg} - E_x^{avg}) = \frac{\partial \rho^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - E_x^{avg}
 
-   (\Delta - 1) (2 E_y^{avg} - E_y^{avg}) = \frac{\partial \rho^{prev}}{\partial y} - \frac{\partial j_y^{avg}}{\partial \xi} - E_y^{avg}
+   (\Delta_\perp - 1) (2 E_y^{avg} - E_y^{avg}) = \frac{\partial \rho^{prev}}{\partial y} - \frac{\partial j_y^{avg}}{\partial \xi} - E_y^{avg}
 
-   (\Delta - 1) (2 B_x^{avg} - B_x^{avg}) = \frac{\partial j_y^{avg}}{\partial \xi} - \frac{\partial j_z^{prev}}{\partial y} - B_x^{avg}
+   (\Delta_\perp - 1) (2 B_x^{avg} - B_x^{avg}) = \frac{\partial j_y^{avg}}{\partial \xi} - \frac{\partial j_z^{prev}}{\partial y} - B_x^{avg}
 
-   (\Delta - 1) (2 B_y^{avg} - B_y^{avg}) = \frac{\partial j_z^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - B_y^{avg}
+   (\Delta_\perp - 1) (2 B_y^{avg} - B_y^{avg}) = \frac{\partial j_z^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - B_y^{avg}
 
 and calculates the fields at next step in the following fashion: :math:`E_x^{next} = 2 E_x^{avg} - E_x^{prev})`, e.t.c.
 

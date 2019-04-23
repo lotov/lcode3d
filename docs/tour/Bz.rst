@@ -7,7 +7,7 @@ We want to solve
 
 .. math::
 
-   \Delta B_z = \frac{\partial j_x}{\partial y} - \frac{\partial j_y}{\partial x}
+   \Delta_\perp B_z = \frac{\partial j_x}{\partial y} - \frac{\partial j_y}{\partial x}
 
 with Neumann boundary conditions (derivative = 0).
 

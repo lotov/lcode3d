@@ -7,7 +7,7 @@ We want to solve
 
 .. math::
 
-   \Delta E_z = \frac{\partial j_x}{\partial x} - \frac{\partial j_y}{\partial y}
+   \Delta_\perp E_z = \frac{\partial j_x}{\partial x} - \frac{\partial j_y}{\partial y}
 
 with Dirichlet (zero) boundary conditions.
 

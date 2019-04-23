@@ -125,7 +125,7 @@ mutates the equations once again to take everything at half-steps:
 
    (\Delta_\perp - 1) (2 B_y^{avg} - B_y^{avg}) = \frac{\partial j_z^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - B_y^{avg}
 
-and calculates the fields at next step in the following fashion: :math:`E_x^{next} = 2 E_x^{avg} - E_x^{prev})`, e.t.c.
+and calculates the fields at next step in the following fashion: :math:`E_x^{next} = 2 E_x^{avg} - E_x^{prev}`, e.t.c.
 
 Solving these is equivalent to solving Variant B equations
 with averaged :math:`\rho` and :math:`j_z` and applying the above transformation to the result.

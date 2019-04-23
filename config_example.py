@@ -1,17 +1,10 @@
-#grid_steps = 513; grid_step_size = .03  # 15.39
-grid_steps = 641; grid_step_size = .025  # 16.025
-#grid_steps = 769; grid_step_size = .02  # 15.38
+grid_steps = 641  #: Transverse grid size in cells
+grid_step_size = .025  #: Transverse grid step size in plasma units
 
-#xi_step_size = .02
-#xi_step_size = .01
 xi_step_size = .005
-#xi_step_size = .002
-#xi_step_size = .001
 xi_steps = int(3000 // xi_step_size)
 
 diagnostics_each_N_steps = int(1 / xi_step_size)
-#diagnostics_each_N_steps = int(.1 / xi_step_size)
-#diagnostics_each_N_steps = 1
 
 field_solver_subtraction_trick = 1
 field_solver_variant_A = True  #: Use Variant A or Variant B for Ex, Ey, Bx, By

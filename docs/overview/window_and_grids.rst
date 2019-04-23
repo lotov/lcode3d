@@ -13,6 +13,10 @@ Fields and densities (:math:`ro`, :math:`j`) are calculated on a
 This number must be odd in order to have an on-axis cell
 for on-axis diagnostics.
 
+.. autodata:: config_example.grid_steps
+
+.. autodata:: config_example.grid_step_size
+
 The fields are calculated at the centers of the grid cells.
 
 

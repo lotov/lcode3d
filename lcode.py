@@ -485,7 +485,7 @@ def make_fine_plasma_grid(steps, step_size, fineness=2):
 def make_plasma(steps, cell_size, coarseness=3, fineness=2):
     """
     Make coarse plasma initial state arrays and the arrays needed to intepolate
-    coarse plasma into fine plasma (`virt_params`).
+    coarse plasma into fine plasma (``virt_params``).
 
     Coarse is the one that will evolve and fine is the one to be bilinearly
     interpolated from the coarse one based on the initial positions
@@ -572,11 +572,11 @@ def make_plasma(steps, cell_size, coarseness=3, fineness=2):
 def mix(coarse, A, B, C, D, pi, ni, pj, nj):
     """
     Bilinearly interpolate fine plasma properties from four
-    historically-neighbouring plasma particle property values.
-     B    D  #  y ^         A - bottom-left  neighbour, indices: pi, pj
-        .    #    |         B - top-left     neighbour, indices: pi, nj
-             #    +---->    C - bottom-right neighbour, indices: ni, pj
-     A    C  #         x    D - top-right    neighbour, indices: ni, nj
+    historically-neighbouring plasma particle property values::
+        B    D   #  y ^         A - bottom-left  neighbour, indices: pi, pj
+           .     #    |         B - top-left     neighbour, indices: pi, nj
+                 #    +---->    C - bottom-right neighbour, indices: ni, pj
+        A    C   #         x    D - top-right    neighbour, indices: ni, nj
     See the rest of the deposition and plasma creation for more info.
     """
     return (A * coarse[pi, pj] + B * coarse[pi, nj] +

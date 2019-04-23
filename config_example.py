@@ -11,7 +11,9 @@ field_solver_variant_A = True  #: Use Variant A or Variant B for Ex, Ey, Bx, By
 
 reflect_padding_steps = 5
 plasma_padding_steps = 10
-plasma_coarseness, plasma_fineness = 3, 2
+
+plasma_coarseness = 3  #: Square root of the amount of cells per coarse particle
+plasma_fineness = 2  #: Square root of the amount of fine particles per cell
 
 
 from numpy import cos, exp, pi, sqrt

@@ -24,6 +24,8 @@ but a 2D Triangular-Shaped Cloud (TSC2D).
 These clouds always (partially) cover an area the size of :math:`3x3` cells:
 the one where their center and eight neighouring ones.
 
+.. figure:: ../illustrations/tsc2d.png
+
 .. todo:: DOCS: WRITE: write a nicer formula for the weights of each cell.
 
 .. autofunction:: lcode.weights
@@ -39,5 +41,5 @@ and interpolation of the fields in the particle center positions
 
 The concept is orthogonal to the coarse plasma particle shape
 [:doc:`coarse_and_fine_plasma`].
-While a coarse particle may be treated as an elastic cloud of fine particles,
+While a coarse particle may be considered to be an elastic cloud of fine particles,
 each individial fine particle sports the same TSC2D shape.

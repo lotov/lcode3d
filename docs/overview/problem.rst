@@ -42,15 +42,21 @@ Only the electron motion is simulated,
 the ions are represented with a static backround charge density
 [:doc:`../tour/background_ions`].
 
+.. math::
+  \frac{d \vec{p}}{d \xi} &= -\frac{q}{1-v_z} \left( \vec{E} + \left[ \vec{v} \times \vec{B} \right]\right)
+
+  \frac{d x}{d \xi} &= -\frac{v_x}{1-v_z}
+
+  \frac{d y}{d \xi} &= -\frac{v_y}{1-v_z}
+
+  \vec{v} &= \frac{\vec{p}}{\sqrt{M^2+p^2}}
+
 The plasma is simulated using a PIC method with an optional twist:
 only a 'coarse' grid of plasma (think 1 particle per 9 cells) is stored and evolved,
 while 'fine' particles (think 4 per cell) are bilinearly interpolated from it during the deposition
 [:doc:`../tour/coarse_and_fine_plasma`].
 The plasma is effectively made not from independent particles,
 but from a fabric of 'fine' TSC-2D shaped particles.
-
-
-.. todo:: DOCS: Write the equations of motion.
 
 
 Fields

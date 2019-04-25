@@ -20,9 +20,8 @@ there isn't much left to discuss.
    is dictated by the fact that
    ihis is actually not a function, but a CUDA kernel
    (for more info, refer to :doc:`../technicalities/gpu`).
-   It is launched in parallel for each fine particle, determines its index,
+   It is launched in parallel for each fine particle, determines its 2D index (``fi``, ``fj``),
    interpolates its characteristics from coarse particles and proceeds to deposit it.
-   It determines the fine particle indices.
 
 .. autofunction:: lcode.deposit
 

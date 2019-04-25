@@ -5,7 +5,7 @@ Objective
 ---------
 LCODE 3D calculates the plasma response to an ultrarelativistic charged beam.
 
-Simulating particle beams evolution is definitely planned for the future.
+Simulating particle beams is definitely planned for the future.
 
 
 .. _geometry:

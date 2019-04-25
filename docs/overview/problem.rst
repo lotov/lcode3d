@@ -69,23 +69,23 @@ The fields are calculated from their derivatives. Theoretically, the equations a
 
 .. math::
 
-   \Delta_\perp E_z = \frac{\partial j_x}{\partial x} - \frac{\partial j_y}{\partial y}
+   \Delta_\perp E_z &= \frac{\partial j_x}{\partial x} - \frac{\partial j_y}{\partial y}
 
-   \Delta_\perp B_z = \frac{\partial j_x}{\partial y} - \frac{\partial j_y}{\partial x}
+   \Delta_\perp B_z &= \frac{\partial j_x}{\partial y} - \frac{\partial j_y}{\partial x}
 
-   \Delta_\perp E_x = \frac{\partial \rho}{\partial x} - \frac{\partial j_x}{\partial \xi}
+   \Delta_\perp E_x &= \frac{\partial \rho}{\partial x} - \frac{\partial j_x}{\partial \xi}
 
-   \Delta_\perp E_y = \frac{\partial \rho}{\partial y} - \frac{\partial j_y}{\partial \xi}
+   \Delta_\perp E_y &= \frac{\partial \rho}{\partial y} - \frac{\partial j_y}{\partial \xi}
 
-   \Delta_\perp B_x = \frac{\partial j_y}{\partial \xi} - \frac{\partial j_z}{\partial y}
+   \Delta_\perp B_x &= \frac{\partial j_y}{\partial \xi} - \frac{\partial j_z}{\partial y}
 
-   \Delta_\perp B_y = \frac{\partial j_z}{\partial x} - \frac{\partial j_x}{\partial \xi}
+   \Delta_\perp B_y &= \frac{\partial j_z}{\partial x} - \frac{\partial j_x}{\partial \xi}
 
-   \Delta_\perp = \frac{\partial^2}{\partial x^2} + \frac{\partial^2}{\partial y^2}
+   \Delta_\perp &= \frac{\partial^2}{\partial x^2} + \frac{\partial^2}{\partial y^2}
 
-   \rho = \rho_e + \rho_i + \rho_b
+   \rho &= \rho_e + \rho_i + \rho_b
 
-   j = j_e + j_i + j_b
+   j &= j_e + j_i + j_b
 
 where indices :math:`e, i, b` represent electrons, ions and beam respectively.
 

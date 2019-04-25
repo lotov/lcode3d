@@ -51,16 +51,17 @@ ELECTRON_MASS = 1
 class GPUArrays:
     """
     A convenient way to group several GPU arrays and access them with a dot.
-    `x = GPUArrays(something=numpy_array, something_else=another_array)`
-    will create `x` with `x.something` and `x.something_else` being GPU arrays.
+    ``x = GPUArrays(something=numpy_array, something_else=another_array)`` will
+    create ``x`` with ``x.something`` and ``x.something_else`` stored on GPU.
+
     Do not add more attributes later, specify them all at construction time.
     """
     def __init__(self, **kwargs):
         """
-        Convert the keyword arguments to `cupy` arrays and assign them
+        Convert the keyword arguments to ``cupy`` arrays and assign them
         to the object attributes.
-        Amounts to, e.g., `self.something = cp.asarray(numpy_array)`,
-        and `self.something_else = cp.asarray(another_array)`,
+        Amounts to, e.g., ``self.something = cp.asarray(numpy_array)``,
+        and ``self.something_else = cp.asarray(another_array)``,
         see class doctring.
         """
         for name, array in kwargs.items():
@@ -72,28 +73,31 @@ class GPUArraysView:
     """
     This is a magical wrapper around GPUArrays that handles GPU-RAM data
     transfer transparently.
-    Accessing `view.something` will automatically copy array to host RAM,
-    setting `view.something = ...` will copy the changes back to GPU RAM.
-    Usage: `view = GPUArraysView(gpu_arrays); view.something`
+    Accessing ``view.something`` will automatically copy array to host RAM,
+    setting ``view.something = ...`` will copy the changes back to GPU RAM.
+
+    Usage: ``view = GPUArraysView(gpu_arrays); view.something``
+
     Do not add more attributes later, specify them all at construction time.
+
     NOTE: repeatedly accessing an attribute will result in repeated copying!
     """
     def __init__(self, gpu_arrays):
         """
-        Wrap `gpu_arrays` and transparently copy data to/from GPU.
+        Wrap ``gpu_arrays`` and transparently copy data to/from GPU.
         """
-        # Could've been written as `self._arrs = gpu_arrays`
-        # if only `__setattr__` was not overwritten!
-        # `super(GPUArraysView) is the proper way to obtain the parent class
-        # (`object`), which has a regular boring `__setattr__` that we can use.
+        # Could've been written as ``self._arrs = gpu_arrays``
+        # if only ``__setattr__`` was not overwritten!
+        # ``super(GPUArraysView)`` is the proper way to obtain the parent class
+        # (``object``), which has a regular boring and usable ``__setattr__``.
         super(GPUArraysView, self).__setattr__('_arrs', gpu_arrays)
 
     def __dir__(self):
         """
-        Make `dir()` also show the wrapped `gpu_arrays` attributes.
+        Make ``dir()`` also show the wrapped ``gpu_arrays`` attributes.
         """
-        # See `GPUArraysView.__init__` for the explanation how we access the
-        # parent's plain `__dir__()` implementation (and avoid recursion).
+        # See ``GPUArraysView.__init__`` for the explanation how we access the
+        # parent's plain ``__dir__()`` implementation (and avoid recursion).
         return list(set(super(GPUArraysView, self).__dir__() +
                         dir(self._arrs)))
 
@@ -662,7 +666,7 @@ def deposit(config, ro_initial, x_offt, y_offt, m, q, px, py, pz, virt_params):
     """
     Interpolate coarse plasma into fine plasma and deposit it on the
     charge density and current grids.
-    This is a convenience wrapper around the `deposit_kernel` CUDA kernel.
+    This is a convenience wrapper around the ``deposit_kernel`` CUDA kernel.
     """
     virtplasma_smallness_factor = 1 / (config.plasma_coarseness *
                                        config.plasma_fineness)**2
@@ -710,7 +714,7 @@ def move_smart_kernel(xi_step_size, reflect_boundary,
     Update plasma particle coordinates and momenta according to the field
     values interpolated halfway between the previous plasma particle location
     and the the best estimation of its next location currently available to us.
-    Also reflect the particles from `+-reflect_boundary`.
+    Also reflect the particles from ``+-reflect_boundary``.
     """
     # Do nothing if our thread does not have a coarse particle to move.
     k = numba.cuda.grid(1)
@@ -796,7 +800,7 @@ def move_smart(config,
     Update plasma particle coordinates and momenta according to the field
     values interpolated halfway between the previous plasma particle location
     and the the best estimation of its next location currently available to us.
-    This is a convenience wrapper around the `move_smart_kernel` CUDA kernel.
+    This is a convenience wrapper around the ``move_smart_kernel`` CUDA kernel.
     """
     x_offt_new = cp.zeros_like(x_prev_offt)
     y_offt_new = cp.zeros_like(y_prev_offt)
@@ -824,8 +828,12 @@ def step(config, const, virt_params, prev, beam_ro):
     """
     Calculate the next iteration of plasma evolution and response.
     Returns the new state with the following attributes:
-    `x_offt, y_offt, px, py, pz, Ex, Ey, Ez, Bx, By, Bz, ro, jx, jy, jz`.
-    Pass the returned value as `prev` for the next iteration.
+    ``x_offt``, ``y_offt``, ``px``, ``py``, ``pz``,
+    ``Ex``, ``Ey``, ``Ez``, ``Bx``, ``By``, ``Bz``,
+    ``ro``, ``jx``, ``jy``, ``jz``.
+    Pass the returned value as ``prev`` for the next iteration.
+    Wrap it in ``GPUArraysView`` if you want transparent conversion
+    to ``numpy`` arrays.
     """
     beam_ro = cp.asarray(beam_ro)  # copy the array is on GPU if it's not there
 

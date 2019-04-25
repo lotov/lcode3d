@@ -17,7 +17,7 @@ but for now only simulating a plasma response to a rigid beam is possible.
    according to where exactly in :math:`\xi` do you define the beam density slices.
 
    ``x`` and ``y`` are ``numpy`` arrays, so one should use vectorized numpy operations
-   to calculate the desired beam charge density.
+   to calculate the desired beam charge density, like ``numpy.exp(-numpy.sqrt(x**2 + y**2))``.
 
    The function should ultimately return an array with the same shape as ``x`` and ``y``.
 

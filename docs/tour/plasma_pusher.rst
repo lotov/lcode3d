@@ -16,10 +16,9 @@ The coordinate-evolving equations of motion are as follows:
 .. autofunction:: lcode.move_estimate_wo_fields
 
    This is used at the beginning of the :doc:`xi step <xi_step>`
-   to roughly estimate the half-step positions of the particles
-   on the very first iteration, when the new fields are not known yet.
+   to roughly estimate the half-step positions of the particles.
 
-   The reflection flips the coordinate, but not the momenta components.
+   The reflection here flips the coordinate, but not the momenta components.
 
 
 With fields

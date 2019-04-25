@@ -80,6 +80,10 @@ DST-DCT Hybrid
    even 1D DST/DCT on the GPU,
    we, once again, roll out our own FFT-based implementation.
 
+   We don't need a separate function for the inverse transform,
+   as it matches the forward one up to the normalization multiplier,
+   which is taken into account in :func:`mixed_matrix`.
+
 
 .. _variant_a:
 

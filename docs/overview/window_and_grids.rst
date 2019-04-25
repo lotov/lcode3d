@@ -23,7 +23,7 @@ The fields are calculated at the centers of the grid cells.
 .. note::
    The muddy 'window width' concept is no longer referenced in LCODE 3D
    to ease up the inevitable confusion about what it actually means
-   and how it relates to `config.grid_step_size`.
+   and how it relates to ``config.grid_step_size``.
    Please refrain from thinking in these terms
    and head over to the following subsectionf for more useful ones.
 

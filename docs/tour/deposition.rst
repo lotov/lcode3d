@@ -11,7 +11,7 @@ there isn't much left to discuss.
    Then the total contribution of the particles to the density and the currents
    is calculated and, finally,
    deposited on a grid in a 3x3 cell square with ``i``, ``j`` as its center
-   according to the weights calculated by :meth:`lcode.weights`.
+   according to the weights calculated by :func:`weights`.
 
    The strange incantation at the top and
    the need to modify the output arrays instead of returning them

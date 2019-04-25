@@ -44,4 +44,4 @@ DCT2D
 
    We don't need to make a separate iDCT2D function
    as (for Type-1) it matches DCT2D up to the normalization multiplier,
-   which is taken into account in ``neumann_matrix``.
+   which is taken into account in :func:`neumann_matrix`.

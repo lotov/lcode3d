@@ -53,7 +53,7 @@ Initialization
 .. autofunction:: lcode.make_plasma
 
    Initializing coarse particles is pretty simple:
-   ``coarse_x_init`` and ``coarse_y_init`` are broadcasted output of ``lcode.make_coarse_plasma_grid``,
+   ``coarse_x_init`` and ``coarse_y_init`` are broadcasted output of :func:`make_coarse_plasma_grid`.
    ``coarse_x_offt`` and ``coarse_y_offt`` are zeros and so are ``coarse_px``, ``coarse_py`` and ``coarse_pz``.
    ``coarse_m`` and ``coarse_q`` are constants divided by the factor of coarsness by fineness squared
    because fine particles represent smaller macroparticles.
@@ -73,7 +73,7 @@ Initialization
    except for the edges,
    where a fine particle can have less than four 'parent' coarse particles.
    For such 'outer' particles, existing coarse particles are used instead,
-   so clipping the indices and fixing `influence`-arrays is carried out.
+   so clipping the indices and fixing ``influence``-arrays is carried out.
 
    Note that these arrays are 1D for memory considerations.
 

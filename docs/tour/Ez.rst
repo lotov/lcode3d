@@ -44,4 +44,4 @@ DST2D
 
    We don't need to make a separate iDST2D function
    as (for Type-1) it matches DST2D up to the normalization multiplier,
-   which is taken into account in ``dirichlet_matrix``.
+   which is taken into account in :func:`dirichlet_matrix`.

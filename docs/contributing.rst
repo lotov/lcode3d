@@ -11,7 +11,7 @@ The suggested followup workflow for the implementor would be:
 * choose the most suitable parent branch;
 * fork `<https://github.com/lotov/lcode3d>`_ or its fork;
 * check it out locally;
-* install dependencies (see `requirements.txt`);
+* install dependencies (see ``requirements.txt``);
 * verify that LCODE runs as-is;
 * implement, test and commit changes;
 * rebase it if the parent branch advances;

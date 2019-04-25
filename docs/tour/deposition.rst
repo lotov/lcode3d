@@ -12,6 +12,8 @@ there isn't much left to discuss.
    is calculated and, finally,
    deposited on a grid in a 3x3 cell square with ``i``, ``j`` as its center
    according to the weights calculated by :func:`weights`.
+   Finally, the `ion background density <../tour/background_ions>`
+   is added to the resulting array.
 
    The strange incantation at the top and
    the need to modify the output arrays instead of returning them

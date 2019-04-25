@@ -2,9 +2,16 @@
 LCODE 3D documentation
 ======================
 
+Useful links:
+
+* LCODE 3D source: https://github.com/lotov/lcode3d
+* LCODE 3D documentation: https://lcode3d.readthedocs.org
+* LCODE team website: https://lcode.info
+* LCODE team email: `team@lcode.info <mailto:team@lcode.info>`_
+
 .. note::
    Please consider using the online version of this document
-   at http://lcode.readthedocs.org instead if you are reading this documentation
+   at https://lcode3d.readthedocs.org instead if you are reading this documentation
    for the first time and you are interested in the implementation details.
 
    Documentation in other formats is not officially supported,
@@ -46,3 +53,12 @@ Usage:
 ======
 .. include:: toc-usage.rst
 
+Extras:
+=======
+.. toctree::
+   :maxdepth: 1
+   :caption: Extras
+
+   contributing
+   example-config
+   lcode-source

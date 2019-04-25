@@ -24,6 +24,5 @@ and if you get stuck, you always have a link back to the explanations.
    :maxdepth: 1
    :caption: Extras
 
-   example-config
    contributing
    useful-links

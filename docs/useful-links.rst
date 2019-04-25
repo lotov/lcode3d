@@ -3,12 +3,14 @@ Useful links
 
 Internal:
 
-* `Interlinked source code listing <../html/_modules/lcode.html>`_
-* :ref:`Python functions index <genindex>`
+* `Source code listing interlinked with documentation <../html/_modules/lcode.html>`_
+* `Example configuration file interlinked with documentation <../html/_modules/config_example.html>`_
+* :ref:`Index of LCODE functions and config parameters <genindex>`
 
 External:
 
-* LCODE 3D source: `<https://github.com/lotov/lcode3d>`_
-* LCODE team website: `<https://lcode.info>`_
+* LCODE 3D source: https://github.com/lotov/lcode3d
+* LCODE 3D documentation: https://lcode3d.readthedocs.org
+* LCODE team website: https://lcode.info
 * LCODE team email: `team@lcode.info <mailto:team@lcode.info>`_
 

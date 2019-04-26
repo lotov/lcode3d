@@ -27,4 +27,5 @@ def beam(xi_i, x, y):
     return (.05 * BOOST * exp(-.5 * (r / SIGMA)**2) *
             (1 - cos(xi * COMPRESS * sqrt(pi / 2))))
 
-gpu_index = 0
+gpu_index = 0  #: Index of the GPU that should perform the calculations
+

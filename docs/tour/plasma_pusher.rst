@@ -65,7 +65,7 @@ The alternative is to use a symplectic solver that solves the resulting matrix e
    the need to modify the output arrays instead of returning them
    is dictated by the fact that
    ihis is actually not a function, but a CUDA kernel
-   (for more info, refer to :doc:`../technicalities/gpu`).
+   (for more info, refer to :ref:`cuda_kernels`),
    It is launched in parallel for each coarse particle, determines its 1D index ``k``,
    interpolates the fields at its position and proceeds to move and reflect it.
 
@@ -75,7 +75,7 @@ The alternative is to use a symplectic solver that solves the resulting matrix e
    This function allocates the output arrays,
    unpacks the arguments from ``config``
    calculates the kernel dispatch parameters
-   (for more info, refer to :doc:`../technicalities/gpu`),
+   (for more info, refer to :ref:`cuda_kernels`),
    flattens the input and output array of particle characteristics
    (as the pusher does not care about the particle 2D indices)
    and launches the kernel.

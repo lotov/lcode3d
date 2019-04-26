@@ -15,13 +15,14 @@ Input parameters
 Beam density array `\rho_b` (``beam_ro``) is copied to the GPU with ``cupy.asarray``,
 as it is calculated with ``numpy`` in config-residing :func:`beam`.
 
-All the other arrays come packed in ``GPUArrays`` objects [:doc:`../technicalities/gpu`],
+All the other arrays come packed in ``GPUArrays`` objects [:ref:`array_conversion`],
 which ensures that they reside in the GPU memory.
 These objects are:
 
 * ``const`` and ``virt_params``,
   which are constant at least for the :math:`\xi`-step duration
-  and defined during the :ref:`initialization <../technicalities/initialization>`, and
+  and defined during the :doc:`initialization <../technicalities/initialization>`, and
+
 * ``prev``,
   which is usually obtained as the return value of the previous :func:`step` invocation,
   except for the very first step.
@@ -36,7 +37,7 @@ Initial half-step estimation
 Field prediction
 ----------------
 
-While we don't know the fields on the next step::
+While we don't know the fields on the next step:
 
 2. The particles are advanced with the fields from **the previous step**
    using the coordinates **estimated at 1.** to calculate the half-step positions

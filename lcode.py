@@ -37,9 +37,10 @@ import scipy.signal
 # Prevent all CPU cores waiting for the GPU at 100% utilization (under conda).
 # os.environ['OMP_NUM_THREADS'] = '1'
 
-# Should be detectable with newer cupy (>6.0.0b2) as
-# WARP_SIZE = cp.cuda.Device(0).attributes['WarpSize']
-# But as of 2019 it's always 32. It's even a hardcoded value in cupy.
+#: Should be detectable with newer ``cupy`` (>6.0.0b2) as
+#: ``WARP_SIZE = cp.cuda.Device(config.gpu_index).attributes['WarpSize']``.
+#: As of 2019 it's equal to 32 for all CUDA-capable GPUs.
+#: It's even a hardcoded value in ``cupy``.
 WARP_SIZE = 32
 
 ELECTRON_CHARGE = -1

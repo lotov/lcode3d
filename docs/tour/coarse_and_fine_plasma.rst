@@ -75,7 +75,7 @@ Initialization
    For such 'outer' particles, existing coarse particles are used instead,
    so clipping the indices and fixing ``influence``-arrays is carried out.
 
-   Note that these arrays are 1D for memory considerations.
+   Note that these arrays are 1D for memory considerations [:ref:`memory_considerations`].
 
    The function returns the coarse particles and ``virtparams``:
    a ``GPUArrays`` instance
@@ -111,7 +111,8 @@ Coarse-to-fine interpolation
    values from ``influence_prev`` and ``influence_next`` arrays,
    indiced, once again, with ``[fi, fj]``.
    It would be convenient to calculate them beforehand,
-   but they are recalculated instead as a result of time-memory tradeoff.
+   but they are recalculated instead as a result of time-memory tradeoff
+   [:ref:`memory_considerations`].
 
    Finally, momenta, charge and mass are scaled
    according to the coarse-to-fine macrosity coefficient

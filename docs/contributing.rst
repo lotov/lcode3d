@@ -14,6 +14,8 @@ The suggested followup workflow for the implementor would be:
 * install dependencies (see ``requirements.txt``);
 * verify that LCODE runs as-is;
 * implement, test and commit changes;
+* check that the code is still under 1000 SLOC;
+* try to strip all the complex programming concepts and clever hacks;
 * rebase it if the parent branch advances;
 * submit a pull request;
 * wait for it to be rebased-and-merged.

@@ -14,7 +14,8 @@ but for now only simulating a plasma response to a rigid beam is possible.
 
    ``xi_i`` is not the value of the :math:`\xi` coordinate, but the step index.
    Please use something in the lines of ``xi = -xi_i * xi_step_size + some_offset``,
-   according to where exactly in :math:`\xi` do you define the beam density slices.
+   according to where exactly in :math:`\xi` do you define the beam density slices
+   [:ref:`integer_xi_steps`].
 
    ``x`` and ``y`` are ``numpy`` arrays, so one should use vectorized numpy operations
    to calculate the desired beam charge density, like ``numpy.exp(-numpy.sqrt(x**2 + y**2))``.

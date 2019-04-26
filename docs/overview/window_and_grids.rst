@@ -1,6 +1,8 @@
 Simulation window and grids
 ===========================
 
+.. _fields_and_densities_grid:
+
 Fields and densities grid
 -------------------------
 
@@ -39,7 +41,8 @@ Reflect and 'plasma' boundaries
 
 The plasma partlcles are not allowed to enter the outermost cells
 in order to simplify the treatment of boundary regions
-during interpolation, deposition and field calculation.
+during interpolation, deposition and field calculation
+[:ref:`zero_special_boundary_treatment`].
 In order to achieve that, the reflection boundary is placed
 ``config.reflection_padding_steps`` steps deeper into the simulation area.
 

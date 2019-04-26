@@ -21,12 +21,6 @@ Memory considerations
 .. todo:: DOCS: WRITE
 
 
-Offset-coordinate separation
-----------------------------
-
-.. todo:: DOCS: WRITE
-
-
 Integer xi steps
 ----------------
 

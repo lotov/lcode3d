@@ -935,7 +935,7 @@ def step(config, const, virt_params, prev, beam_ro):
 
 def init(config):
     """
-    Initialize all the arrays needed for `step` and `config.beam`.
+    Initialize all the arrays needed for ``step`` and ``config.beam``.
     """
 
     assert config.grid_steps % 2 == 1

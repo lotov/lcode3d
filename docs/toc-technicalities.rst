@@ -2,8 +2,8 @@
    :maxdepth: 1
    :caption: Technicalities
 
-   technicalities/offsets
+   technicalities/initialization
    technicalities/gpu
    technicalities/grid_sizes
-   technicalities/initialization
+   technicalities/offsets
    technicalities/design_decisions

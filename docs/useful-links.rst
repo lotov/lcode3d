@@ -3,8 +3,8 @@ Useful links
 
 Internal:
 
-* `Source code listing interlinked with documentation <../html/_modules/lcode.html>`_
-* `Example configuration file interlinked with documentation <../html/_modules/config_example.html>`_
+* `Source code listing interlinked with documentation <_modules/lcode.html>`_
+* `Example configuration file interlinked with documentation <_modules/config_example.html>`_
 * :ref:`Index of LCODE functions and config parameters <genindex>`
 
 External:

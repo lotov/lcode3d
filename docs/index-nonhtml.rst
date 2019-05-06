@@ -39,6 +39,11 @@ Overview
 .. include:: toc-overview.rst
 
 
+Usage
+=====
+.. include:: toc-usage.rst
+
+
 Tour of the simulations
 =======================
 .. include:: toc-tour.rst
@@ -48,10 +53,6 @@ Technicalities
 ==============
 .. include:: toc-technicalities.rst
 
-
-Usage:
-======
-.. include:: toc-usage.rst
 
 Extras:
 =======

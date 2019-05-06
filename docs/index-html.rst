@@ -14,11 +14,11 @@ and if you get stuck, you always have a link back to the explanations.
 
 .. include:: toc-overview.rst
 
+.. include:: toc-usage.rst
+
 .. include:: toc-tour.rst
 
 .. include:: toc-technicalities.rst
-
-.. include:: toc-usage.rst
 
 .. toctree::
    :maxdepth: 1

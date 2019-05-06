@@ -35,7 +35,7 @@ All dependencies, including ``cupy``, are available from the official conda chan
 
    conda install cupy
 
-or, if you are a miniconda user (or you just like to be thorough),
+or, if you are a miniconda user or a thorough kind of person,
 
 .. code-block:: bash
 
@@ -51,12 +51,12 @@ Linux, NixOS
 
    nix-shell
 
-In case it's not enough, consider adding
+In case it's not enough, consider either switching to NVIDIA driver, or simply adding
 
 .. code-block:: nix
 
    boot.kernelPackages = pkgs.linuxPackages;  # explicitly require stable kernel
-   boot.kernelModules = [ "nvidia-uvm" ];
+   boot.kernelModules = [ "nvidia-uvm" ];  # should bring just enough kernel support for CUDA userspace
 
 to ``/etc/nixos/configuration.nix`` and rebuilding the system.
 

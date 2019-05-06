@@ -17,7 +17,7 @@ there isn't much left to discuss.
 
    The strange incantation at the top and
    the need to modify the output arrays instead of returning them
-   is dictated by the fact that
+   are dictated by the fact that
    ihis is actually not a function, but a CUDA kernel
    (for more info, refer to :ref:`cuda_kernels`).
    It is launched in parallel for each fine particle, determines its 2D index (``fi``, ``fj``),

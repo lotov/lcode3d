@@ -48,6 +48,8 @@ these Helmholtz equations instead:
    and while any floating-point values or whole matrices of them should be accepted,
    it's recommended to simply use ``1`` or ``True`` instead.
 
+.. autodata:: config_example.field_solver_subtraction_trick
+
 
 Method
 ------
@@ -66,7 +68,7 @@ and ``dirichlet_matrix`` is a 'magical' matrix that does all the work.
 .. autofunction:: lcode.calculate_Ex_Ey_Bx_By
 
   Note that some outer cells do not participate in the calculations,
-  and the result is simply padded with zeroes at the end.
+  and the result is simply padded with zeroes in the end.
   We don't define separate functions for separate boundary condition types
   and simply transpose the input and output data.
 
@@ -98,7 +100,7 @@ The naive version (internally known as 'Variant B')
 is to pass the best known substitute to date, i.e.
 previous layer fields at the predictor phase
 and the averaged fields at the corrector phase.
-:math:`xi` derivatives are taken at half-steps,
+:math:`\xi`-derivatives are taken at half-steps,
 transverse derivatives are averaged at half-steps
 or taken from the previous layer if not available.
 
@@ -121,13 +123,13 @@ mutates the equations once again to take everything at half-steps:
 
 .. math::
 
-   (\Delta_\perp - 1) (2 E_x^{avg} - E_x^{avg}) &= \frac{\partial \rho^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - E_x^{avg}
+   (\Delta_\perp - 1) (2 E_x^{avg} - E_x^{avg}) &= \frac{\partial \rho^{avg}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - E_x^{avg}
 
-   (\Delta_\perp - 1) (2 E_y^{avg} - E_y^{avg}) &= \frac{\partial \rho^{prev}}{\partial y} - \frac{\partial j_y^{avg}}{\partial \xi} - E_y^{avg}
+   (\Delta_\perp - 1) (2 E_y^{avg} - E_y^{avg}) &= \frac{\partial \rho^{avg}}{\partial y} - \frac{\partial j_y^{avg}}{\partial \xi} - E_y^{avg}
 
-   (\Delta_\perp - 1) (2 B_x^{avg} - B_x^{avg}) &= \frac{\partial j_y^{avg}}{\partial \xi} - \frac{\partial j_z^{prev}}{\partial y} - B_x^{avg}
+   (\Delta_\perp - 1) (2 B_x^{avg} - B_x^{avg}) &= \frac{\partial j_y^{avg}}{\partial \xi} - \frac{\partial j_z^{avg}}{\partial y} - B_x^{avg}
 
-   (\Delta_\perp - 1) (2 B_y^{avg} - B_y^{avg}) &= \frac{\partial j_z^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - B_y^{avg}
+   (\Delta_\perp - 1) (2 B_y^{avg} - B_y^{avg}) &= \frac{\partial j_z^{avg}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - B_y^{avg}
 
 and calculates the fields at next step in the following fashion: :math:`E_x^{next} = 2 E_x^{avg} - E_x^{prev}`, e.t.c.
 
@@ -136,5 +138,3 @@ with averaged :math:`\rho` and :math:`j_z` and applying the above transformation
 See `step(...)` function for the wrapping code that does that.
 
 .. autodata:: config_example.field_solver_variant_A
-   :annotation: =True
-

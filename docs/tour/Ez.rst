@@ -31,7 +31,7 @@ and ``dirichlet_matrix`` is a 'magical' matrix that does all the work.
 .. autofunction:: lcode.calculate_Ez
 
   Note that the outer cells do not participate in the calculations,
-  and the result is simply padded with zeroes at the end.
+  and the result is simply padded with zeroes in the end.
 
 
 DST2D

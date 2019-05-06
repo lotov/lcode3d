@@ -40,7 +40,7 @@ The alternative is to use a symplectic solver that solves the resulting matrix e
 
 .. autofunction:: lcode.move_smart_kernel
 
-   The function serves as a single coarse particle loop,
+   The function serves as *the* coarse particle loop,
    fusing together midpoint calculation,
    field interpolation with :func:`interp9` and
    particle movement

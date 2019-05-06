@@ -8,7 +8,7 @@ LCODE 3D utilises a dual plasma appoach.
 
 .. figure:: ../illustrations/virtplasma.png
 
-   Positioning of the coarse and fine particles in dual-plasma approach.
+   Positioning of the coarse and fine particles in dual plasma approach.
 
 
 Coarse particles are the ones that get tracked throughout the program,
@@ -20,8 +20,8 @@ than the fields grid, think :math:`\frac{1}{9}` particles per cell.
 Fine particles only exist inside the deposition phase.
 There are several fine particles per cell, think :math:`4` or more.
 Their characteristic values are neither stored or evolved;
-instead they are intepolated from the coarse particle grid inside
-the deposition process.
+instead they are intepolated from the coarse particle grid as a part of the
+the deposition process (and they don't 'exist' in any form outside of it).
 
 .. autodata:: config_example.plasma_fineness
 
@@ -38,7 +38,7 @@ Initialization
        | .   .   . | .   .   . | .   .   . | .   .   . |
        |           |           |           |           |   . - fine particle
        | .   .   . | .   *   . | .   .   . | .   *   . |
-       |           |           |           |           |   * - coarse particle
+       |           |           |           |           |   * - coarse+fine particle
        | .   .   . | .   .   . | .   .   . | .   .   . |
        +-----------+-----------+-----------+-----------+
 
@@ -55,10 +55,10 @@ Initialization
    Initializing coarse particles is pretty simple:
    ``coarse_x_init`` and ``coarse_y_init`` are broadcasted output of :func:`make_coarse_plasma_grid`.
    ``coarse_x_offt`` and ``coarse_y_offt`` are zeros and so are ``coarse_px``, ``coarse_py`` and ``coarse_pz``.
-   ``coarse_m`` and ``coarse_q`` are constants divided by the factor of coarsness by fineness squared
+   ``coarse_m`` and ``coarse_q`` are constants divided by the factor of coarseness by fineness squared
    because fine particles represent smaller macroparticles.
 
-   Initializing fine particle boils down to interpolation coefficients
+   Initializing fine particle boils down to calculating the interpolation coefficients
    (``influence_prev`` and ``influence_next``)
    and the indices of the coarse particles (``indices_prev``, ``indices_next``)
    that the characteristics will be intepolated from.
@@ -68,7 +68,7 @@ Initialization
    Note that these are constant and do not change in :math:`\xi`.
    The edges get special treatment later.
 
-   ``indices_next`` happens to be pretty much ``np.searchsorted(coarse_grid, fine_grid)``
+   ``indices_next`` happens to be pretty much equal to ``np.searchsorted(coarse_grid, fine_grid)``
    and ``indices_prev`` is basically ``indices_next - 1``,
    except for the edges,
    where a fine particle can have less than four 'parent' coarse particles.

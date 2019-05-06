@@ -6,6 +6,9 @@ and currently makes up half of LCODE 3D API.
 
 In short it: moves, deposits, estimates fields, moves, deposits, recalculates fields, moves and deposits.
 
+.. autodata:: config_example.xi_step_size
+
+.. autodata:: config_example.xi_steps
 
 .. autofunction:: lcode.step
 

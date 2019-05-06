@@ -39,6 +39,11 @@ Reflect and 'plasma' boundaries
 
    The reflect and plasma boundaries illustrated.
 
+.. autodata:: config_example.reflect_padding_steps
+
+.. autodata:: config_example.plasma_padding_steps
+
+
 The plasma partlcles are not allowed to enter the outermost cells
 in order to simplify the treatment of boundary regions
 during interpolation, deposition and field calculation

@@ -1,16 +1,16 @@
 grid_steps = 641  #: Transverse grid size in cells
 grid_step_size = .025  #: Transverse grid step size in plasma units
 
-xi_step_size = .005
-xi_steps = int(3000 // xi_step_size)
+xi_step_size = .005  #: Step size in time-space coordinate xi
+xi_steps = int(3000 // xi_step_size)  #: Amount of xi steps
 
 diagnostics_each_N_steps = int(1 / xi_step_size)
 
 field_solver_subtraction_trick = 1  #: 0 for Laplace eqn., Helmholtz otherwise
 field_solver_variant_A = True  #: Use Variant A or Variant B for Ex, Ey, Bx, By
 
-reflect_padding_steps = 5
-plasma_padding_steps = 10
+reflect_padding_steps = 5  #: Plasma reflection <-> field calculation boundaries
+plasma_padding_steps = 10  #: Plasma placement <-> field calculation boundaries
 
 plasma_coarseness = 3  #: Square root of the amount of cells per coarse particle
 plasma_fineness = 2  #: Square root of the amount of fine particles per cell
@@ -28,4 +28,3 @@ def beam(xi_i, x, y):
             (1 - cos(xi * COMPRESS * sqrt(pi / 2))))
 
 gpu_index = 0  #: Index of the GPU that should perform the calculations
-

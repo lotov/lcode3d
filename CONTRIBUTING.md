@@ -15,6 +15,7 @@ The suggested followup workflow for the implementor would be:
 * verify that LCODE runs as-is;
 * implement, test and commit changes;
 * rebase it if the parent branch advances;
+* run `flake8 lcode.py` and fix the warnings;
 * submit a pull request;
 * wait for it to be rebased-and-merged.
 

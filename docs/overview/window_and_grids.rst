@@ -23,11 +23,11 @@ The fields are calculated at the centers of the grid cells.
 
 
 .. note::
-   The muddy 'window width' concept is no longer referenced in LCODE 3D
+   The muddy concept of 'window width' is no longer referenced in LCODE 3D
    to ease up the inevitable confusion about what it actually means
    and how it relates to ``config.grid_step_size``.
    Please refrain from thinking in these terms
-   and head over to the following subsectionf for more useful ones.
+   and head over to the following subsection for more useful ones.
 
 
 .. _reflect_and_plasma_boundaries:
@@ -50,11 +50,13 @@ In order to achieve that, the reflection boundary is placed
    While choosing the value for this parameter, one should take into account
    the particle size. Even a single fine
    [:doc:`Coarse/fine plasma <../tour/coarse_and_fine_plasma>`]
-   particle is three cells wide
+   particle is three cells wide in deposition,
    [:doc:`Plasma <../tour/plasma>`],
    so the gap width should be wide enough to cover the entire coarse particle cloud
    size.
    Failure to meet this condition may result in a memory violation error.
+   This could be solved by introducing fine particle reflection,
+   but that'd be more resource-intensive.
 
 
 Note that while it defines the area where plasma is allowed to be present,

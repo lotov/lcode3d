@@ -24,7 +24,7 @@ pkgs.mkShell {
       numba
       numpy
       scipy
-      sphinx sphinx_rtd_theme
+      sphinx sphinx_rtd_theme recommonmark
     ]))
     cloc
     python3Packages.flake8

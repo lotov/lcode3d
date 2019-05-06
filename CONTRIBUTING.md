@@ -2,14 +2,14 @@ Contributing
 ============
 
 When contributing to this repository, please discuss the change you wish to make
-via email (`team@lcode.info <mailto:team@lcode.info>`_),
-issue tracker (`<https://github.com/lotov/lcode3d/issues>`_),
+via email (`mailto:team@lcode.info`),
+issue tracker (`https://github.com/lotov/lcode3d/issues`),
 personal communication or any other method with our team.
 
 The suggested followup workflow for the implementor would be:
 
 * choose the most suitable parent branch;
-* fork `<https://github.com/lotov/lcode3d>`_ or its fork;
+* fork `https://github.com/lotov/lcode3d` or its fork;
 * check it out locally;
 * install dependencies (see `requirements.txt`);
 * verify that LCODE runs as-is;

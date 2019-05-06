@@ -15,7 +15,7 @@ An oversimplified illustration in decimal notation::
 
     5.223426
    +0.0007139152
-   =5.224139
+   =5.224139LOST
 
 We have not conducted extensive research on how detrimental this round-off accumulation
 is to LCODE 3D numerical stability in :math:`\xi`.
@@ -51,7 +51,7 @@ This way the only places where the separation should be preserved
 is the path from ``prev.x_offt`` to ``new_state.x_offt``.
 Several ``x_offt`` additions are performed and rolled back
 at each :math:`\xi`-step,
-but only two kinds of them persist, all of them residing in :func:`move_smart`:
+but only two kinds of them persist, both residing in :func:`move_smart`:
 
 1. ``x_offt += px / (gamma_m - pz) * xi_step_size`` does no mixing with the coordinate values, and
 

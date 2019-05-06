@@ -72,7 +72,7 @@ while the interpolation indices and coefficients grouped under ``virt_params``
 can be reduced to 1D arrays by exploiting the :math:`x/y` symmetry of the coarse/fine plasma grids.
 
 This way LCODE 3D stores only :math:`N_c^2`- and :math:`N^2`-sized arrays,
-with `N_f`-sized ones barely taking up any space thanks to the being 1D.
+with :math:`N_f`-sized ones barely taking up any space thanks to the being 1D.
 
 Also, all previous attempts to micromanaged the GPU memory allocations have been scraped
 in favor of blindly trusting the ``cupy`` on-demand allocation.

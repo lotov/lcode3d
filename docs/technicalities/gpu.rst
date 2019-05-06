@@ -23,13 +23,13 @@ An example would be:
        result[i] = arr1[i] + arr2[i]
 
 This function represents a loop body, launched in parallel with many threads at once.
-Each of them starts with obtaining the array index it is 'responsible' for with `cuda.grid(1)`
-and then proceeds to do the required calculation.
+Each of them starts with obtaining the array index it is 'responsible' for with ``cuda.grid(1)``
+and then proceeds to perform the required calculation.
 As it is optimal to launch them in 32-threaded 'warps', one also has to handle the case
 of having more threads than needed by making them skip the calculation.
 
 No fancy Python operations are supported inside CUDA kernels,
-it basically a way to write C-like bodies for hot loops
+it is basically a way to write C-like bodies for hot loops
 without having to write actual C/CUDA code.
 You can only use simple types for kernel arguments
 and you cannot return anything from them.
@@ -43,7 +43,7 @@ it is convenient to write a wrapper for it.
    def add_two_arrays(arr1, arr2):
        result = cp.zeros_like(arr1)  # uses cupy, see below
        warp_count = int(ceil(arr1.size / WARP_SIZE))
-       add_two_arrays_kernel[warp_count, warp_size](arr1, arr2, result)
+       add_two_arrays_kernel[warp_count, WARP_SIZE](arr1, arr2, result)
        return result
 
 A pair of numbers (``warp_count``, ``WARP_SIZE``) is required to launch the kernel.

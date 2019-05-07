@@ -106,13 +106,25 @@ or taken from the previous layer if not available.
 
 .. math::
 
-   (\Delta_\perp - 1) E_x^{next} &= \frac{\partial \rho^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - E_x^{avg}
+   (\Delta_\perp - 1) E_x^{next} &=
+     \frac{\partial \rho^{prev}}{\partial x} -
+     (\frac{\partial j_x}{\partial \xi})^{\mathrm{halfstep}} -
+     E_x^{avg}
 
-   (\Delta_\perp - 1) E_y^{next} &= \frac{\partial \rho^{prev}}{\partial y} - \frac{\partial j_y^{avg}}{\partial \xi} - E_y^{avg}
+   (\Delta_\perp - 1) E_y^{next} &=
+     \frac{\partial \rho^{prev}}{\partial y} -
+     (\frac{\partial j_y}{\partial \xi})^{\mathrm{halfstep}} -
+     E_y^{avg}
 
-   (\Delta_\perp - 1) B_x^{next} &= \frac{\partial j_y^{avg}}{\partial \xi} - \frac{\partial j_z^{prev}}{\partial y} - B_x^{avg}
+   (\Delta_\perp - 1) B_x^{next} &=
+     (\frac{\partial j_y}{\partial \xi})^{\mathrm{halfstep}} -
+     \frac{\partial j_z^{prev}}{\partial y} -
+     B_x^{avg}
 
-   (\Delta_\perp - 1) B_y^{next} &= \frac{\partial j_z^{prev}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - B_y^{avg}
+   (\Delta_\perp - 1) B_y^{next} &=
+     \frac{\partial j_z^{prev}}{\partial x} -
+     (\frac{\partial j_x}{\partial \xi})^{\mathrm{halfstep}} -
+     B_y^{avg}
 
 
 Variant A
@@ -123,18 +135,31 @@ mutates the equations once again to take everything at half-steps:
 
 .. math::
 
-   (\Delta_\perp - 1) E_x^{avg} &= \frac{\partial \rho^{avg}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - E_x^{avg}
+   (\Delta_\perp - 1) E_x^{\mathrm{halfstep}} &=
+     \frac{\partial \rho^{\mathrm{avg}}}{\partial x} -
+     (\frac{\partial j_x}{\partial \xi})^{\mathrm{halfstep}} -
+     E_x^{\mathrm{avg}}
 
-   (\Delta_\perp - 1) E_y^{avg} &= \frac{\partial \rho^{avg}}{\partial y} - \frac{\partial j_y^{avg}}{\partial \xi} - E_y^{avg}
+   (\Delta_\perp - 1) E_y^{\mathrm{halfstep}} &=
+     \frac{\partial \rho^{\mathrm{avg}}}{\partial y} -
+     (\frac{\partial j_y}{\partial \xi})^{\mathrm{halfstep}} -
+     E_y^{\mathrm{avg}}
 
-   (\Delta_\perp - 1) B_x^{avg} &= \frac{\partial j_y^{avg}}{\partial \xi} - \frac{\partial j_z^{avg}}{\partial y} - B_x^{avg}
+   (\Delta_\perp - 1) B_x^{\mathrm{halfstep}} &=
+     (\frac{\partial j_y}{\partial \xi})^{\mathrm{halfstep}} -
+     \frac{\partial j_z^{\mathrm{avg}}}{\partial y} -
+     B_x^{\mathrm{avg}}
 
-   (\Delta_\perp - 1) B_y^{avg} &= \frac{\partial j_z^{avg}}{\partial x} - \frac{\partial j_x^{avg}}{\partial \xi} - B_y^{avg}
+   (\Delta_\perp - 1) B_y^{\mathrm{halfstep}} &=
+     \frac{\partial j_z^{\mathrm{avg}}}{\partial x} -
+     (\frac{\partial j_x}{\partial \xi})^{\mathrm{halfstep}} -
+     B_y^{\mathrm{avg}}
+
 
 and calculates the fields at next step in the following fashion: :math:`E_x^{next} = 2 E_x^{avg} - E_x^{prev}`, e.t.c.
 
 Solving these is equivalent to solving Variant B equations
 with averaged fields, :math:`\rho` and :math:`j_z` and applying the above transformation to the result.
-See `step(...)` function for the wrapping code that does that.
+See :func:`lcode.step` for the wrapping code that does that.
 
 .. autodata:: config_example.field_solver_variant_A
